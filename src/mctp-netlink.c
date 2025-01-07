@@ -33,6 +33,7 @@ struct linkmap_entry {
 	size_t num_local;
 
 	void	*userdata;
+	char	ifaltname[ALTIFNAMSIZ];
 };
 
 struct mctp_nl {
@@ -56,8 +57,9 @@ static int fill_local_addrs(mctp_nl *nl);
 static int fill_linkmap(mctp_nl *nl);
 static void sort_linkmap(mctp_nl *nl);
 static int linkmap_add_entry(mctp_nl *nl, struct ifinfomsg *info,
-		const char *ifname, size_t ifname_len, int net,
-		bool up, uint32_t min_mtu, uint32_t max_mtu);
+		const char *ifname, size_t ifname_len, const char *ifaltname,
+		size_t ifaltname_len, int net, bool up, uint32_t min_mtu,
+		uint32_t max_mtu);
 static struct linkmap_entry *entry_byindex(const mctp_nl *nl,
 	int index);
 
@@ -185,7 +187,6 @@ int mctp_nl_monitor(mctp_nl *nl, bool enable)
 			}
 			goto err;
 		}
-
 	} else {
 		close(nl->sd_monitor);
 		nl->sd_monitor = -1;
@@ -675,6 +676,29 @@ int mctp_nl_query(mctp_nl *nl, struct nlmsghdr *msg,
 
 	return mctp_nl_recv_all(nl, nl->sd, respp, resp_lenp);
 }
+int parse_rtattr_flags(struct rtattr *tb[], int max, struct rtattr *rta,
+		       int len, unsigned short flags, bool print)
+{
+	unsigned short type;
+
+	memset(tb, 0, sizeof(struct rtattr *) * (max + 1));
+	while (RTA_OK(rta, len)) {
+		type = rta->rta_type & ~flags;
+		if ((type <= max) && (!tb[type]))
+			tb[type] = rta;
+		rta = RTA_NEXT(rta, len);
+	}
+	if (len){
+		if(print)
+			fprintf(stderr, "!!!Deficit %d, rta_len=%d\n",
+				len, rta->rta_len);
+	}
+	return 0;
+}
+static inline const char *rta_getattr_str(const struct rtattr *rta)
+{
+	return (const char *)RTA_DATA(rta);
+}
 
 static int parse_getlink_dump(mctp_nl *nl, struct nlmsghdr *nlh, uint32_t len)
 {
@@ -682,8 +706,8 @@ static int parse_getlink_dump(mctp_nl *nl, struct nlmsghdr *nlh, uint32_t len)
 
 	for (; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
 		struct rtattr *rta = NULL, *rt_nest = NULL, *rt_mctp = NULL;
-		char *ifname = NULL;
-		size_t ifname_len, rlen, nlen, mlen;
+		char *ifname = NULL; char* ifaltname = NULL;
+		size_t ifname_len, rlen, nlen, mlen, ifaltname_len;
 		uint32_t net, min_mtu = 0, max_mtu = 0;
 		bool up;
 
@@ -713,9 +737,38 @@ static int parse_getlink_dump(mctp_nl *nl, struct nlmsghdr *nlh, uint32_t len)
 		}
 
 		ifname = mctp_get_rtnlmsg_attr(IFLA_IFNAME, rta, rlen, &ifname_len);
+		struct rtattr *tb[IFLA_MAX+1];
+		parse_rtattr_flags(tb, IFLA_MAX, IFLA_RTA(NLMSG_DATA(info)),
+			rlen, NLA_F_NESTED, nl->verbose);
+
+		if (tb[IFLA_PROP_LIST]) {
+			struct rtattr *i, *proplist = tb[IFLA_PROP_LIST];
+			int rem = RTA_PAYLOAD(proplist);
+
+
+			for (i = RTA_DATA(proplist); RTA_OK(i, rem);
+				i = RTA_NEXT(i, rem)) {
+				if (i->rta_type != IFLA_ALT_IFNAME)
+					continue;
+				if (strstr(rta_getattr_str(i), "mctpusb")){
+					ifaltname = strdup(rta_getattr_str(i));
+					break;
+				}
+			}
+
+		}
+
 		if (!ifname) {
 			warnx("no ifname?");
 			continue;
+		}
+
+		if(!ifaltname) {
+			ifaltname = "";
+			ifaltname_len = 0;
+		}
+		else {
+			ifaltname_len = strnlen(ifaltname, ifaltname_len);
 		}
 
 		ifname_len = strnlen(ifname, ifname_len);
@@ -737,7 +790,7 @@ static int parse_getlink_dump(mctp_nl *nl, struct nlmsghdr *nlh, uint32_t len)
 		/* TODO: media type */
 
 		up = info->ifi_flags & IFF_UP;
-		linkmap_add_entry(nl, info, ifname, ifname_len, net, up, min_mtu, max_mtu);
+		linkmap_add_entry(nl, info, ifname, ifname_len, ifaltname, ifaltname_len, net, up, min_mtu, max_mtu);
 	}
 	// Not done.
 	return 1;
@@ -933,6 +986,19 @@ int mctp_nl_ifindex_byname(const mctp_nl *nl, const char *ifname)
 	return 0;
 }
 
+char* mctp_nl_altname_byname(const mctp_nl *nl, const char *ifname)
+{
+	size_t i;
+
+	for (i = 0; i < nl->linkmap_count; i++) {
+		struct linkmap_entry *entry = &nl->linkmap[i];
+		if (!strcmp(entry->ifname, ifname))
+			return entry->ifaltname;
+	}
+
+	return NULL;
+}
+
 const char* mctp_nl_if_byindex(const mctp_nl *nl, int index)
 {
 	struct linkmap_entry *entry = entry_byindex(nl, index);
@@ -1084,8 +1150,9 @@ int *mctp_nl_if_list(const mctp_nl *nl, size_t *ret_num_ifs)
 }
 
 static int linkmap_add_entry(mctp_nl *nl, struct ifinfomsg *info,
-		const char *ifname, size_t ifname_len, int net,
-		bool up, uint32_t min_mtu, uint32_t max_mtu)
+		const char *ifname, size_t ifname_len, const char *ifaltname,
+		size_t ifaltname_len, int net, bool up, uint32_t min_mtu,
+		uint32_t max_mtu)
 {
 	struct linkmap_entry *entry;
 	size_t newsz;
@@ -1094,6 +1161,11 @@ static int linkmap_add_entry(mctp_nl *nl, struct ifinfomsg *info,
 
 	if (ifname_len > IFNAMSIZ) {
 		warnx("linkmap, too long ifname '%*s'", (int)ifname_len, ifname);
+		return -1;
+	}
+
+	if (ifaltname_len > ALTIFNAMSIZ) {
+		warnx("linkmap, too long ifaltname '%*s'", (int)ifaltname_len, ifaltname);
 		return -1;
 	}
 
@@ -1118,6 +1190,7 @@ static int linkmap_add_entry(mctp_nl *nl, struct ifinfomsg *info,
 	entry = &nl->linkmap[idx];
 	memset(entry, 0, sizeof(*entry));
 	snprintf(entry->ifname, IFNAMSIZ, "%*s", (int)ifname_len, ifname);
+	snprintf(entry->ifaltname, ALTIFNAMSIZ, "%*s", (int)ifaltname_len, ifaltname);
 	entry->ifindex = info->ifi_index;
 	entry->net = net;
 	entry->up = up;

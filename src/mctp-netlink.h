@@ -124,4 +124,6 @@ int mctp_nl_handle_monitor(mctp_nl *nl, mctp_nl_change **changes,
 
 void mctp_nl_changes_dump(mctp_nl *nl, mctp_nl_change *changes,
 	size_t num_changes);
+/* Lookup MCTP interface alternate name */
+char* mctp_nl_altname_byname(const mctp_nl *nl, const char *ifname);
 

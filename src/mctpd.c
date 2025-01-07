@@ -3173,7 +3173,7 @@ static int bus_link_get_prop(sd_bus *bus,
 {
 	ctx *ctx = userdata;
 	char *tmpstr = NULL;
-	char *link_name = NULL;
+	char *link_name = NULL, *link_altname = NULL;
 	link_userdata *lmUserData = NULL;
 	int rc = 0;
 
@@ -3192,13 +3192,23 @@ static int bus_link_get_prop(sd_bus *bus,
 	}
 
 	lmUserData = mctp_nl_get_link_userdata_byname(ctx->nl, link_name);
+	link_altname = mctp_nl_altname_byname(ctx->nl, link_name);
 	if (!lmUserData) {
 		rc = -ENOENT;
 		goto out;
 	}
 
+	if(!link_altname)
+	{
+		link_altname = "";
+	}
+
 	if (lmUserData->published && strcmp(property, "Role") == 0) {
 		rc = sd_bus_message_append(reply, "s", roles[lmUserData->role].dbus_val);
+	} else if (lmUserData->published && strcmp(property, "Interface") == 0) {
+		rc = sd_bus_message_append(reply, "s", link_name);
+	} else if (lmUserData->published && strcmp(property, "Alias") == 0) {
+		rc = sd_bus_message_append(reply, "s", link_altname);
 	} else {
 		sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
 				"Unknown property.");
@@ -3363,6 +3373,16 @@ static const sd_bus_vtable bus_endpoint_link_vtable[] = {
 			bus_link_set_prop,
 			0,
 			SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+	SD_BUS_PROPERTY("Interface",
+			"s",
+			bus_link_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_PROPERTY("Alias",
+			"s",
+			bus_link_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_VTABLE_END
 };
 
