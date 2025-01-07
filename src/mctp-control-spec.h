@@ -166,6 +166,7 @@ struct mctp_ctrl_resp_get_routing_table {
 	uint8_t completion_code;
 	uint8_t next_entry_handle;
 	uint8_t number_of_entries;
+	uint8_t routing_entries[1];
 } __attribute__((__packed__));
 
 struct get_routing_table_entry {
