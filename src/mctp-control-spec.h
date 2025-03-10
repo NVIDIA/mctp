@@ -67,6 +67,30 @@ struct mctp_ctrl_cmd_get_mctp_ver_support {
 	uint8_t msg_type_number;
 } __attribute__((__packed__));
 
+typedef enum {
+	alloc_eid = 0,
+	force_alloc = 1,
+	get_alloc_info = 2,
+	reserved = 3
+} mctp_ctrl_cmd_alloc_eid_op;
+
+struct mctp_ctrl_cmd_alloc_eid {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	mctp_ctrl_cmd_alloc_eid_op alloc_eid_op : 2;
+	uint8_t : 6;
+	uint8_t pool_size;
+	uint8_t start_eid;
+} __attribute__((__packed__));
+
+struct mctp_ctrl_resp_alloc_eid {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	uint8_t completion_code;
+	uint8_t status : 2;
+	uint8_t : 6;
+	uint8_t eid_pool_size;
+	uint8_t eid_set;
+} __attribute__((__packed__));
+
 #define MCTP_GET_VERSION_SUPPORT_BASE_INFO 0xFF
 
 struct mctp_ctrl_resp_get_mctp_ver_support {

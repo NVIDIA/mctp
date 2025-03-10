@@ -287,10 +287,12 @@ async def test_assign_endpoint_static(dbus, mctpd):
     dev = mctpd.network.endpoints[0]
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
+    start_eid = 13
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
-        static_eid
+        static_eid,
+        start_eid
     )
 
     assert eid == static_eid
@@ -309,10 +311,12 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     dev = mctpd.network.endpoints[0]
     static_eid = 12
+    start_eid = 13
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
+        start_eid
     )
 
     assert eid == static_eid
@@ -322,6 +326,7 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
+        start_eid
     )
 
     assert eid == static_eid
@@ -345,7 +350,7 @@ async def test_assign_endpoint_static_conflict(dbus, mctpd):
 
     # try to assign dev2 with the dev1's existing EID
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev2.lladdr, eid)
+        await mctp.call_assign_endpoint_static(dev2.lladdr, eid, 14)
 
     assert str(ex.value) == "Address in use"
 
@@ -356,17 +361,19 @@ async def test_assign_endpoint_static_varies(dbus, mctpd):
     dev = mctpd.network.endpoints[0]
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
+    start_eid = 13
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
-        static_eid
+        static_eid,
+        start_eid
     )
 
     assert eid == static_eid
     assert new
 
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev.lladdr, 13)
+        await mctp.call_assign_endpoint_static(dev.lladdr, 13, 14)
 
     assert str(ex.value) == "Already assigned a different EID"
 
@@ -483,3 +490,49 @@ async def test_network_local_eids_none(dbus, mctpd):
     eids = list(await net.get_local_eids())
 
     assert eids == []
+""" Test that we allocate Eids to MCTP Bridge Endpoints"""
+async def test_endpoint_allocate_eid(dbus, mctpd):
+    bridge = mctpd.network.endpoints[1]
+    ep_types = [0, 1, 5]
+    bridge.types = ep_types
+    static_eid = 12
+    start_eid = 13
+
+    # mimicing MCTP Bridge by adding Bridg's Endpoints to same network and physcial address
+    for eid in range(start_eid, start_eid + bridge.pool_size + 1):
+        mctpd.network.add_endpoint(Endpoint(bridge.iface, bridge.lladdr, types = [0,1,2,3], eid= eid))
+
+    # first assign enpoint to MCTP Bridge and later involk allocate endpoint ids
+    # this will add Brige's enpoints routes and neigh and update dbus
+    mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
+    (eid, _, path, _) = await mctp.call_assign_endpoint_static(
+        bridge.lladdr,
+        static_eid,
+        start_eid
+    )
+
+    # non blocking sleep for Allocate Eid timer expiry
+    await trio.sleep(5)
+    assert eid == static_eid
+    #  check if networks neighbours are reflecting the mctpd added bridge's neighbours
+    assert len(mctpd.system.neighbours) == (1 + bridge.pool_size)
+
+    neigh = mctpd.system.neighbours[0]
+    assert neigh.lladdr == bridge.lladdr
+    assert neigh.eid == static_eid
+
+    neigh = mctpd.system.neighbours[1]
+    assert neigh.lladdr == bridge.lladdr
+    assert neigh.eid == start_eid
+
+    neigh = mctpd.system.neighbours[2]
+    assert neigh.lladdr == bridge.lladdr
+    assert neigh.eid == start_eid + 1
+
+    # check one of Bridge's endpoint types per dbus property
+    path = path.rsplit('/endpoints', 1)[0]
+    path = path + f"/endpoints/{mctpd.network.endpoints[2].eid}"
+    ep = await mctpd_mctp_endpoint_common_obj(dbus, path)
+    query_types = list(await ep.get_supported_message_types())
+    print(mctpd.network.endpoints[2].types)
+    assert (query_types == mctpd.network.endpoints[2].types)
