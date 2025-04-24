@@ -820,6 +820,56 @@ static int handle_control_resolve_endpoint_id(ctx *ctx,
 	return reply_message(ctx, sd, resp, resp_len, addr);
 }
 
+static int handle_control_discovery_notify(ctx *ctx,
+    int sd,
+    const struct sockaddr_mctp_ext *addr,
+    const uint8_t *buf,
+    const size_t buf_size)
+{
+    if (buf_size < sizeof(struct mctp_ctrl_cmd_discovery_notify))
+    {
+        warnx("short Discovery Notify message");
+        return -ENOMSG;
+    }
+
+    const struct mctp_ctrl_cmd_discovery_notify *req =
+        (const struct mctp_ctrl_cmd_discovery_notify *)buf;
+
+    struct mctp_ctrl_resp_discovery_notify resp = {
+        .ctrl_hdr.command_code = MCTP_CTRL_CMD_DISCOVERY_NOTIFY,
+        .ctrl_hdr.rq_dgram_inst = RQDI_RESP | 
+		(req->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK),
+        .completion_code = MCTP_CTRL_CC_SUCCESS,
+    };
+
+    if (ctx->verbose)
+    {
+        printf("Received Discovery Notify from %s",
+              ext_addr_tostr(addr));
+    }
+
+    int r = sd_bus_emit_signal(
+        ctx->bus,
+        MCTP_DBUS_PATH,
+        CC_MCTP_DBUS_IFACE_ENDPOINT,
+        "DiscoveryNotify",
+        "u",
+        addr->smctp_base.smctp_addr.s_addr
+    );
+    if (r < 0)
+    {
+        warnx("Failed to emit DiscoveryNotify signal: %s", strerror(-r));
+        resp.completion_code = MCTP_CTRL_CC_ERROR;
+    }
+
+    if (!(req->ctrl_hdr.rq_dgram_inst & MCTP_CTRL_HDR_FLAG_DGRAM))
+    {
+        return reply_message(ctx, sd, &resp, sizeof(resp), addr);
+    }
+
+	return 0;
+}
+
 static int handle_control_unsupported(ctx *ctx,
 	int sd, const struct sockaddr_mctp_ext *addr,
 	const uint8_t *buf, const size_t buf_size)
@@ -903,6 +953,10 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 			rc = handle_control_resolve_endpoint_id(ctx,
 				sd, &addr, buf, buf_size);
 			break;
+		case MCTP_CTRL_CMD_DISCOVERY_NOTIFY:
+        	rc = handle_control_discovery_notify(ctx, 
+				sd, &addr, buf, buf_size);
+        	break;
 		default:
 			if (ctx->verbose) {
 				warnx("Ignoring unsupported command code 0x%02x",

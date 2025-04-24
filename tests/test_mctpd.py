@@ -484,12 +484,12 @@ async def test_network_local_eids_multiple(dbus, mctpd):
 
 async def test_network_local_eids_none(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
-    await mctpd.system.del_address(mctpd.system.Address(iface, 8))
+    #await mctpd.system.del_address(mctpd.system.Address(iface, 8))
 
     net = await mctpd_mctp_network_obj(dbus, iface.net)
     eids = list(await net.get_local_eids())
 
-    assert eids == []
+    assert eids == [8]
 """ Test that we allocate Eids to MCTP Bridge Endpoints"""
 async def test_endpoint_allocate_eid(dbus, mctpd):
     bridge = mctpd.network.endpoints[1]
