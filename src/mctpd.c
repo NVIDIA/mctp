@@ -255,7 +255,7 @@ static int del_local_eid(ctx *ctx, int net, int eid);
 static int add_net(ctx *ctx, int net);
 static int add_interface(ctx *ctx, int ifindex);
 static int endpoint_allocate_eid(peer *peer);
-static int query_routing_table(struct peer *peer, bool **active_pool_eid);
+static int query_routing_table(struct peer *peer);
 
 mctp_eid_t local_addr(const ctx *ctx, int ifindex) {
 	mctp_eid_t *eids, ret = 0;
@@ -2336,8 +2336,6 @@ static int method_get_routing_table(sd_bus_message *call, void *data, sd_bus_err
 	int rc = 0, net = 0;
 	mctp_eid_t eid = 0;
 
-	//track active endpoints from Bridge perspective
-	bool *active_pool_eid = NULL;
 	dest->ifindex = interface_call_to_ifindex_busowner(ctx, call);
 	if (dest->ifindex <= 0)
 		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
@@ -2359,40 +2357,13 @@ static int method_get_routing_table(sd_bus_message *call, void *data, sd_bus_err
 				"Endpoint is not a Bridge");
 		}
 		else {
-			rc = query_routing_table(peer, &active_pool_eid);
+			rc = query_routing_table(peer);
 			if (rc < 0)
 				goto err;
-
-			//deprecate eids which are not active
-			if(active_pool_eid) {
-				mctp_eid_t defer_eid = 0;
-				struct peer *defer_peer = NULL;
-				char* defer_peer_path = NULL;
-				for(uint8_t index = 0; index < peer->pool_size; index++) {
-					if (!active_pool_eid[index]) {
-						defer_eid = index + peer->pool_start;
-						defer_peer = find_peer_by_addr(ctx, defer_eid, peer->net);
-						if (defer_peer) {
-							defer_peer->degraded = true;
-
-							rc = path_from_peer(defer_peer, &defer_peer_path);
-							rc = sd_bus_emit_properties_changed(ctx->bus, defer_peer_path,
-								CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
-							free(defer_peer_path);
-							defer_peer_path = NULL;
-						}
-						else {
-							if(peer->ctx->verbose)
-								fprintf(stderr, "%s unable to find defer peer %d\n", __func__, defer_eid);
-						}
-					}
-				}
-			}
 		}
 	}
 	rc = sd_bus_reply_method_return(call, "");
 err:
-	free(active_pool_eid);
 	set_berr(ctx, rc, berr);
 	return rc;
 }
@@ -4732,6 +4703,7 @@ out:
 	free(buf);
 	return rc;
 }
+
 static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void* data)
 {
 	peer *peer = data;
@@ -4756,6 +4728,14 @@ static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void* data)
 					__func__, eid);
 			continue;
 		}
+	}
+
+	/* call to populate RoutingTable information*/
+	fprintf(stderr, "Call into GetRouting Table for EID %d\n",
+			peer->eid);
+	rc = query_routing_table(peer);
+	if (rc < 0) {
+		warnx("Failed to get Routing Table information\n");
 	}
 
 	return 0;
@@ -4922,30 +4902,64 @@ out:
 	return rc;
 }
 
-static int query_routing_table(struct peer *peer, bool **active_pool_eid)
+static int query_routing_table(struct peer *peer)
 {
 	uint8_t next_handle = 0, entry_handle = 0;
 	int rc = 0;
+	//track active endpoints from Bridge perspective
+	bool *active_pool_eid = NULL;
 
 	if (peer->pool_size) {
-		*active_pool_eid = (bool*)malloc(peer->pool_size);
-		if (*active_pool_eid) {
+		active_pool_eid = (bool*)malloc(peer->pool_size);
+		if (active_pool_eid) {
 			for (uint8_t idx =0; idx < peer->pool_size; idx++) {
-				(*active_pool_eid)[idx] = false;
+				(active_pool_eid)[idx] = false;
 			}
 		}
+	}
+	else {
+		warnx(" %s Not a Bridge peer, pool->size %d\n", __func__, peer->pool_size);	
 	}
 
 	while(next_handle != 0xFF)
 	{
-		rc = endpoint_send_get_routing_table(peer, entry_handle, &next_handle, *active_pool_eid);
+		rc = endpoint_send_get_routing_table(peer, entry_handle, &next_handle, active_pool_eid);
 		if(rc <0) {
 			goto out;
 		}
 		entry_handle = next_handle;
 	}
+
+	//deprecate eids which are not active
+	if(active_pool_eid) {
+		mctp_eid_t defer_eid = 0;
+		struct peer *defer_peer = NULL;
+		char* defer_peer_path = NULL;
+		for(uint8_t index = 0; index < peer->pool_size; index++) {
+			if (!active_pool_eid[index]) {
+				defer_eid = index + peer->pool_start;
+				defer_peer = find_peer_by_addr(peer->ctx, defer_eid, peer->net);
+				if (defer_peer) {
+					defer_peer->degraded = true;
+
+					rc = path_from_peer(defer_peer, &defer_peer_path);
+					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
+						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+					free(defer_peer_path);
+					defer_peer_path = NULL;
+				}
+				else {
+					if(peer->ctx->verbose)
+						fprintf(stderr, "%s unable to find defer peer %d\n", __func__, defer_eid);
+				}
+			}
+		}
+	}
+
+	free(active_pool_eid);
 	return 0;
 out:
+	free(active_pool_eid);
 	warnx(" %s Failed to get routing table data for handle %d\n", __func__, entry_handle);
 	return rc;
 }
