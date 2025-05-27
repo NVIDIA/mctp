@@ -2187,7 +2187,7 @@ static int method_assign_endpoint(sd_bus_message *call, void *data, sd_bus_error
 
 	if(peer->pool_size > 0) {
 		/* new start eid will be assigned before MCTP Allocate eid control command */
-		peer->pool_start = eid_alloc_max;
+		peer->pool_start = peer->eid + 1;
 		rc = endpoint_allocate_eid(peer);
 	}
 
