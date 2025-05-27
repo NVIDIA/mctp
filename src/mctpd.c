@@ -1045,6 +1045,10 @@ static int cb_listen_monitor(sd_event_source *s, int sd, uint32_t revents,
 		{
 			rc = add_interface_local(ctx, c->ifindex);
 			any_error |= (rc < 0);
+
+			//need to remove ctx->nl_query and then update new data
+			mctp_nl_close(ctx->nl_query);
+			ctx->nl_query = mctp_nl_new(false);
 		}
 		break;
 
