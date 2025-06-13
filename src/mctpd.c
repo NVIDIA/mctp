@@ -4891,7 +4891,7 @@ static int endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_hand
 			}
 
 			if (check_local_routing(peer, entry))
-				warnx("%s skipping the entry, already exists\n", __func__);
+				warnx("%s skipping the entry %d, already exists\n", __func__, entry->starting_eid);
 			else
 				update_local_routing(peer, entry);
 
@@ -4940,21 +4940,38 @@ static int query_routing_table(struct peer *peer)
 		struct peer *defer_peer = NULL;
 		char* defer_peer_path = NULL;
 		for(uint8_t index = 0; index < peer->pool_size; index++) {
+			defer_eid = index + peer->pool_start;
+			defer_peer = find_peer_by_addr(peer->ctx, defer_eid, peer->net);
+			if (!defer_peer) {
+				if(peer->ctx->verbose) {
+					fprintf(stderr, "%s unable to find defer peer %d\n", __func__, defer_eid);
+				}
+				continue;
+			}
 			if (!active_pool_eid[index]) {
-				defer_eid = index + peer->pool_start;
-				defer_peer = find_peer_by_addr(peer->ctx, defer_eid, peer->net);
-				if (defer_peer) {
-					defer_peer->degraded = true;
-
+				if (defer_peer->degraded == false) {
+						defer_peer->degraded = true;
+						rc = path_from_peer(defer_peer, &defer_peer_path);
+						rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
+							CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+						free(defer_peer_path);
+						defer_peer_path = NULL;
+					}
+			}
+			else {
+				if (defer_peer->degraded == true) {
+					query_peer_properties(defer_peer);
+					defer_peer->degraded = false;
 					rc = path_from_peer(defer_peer, &defer_peer_path);
 					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", "Available", NULL);
+					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
+						CC_MCTP_DBUS_IFACE_ENDPOINT, "SupportedMessageTypes", defer_peer->message_types, NULL);
+					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
+						CC_MCTP_DBUS_IFACE_ENDPOINT, "UUID", defer_peer->uuid, NULL);
+
 					free(defer_peer_path);
 					defer_peer_path = NULL;
-				}
-				else {
-					if(peer->ctx->verbose)
-						fprintf(stderr, "%s unable to find defer peer %d\n", __func__, defer_eid);
 				}
 			}
 		}
