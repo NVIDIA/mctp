@@ -4950,26 +4950,35 @@ static int query_routing_table(struct peer *peer)
 			}
 			if (!active_pool_eid[index]) {
 				if (defer_peer->degraded == false) {
-						defer_peer->degraded = true;
-						rc = path_from_peer(defer_peer, &defer_peer_path);
-						rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-							CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
-						free(defer_peer_path);
-						defer_peer_path = NULL;
+					defer_peer->degraded = true;
+					rc = path_from_peer(defer_peer, &defer_peer_path);
+					if (rc < 0) {
+						warnx("%s: path_from_peer failed: %d %s", __func__, rc, strerror(-rc));
+						continue;
 					}
+					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
+						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+					if (rc < 0)
+						warnx("%s: Connectivity change emit failed: failed: %d %s", __func__, rc, strerror(-rc));
+					free(defer_peer_path);
+					defer_peer_path = NULL;
+				}
 			}
 			else {
 				if (defer_peer->degraded == true) {
-					query_peer_properties(defer_peer);
+					rc = query_peer_properties(defer_peer);
+					if (rc < 0)
+						warnx("%s: query_peer_properties failed: %d %s", __func__, rc, strerror(-rc));
 					defer_peer->degraded = false;
 					rc = path_from_peer(defer_peer, &defer_peer_path);
+					if (rc < 0) {
+						warnx("%s: path_from_peer failed: %d %s", __func__, rc, strerror(-rc));
+						continue;
+					}
 					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", "Available", NULL);
-					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "SupportedMessageTypes", defer_peer->message_types, NULL);
-					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "UUID", defer_peer->uuid, NULL);
-
+						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+					if (rc < 0)
+						warnx("%s: Connectivity change emit failed: %d %s", __func__, rc, strerror(-rc));
 					free(defer_peer_path);
 					defer_peer_path = NULL;
 				}
