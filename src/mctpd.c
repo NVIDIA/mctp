@@ -4711,29 +4711,9 @@ out:
 static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void* data)
 {
 	peer *peer = data;
-	int net = peer->net;
-	struct peer *allocated_peer = NULL;
-	dest_phys dest = peer->phys;
 	int rc;
 
-	fprintf (stderr, "Bridge Time expired, set pool eids\n");
-	for (mctp_eid_t eid = peer->pool_start;
-		eid < peer->pool_start + peer->pool_size; eid++) {
-		rc = add_peer(peer->ctx, &dest, eid, net, &allocated_peer);
-		if (rc < 0) {
-			warnx("%s failed to find peer for allocated eid %d\n",
-					__func__, eid);
-			continue;
-		}
-
-		rc = setup_added_peer(allocated_peer);
-		if (rc < 0) {
-			warnx("%s failed to setup peer for allocated eid %d\n",
-					__func__, eid);
-			continue;
-		}
-	}
-
+	fprintf(stderr, "Bridge Time expired\n");
 	/* call to populate RoutingTable information*/
 	fprintf(stderr, "Call into GetRouting Table for EID %d\n",
 			peer->eid);
@@ -4909,6 +4889,8 @@ out:
 static int query_routing_table(struct peer *peer)
 {
 	uint8_t next_handle = 0, entry_handle = 0;
+	int net = peer->net;
+	dest_phys dest = peer->phys;
 	int rc = 0;
 	//track active endpoints from Bridge perspective
 	bool *active_pool_eid = NULL;
@@ -4934,53 +4916,84 @@ static int query_routing_table(struct peer *peer)
 		entry_handle = next_handle;
 	}
 
-	//deprecate eids which are not active
+	//Manage downstream endpoint objects based on active routing table
 	if(active_pool_eid) {
-		mctp_eid_t defer_eid = 0;
-		struct peer *defer_peer = NULL;
-		char* defer_peer_path = NULL;
-		for(uint8_t index = 0; index < peer->pool_size; index++) {
-			defer_eid = index + peer->pool_start;
-			defer_peer = find_peer_by_addr(peer->ctx, defer_eid, peer->net);
-			if (!defer_peer) {
-				if(peer->ctx->verbose) {
-					fprintf(stderr, "%s unable to find defer peer %d\n", __func__, defer_eid);
-				}
-				continue;
-			}
-			if (!active_pool_eid[index]) {
-				if (defer_peer->degraded == false) {
-					defer_peer->degraded = true;
-					rc = path_from_peer(defer_peer, &defer_peer_path);
+		for (uint8_t index = 0; index < peer->pool_size; index++) {
+			mctp_eid_t eid = index + peer->pool_start;
+			struct peer *existing_peer = find_peer_by_addr(peer->ctx, eid, net);
+
+			if (active_pool_eid[index]) {
+				if (!existing_peer) {
+					// EID is active but doesn't exist locally - create it
+					struct peer *allocated_peer = NULL;
+					rc = add_peer(peer->ctx, &dest, eid, net, &allocated_peer);
 					if (rc < 0) {
-						warnx("%s: path_from_peer failed: %d %s", __func__, rc, strerror(-rc));
+						warnx("%s failed to add peer for active eid %d: %d %s",
+								__func__, eid, rc, strerror(-rc));
 						continue;
 					}
-					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
-					if (rc < 0)
-						warnx("%s: Connectivity change emit failed: failed: %d %s", __func__, rc, strerror(-rc));
-					free(defer_peer_path);
-					defer_peer_path = NULL;
-				}
-			}
-			else {
-				if (defer_peer->degraded == true) {
-					rc = query_peer_properties(defer_peer);
+
+					rc = setup_added_peer(allocated_peer);
+					if (rc < 0) {
+						warnx("%s failed to setup peer for active eid %d: %d %s",
+								__func__, eid, rc, strerror(-rc));
+						continue;
+					}
+
+					if(peer->ctx->verbose) {
+						fprintf(stderr, "created new endpoint %d\n", eid);
+					}
+				} else {
+					// EID is active and exists locally - send connectivity change
+					existing_peer->degraded = false;
+					//to fetch latest UUID/MessageType
+					rc = query_peer_properties(existing_peer);
 					if (rc < 0)
 						warnx("%s: query_peer_properties failed: %d %s", __func__, rc, strerror(-rc));
-					defer_peer->degraded = false;
-					rc = path_from_peer(defer_peer, &defer_peer_path);
+
+					char* peer_path = NULL;
+					rc = path_from_peer(existing_peer, &peer_path);
 					if (rc < 0) {
 						warnx("%s: path_from_peer failed: %d %s", __func__, rc, strerror(-rc));
+						free(peer_path);
 						continue;
 					}
-					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
+					rc = sd_bus_emit_properties_changed(peer->ctx->bus, peer_path,
 						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
-					if (rc < 0)
+					if (rc < 0) {
 						warnx("%s: Connectivity change emit failed: %d %s", __func__, rc, strerror(-rc));
-					free(defer_peer_path);
-					defer_peer_path = NULL;
+						free(peer_path);
+						continue;
+					}
+					free(peer_path);
+					if(peer->ctx->verbose) {
+						fprintf(stderr, "keeping existing active endpoint %d\n", eid);
+					}
+				}
+			} else {
+				if (existing_peer) {
+					// EID is not active but exists locally - mark degraded it
+					if (!existing_peer->degraded) {
+						existing_peer->degraded = true;
+						char* peer_path = NULL;
+						rc = path_from_peer(existing_peer, &peer_path);
+						if (rc < 0) {
+							warnx("%s: path_from_peer failed: %d %s", __func__, rc, strerror(-rc));
+							free(peer_path);
+							continue;
+						}
+						rc = sd_bus_emit_properties_changed(peer->ctx->bus, peer_path,
+							CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+						if (rc < 0) {
+							warnx("%s: Connectivity change emit failed: %d %s", __func__, rc, strerror(-rc));
+							free(peer_path);
+							continue;
+						}
+						free(peer_path);
+						if(peer->ctx->verbose) {
+							fprintf(stderr, "Marking degraded inactive endpoint %d\n", eid);
+						}
+					}
 				}
 			}
 		}
