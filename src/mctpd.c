@@ -195,7 +195,8 @@ struct peer {
 	// Pool size
 	uint8_t pool_size;
 	uint8_t pool_start;
-
+	mctp_eid_t *ignore_eids;
+	size_t num_ignore_eids;
 	// Routing Table Data
 	routing_table_t *routing_table_head;
 	routing_table_t *routing_table_tail;
@@ -265,6 +266,7 @@ static void del_net(struct net *net);
 static int add_interface(struct ctx *ctx, int ifindex);
 static int endpoint_allocate_eid(struct peer *peer);
 static int query_routing_table(struct peer *peer);
+static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid);
 
 static const sd_bus_vtable bus_endpoint_obmc_vtable[];
 static const sd_bus_vtable bus_endpoint_cc_vtable[];
@@ -1614,6 +1616,7 @@ static int remove_peer(struct peer *peer)
 	n->peers[peer->eid] = NULL;
 	free(peer->message_types);
 	free(peer->uuid);
+	free(peer->ignore_eids);
 
 	while (rt) {
 		peer->routing_table_head = peer->routing_table_head->next_entry;
@@ -2280,6 +2283,8 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	struct link *link = data;
 	struct ctx *ctx = link->ctx;
 	uint8_t eid, start_eid;
+	const uint8_t *ignore_eids = NULL;
+	size_t ignore_eids_len;
 	int rc;
 
 	dest->ifindex = link->ifindex;
@@ -2296,6 +2301,11 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 		goto err;
 
 	rc = sd_bus_message_read(call, "y", &start_eid);
+	if (rc < 0)
+		goto err;
+
+	rc = sd_bus_message_read_array(call, 'y', (const void **)&ignore_eids,
+				       &ignore_eids_len);
 	if (rc < 0)
 		goto err;
 
@@ -2335,6 +2345,20 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	rc = endpoint_assign_eid(ctx, berr, dest, &peer, eid);
 	if (rc < 0) {
 		goto err;
+	}
+
+	// Store ignore EIDs if provided
+	if (ignore_eids_len > 0) {
+		peer->ignore_eids = malloc(ignore_eids_len);
+		if (!peer->ignore_eids) {
+			rc = -ENOMEM;
+			goto err;
+		}
+		memcpy(peer->ignore_eids, ignore_eids, ignore_eids_len);
+		peer->num_ignore_eids = ignore_eids_len;
+	} else {
+		peer->ignore_eids = NULL;
+		peer->num_ignore_eids = 0;
 	}
 
 	peer_path = path_from_peer(peer);
@@ -3095,10 +3119,11 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 		0),
 
 	SD_BUS_METHOD_WITH_NAMES("AssignEndpointStatic",
-		"ayyy",
+		"ayyyay",
 		SD_BUS_PARAM(physaddr)
 		SD_BUS_PARAM(eid)
-		SD_BUS_PARAM(start_eid),
+		SD_BUS_PARAM(start_eid)
+		SD_BUS_PARAM(ignore_eids),
 		"yisb",
 		SD_BUS_PARAM(eid)
 		SD_BUS_PARAM(net)
@@ -4500,8 +4525,26 @@ static int endpoint_send_get_routing_table(struct peer *peer,
 		for (uint8_t idx = 0; idx < resp->number_of_entries; idx++) {
 			if (entry->starting_eid == peer->eid) {
 				// Skip bridge's own eid
+				entry = (struct get_routing_table_entry
+						 *)((char *)(&entry->phys_address_size) +
+						    entry->phys_address_size +
+						    1);
 				continue;
 			}
+			// Check if this EID should be ignored
+			if (should_ignore_eid(peer, entry->starting_eid)) {
+				if (peer->ctx->verbose) {
+					fprintf(stderr,
+						"%s: ignoring EID %d as requested\n",
+						__func__, entry->starting_eid);
+				}
+				entry = (struct get_routing_table_entry
+						 *)((char *)(&entry->phys_address_size) +
+						    entry->phys_address_size +
+						    1);
+				continue;
+			}
+
 			if (entry->starting_eid >= peer->pool_start) {
 				active_pool_eid[entry->starting_eid -
 						peer->pool_start] = true;
@@ -4666,6 +4709,18 @@ out:
 	warnx(" %s Failed to get routing table data for handle %d\n", __func__,
 	      entry_handle);
 	return rc;
+}
+
+static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid)
+{
+	if (!peer->ignore_eids)
+		return false;
+
+	for (size_t i = 0; i < peer->num_ignore_eids; i++) {
+		if (peer->ignore_eids[i] == eid)
+			return true;
+	}
+	return false;
 }
 
 int main(int argc, char **argv)

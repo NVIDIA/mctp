@@ -84,7 +84,7 @@ configuring remote endpoints on that bus:
     NAME                                 TYPE      SIGNATURE  RESULT/VALUE  FLAGS
     au.com.codeconstruct.MCTP.Interface1 interface -          -             -
     .AssignEndpoint                      method    ay         yisb          -
-    .AssignEndpointStatic                method    ayy        yisb          -
+    .AssignEndpointStatic                method    ayyay       yisb          -
     .LearnEndpoint                       method    ay         yisb          -
     .SetupEndpoint                       method    ay         yisb          -
 

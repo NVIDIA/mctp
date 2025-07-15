@@ -80,7 +80,7 @@ au.com.codeconstruct.MCTP.Interface1 interface -         -            -
 .Role                                property  s         "BusOwner"   emits-change writable
 au.com.codeconstruct.MCTP.BusOwner1  interface -         -            -
 .AssignEndpoint                      method    ay        yisb         -
-.AssignEndpointStatic                method    ayy       yisb         -
+.AssignEndpointStatic                method    ayyay      yisb         -
 .LearnEndpoint                       method    ay        yisb         -
 .SetupEndpoint                       method    ay        yisb         -
 ```
@@ -128,18 +128,25 @@ Similar to SetupEndpoint, but will always assign an EID rather than querying for
 existing ones. Will return `new = false` when an endpoint is already known to
 `mctpd`. Moreover, will also allocate downstream eids for MCTP Bridges.
 
-#### `.AssignEndpointStatic`: `ayyy` → `yisb`
+#### `.AssignEndpointStatic`: `ayyyay` → `yisb`
 
-Similar to AssignEndpoint, but takes an additional EID argument:
+Similar to AssignEndpoint, but takes additional arguments:
 
 ```
-AssignEndpointStatic <hwaddr> <static-EID> <pool_start-EID>
+AssignEndpointStatic <hwaddr> <static-EID> <pool_start-EID> <ignore_eids>
 ```
 
 to assign `<static-EID>` to the endpoint with hardware address `hwaddr`.
 For MCTP Bridges `<pool_start-EID>` will be starting eid assigned for
 downstream devices. For non-bridge devices this argument value will be
 ignored.
+
+The `<ignore_eids>` parameter is an optional array of MCTP EIDs that should be
+ignored when processing the routing table from the MCTP bridge. If an EID in
+the routing table matches one in the ignore_eids array, it will be skipped
+during processing. This is useful for excluding certain EIDs that may be
+reserved or managed by other systems. The array can be empty (size 0) if no
+EIDs need to be ignored.
 
 This call will fail if the endpoint already has an EID, and that EID is
 different from `static-EID`, or if `static-EID` is already assigned to another

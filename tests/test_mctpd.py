@@ -319,11 +319,13 @@ async def test_assign_endpoint_static(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
     start_eid = 13
+    ignore_eids = b''  # Empty array - no EIDs to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
 
     assert eid == static_eid
@@ -343,11 +345,13 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
     dev = mctpd.network.endpoints[0]
     static_eid = 12
     start_eid = 13
+    ignore_eids = b''  # Empty array - no EIDs to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
 
     assert eid == static_eid
@@ -357,7 +361,8 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
 
     assert eid == static_eid
@@ -380,8 +385,9 @@ async def test_assign_endpoint_static_conflict(dbus, mctpd):
     assert new
 
     # try to assign dev2 with the dev1's existing EID
+    ignore_eids = b''  # Empty array - no EIDs to ignore
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev2.lladdr, eid, 14)
+        await mctp.call_assign_endpoint_static(dev2.lladdr, eid, 14, ignore_eids)
 
     assert str(ex.value) == "Address in use"
 
@@ -393,18 +399,20 @@ async def test_assign_endpoint_static_varies(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
     start_eid = 13
+    ignore_eids = b''  # Empty array - no EIDs to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
 
     assert eid == static_eid
     assert new
 
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev.lladdr, 13, 14)
+        await mctp.call_assign_endpoint_static(dev.lladdr, 13, 14, ignore_eids)
 
     assert str(ex.value) == "Already assigned a different EID"
 
@@ -760,6 +768,7 @@ async def test_add_interface(dbus, mctpd):
     net = 1
     #dummy eid to start with
     start_eid = 10
+    ignore_eids = b''  # Empty array - no EIDs to ignore
     # Create a new netdevice
     iface = mctpd.system.Interface('mctpnew', 10, net, bytes([]), 68, 254, True)
     await mctpd.system.add_interface(iface)
@@ -773,7 +782,8 @@ async def test_add_interface(dbus, mctpd):
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         bytes([]),
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
     assert eid == static_eid
     assert new
@@ -803,7 +813,8 @@ async def test_add_interface(dbus, mctpd):
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         bytes([]),
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
     assert eid == static_eid
     assert new
@@ -852,6 +863,7 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     pool_size = 2
+    ignore_eids = b''  # Empty array - no EIDs to ignore
 
     # mimicing MCTP Bridge by adding Bridg's Endpoints to same network and physcial address
     for eid in range(start_eid, start_eid + pool_size):
@@ -867,7 +879,8 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
     (eid, _, path, _) = await mctp.call_assign_endpoint_static(
         bridge.lladdr,
         static_eid,
-        start_eid
+        start_eid,
+        ignore_eids
     )
 
     # non blocking sleep for Allocate Eid timer expiry
@@ -894,3 +907,29 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
     ep = await mctpd_mctp_endpoint_common_obj(dbus, path)
     query_types = list(await ep.get_supported_message_types())
     assert (query_types == mctpd.network.endpoints[1].types)
+
+
+""" Test that ignore_eids parameter works correctly """
+async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    dev = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 12
+    start_eid = 13
+    ignore_eids = bytes([20, 21, 22])  # EIDs to ignore
+
+    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
+        dev.lladdr,
+        static_eid,
+        start_eid,
+        ignore_eids
+    )
+
+    assert eid == static_eid
+    assert new
+
+    assert len(mctpd.system.neighbours) == 1
+    neigh = mctpd.system.neighbours[0]
+    assert neigh.lladdr == dev.lladdr
+    assert neigh.eid == static_eid
+    assert len(mctpd.system.routes) == 2
