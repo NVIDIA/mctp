@@ -52,8 +52,10 @@ Use `mctp help` for the list of available commands:
 
     mctp route
     mctp route show [net <network>]
-    mctp route add <eid> via <dev> [mtu <mtu>]
-    mctp route del <eid> via <dev>
+    mctp route add <eid>[-<eid>] via <dev> [mtu <mtu>]
+    mctp route add <eid>[-<eid>] gw <eid> [net <net>] [mtu <mtu>]
+    mctp route del <eid>[-<eid>] via <dev>
+    mctp route del <eid>[-<eid>] gw <eid> [net <net>]
 
     mctp neigh
     mctp neigh show [dev <network>]
@@ -124,6 +126,11 @@ during development:
 ```sh
 cd obj
 pytest
+```
+
+To run without an existing dbus session:
+```sh
+dbus-run-session env DBUS_STARTER_BUS_TYPE=user pytest
 ```
 
 The test infrastructure depends on a few python packages, including the pytest

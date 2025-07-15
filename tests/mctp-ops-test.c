@@ -58,10 +58,8 @@ static int mctp_op_socket(int type)
 	rc = recvmsg(control_sd, &hdr, 0);
 
 	cmsg = CMSG_FIRSTHDR(&hdr);
-	if (!cmsg || cmsg->cmsg_len != CMSG_LEN(sizeof(int))
-	    || cmsg->cmsg_level != SOL_SOCKET
-	    || cmsg->cmsg_type != SCM_RIGHTS)
-	{
+	if (!cmsg || cmsg->cmsg_len != CMSG_LEN(sizeof(int)) ||
+	    cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
 		errx(EXIT_FAILURE, "invalid control response");
 	}
 
@@ -85,7 +83,7 @@ static int mctp_op_netlink_socket(void)
 static int mctp_op_bind(int sd, struct sockaddr *addr, socklen_t addrlen)
 {
 	struct msghdr msg = { 0 };
-	struct sock_msg sock_msg;
+	struct sock_msg sock_msg = { 0 };
 	struct iovec iov;
 	ssize_t rc;
 
@@ -112,10 +110,10 @@ static int mctp_op_bind(int sd, struct sockaddr *addr, socklen_t addrlen)
 }
 
 static int mctp_op_setsockopt(int sd, int level, int optname, void *optval,
-			       socklen_t optlen)
+			      socklen_t optlen)
 {
 	struct msghdr msg = { 0 };
-	struct sock_msg sock_msg;
+	struct sock_msg sock_msg = { 0 };
 	struct iovec iov[2];
 	ssize_t rc;
 
@@ -145,10 +143,10 @@ static int mctp_op_setsockopt(int sd, int level, int optname, void *optval,
 }
 
 static ssize_t mctp_op_sendto(int sd, const void *buf, size_t len, int flags,
-			       const struct sockaddr *dest, socklen_t addrlen)
+			      const struct sockaddr *dest, socklen_t addrlen)
 {
 	struct msghdr msg = { 0 };
-	struct sock_msg sock_msg;
+	struct sock_msg sock_msg = { 0 };
 	struct iovec iov[2];
 	ssize_t rc;
 
@@ -177,10 +175,10 @@ static ssize_t mctp_op_sendto(int sd, const void *buf, size_t len, int flags,
 }
 
 static ssize_t mctp_op_recvfrom(int sd, void *buf, size_t len, int flags,
-				 struct sockaddr *src, socklen_t *addrlenp)
+				struct sockaddr *src, socklen_t *addrlenp)
 {
 	struct msghdr msg = { 0 };
-	struct sock_msg sock_msg;
+	struct sock_msg sock_msg = { 0 };
 	struct iovec iov[2];
 	ssize_t rc;
 
@@ -216,7 +214,14 @@ static int mctp_op_close(int sd)
 	return close(sd);
 }
 
-struct mctp_ops mctp_ops = {
+static void mctp_bug_warn(const char *fmt, va_list args)
+{
+	vwarnx(fmt, args);
+	warnx("Aborting on bug in tests");
+	abort();
+}
+
+const struct mctp_ops mctp_ops = {
 	.mctp = {
 		.socket = mctp_op_mctp_socket,
 		.setsockopt = mctp_op_setsockopt,
@@ -233,6 +238,7 @@ struct mctp_ops mctp_ops = {
 		.recvfrom = mctp_op_recvfrom,
 		.close = mctp_op_close,
 	},
+	.bug_warn = mctp_bug_warn,
 };
 
 void mctp_ops_init(void)
@@ -259,4 +265,3 @@ void mctp_ops_init(void)
 	len = recv(sd, &rsp, sizeof(rsp), 0);
 	control_sd = sd;
 }
-

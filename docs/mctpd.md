@@ -47,6 +47,7 @@ interface:
 ```
 NAME                                 TYPE      SIGNATURE RESULT/VALUE FLAGS
 au.com.codeconstruct.MCTP.Interface1 interface -         -            -
+.NetworkId                           property  u         1            emits-change
 .Role                                property  s         "BusOwner"   emits-change writable
 ```
 
@@ -64,6 +65,9 @@ this to configure the initial MCTP state of the platform.
 When the interface `Role` is `BusOwner`, the MCTP interface object will
 also host the `BusOwner1` dbus interface:
 
+The `NetworkId` property represents the network on which this interface is
+present.
+
 ### Bus-owner interface: `au.com.codeconstruct.MCTP.BusOwner1` interface
 
 This interface exposes bus-owner level functions, on each interface object that
@@ -72,6 +76,7 @@ represents the bus-owner side of a transport.
 ```
 NAME                                 TYPE      SIGNATURE RESULT/VALUE FLAGS
 au.com.codeconstruct.MCTP.Interface1 interface -         -            -
+.NetworkId                           property  u         1            emits-change
 .Role                                property  s         "BusOwner"   emits-change writable
 au.com.codeconstruct.MCTP.BusOwner1  interface -         -            -
 .AssignEndpoint                      method    ay        yisb         -
@@ -159,10 +164,21 @@ All MCTP networks objects host the `au.com.codeconstruct.MCTP.Network1` dbus
 interface:
 
 ```
-NAME                                 TYPE      SIGNATURE RESULT/VALUE FLAGS
+NAME                                TYPE      SIGNATURE RESULT/VALUE FLAGS
 au.com.codeconstruct.MCTP.Network1  interface -         -            -
+.LearnEndpoint                      method    y         sb           -
 .LocalEIDs                          property  ay        1 8          const
 ```
+
+### `.LearnEndpoint`: `y`
+
+The `LearnEndpoint` method allows a caller to perform enumeration of a
+static endpoint that we can already route to. This may be useful to discover
+bridged endpoints, where the EID assigment has already been handled by the
+bridge.
+
+`LearnEndpoint` takes an EID as its only argument, and returns the endpoint's
+path, and a boolean indicating whether the endpoint was newly discovered.
 
 The D-Bus interface includes the `LocalEIDs` property which reports BMC local EIDs
 in the network.

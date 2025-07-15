@@ -21,6 +21,10 @@ conf.set10('HAVE_LINUX_MCTP_H',
     cc.has_header('linux/mctp.h'),
     description: 'Is linux/mctp.h available?'
 )
+conf.set10('HAVE_STRUCT_MCTP_FQ_ADDR',
+    cc.has_type('struct mctp_fq_addr', prefix: '#include <linux/mctp.h>'),
+    description: 'Is struct mctp_fq_addr available?'
+)
 conf.set10('MCTPD_RECOVER_NIL_UUID',
     get_option('unsafe-recover-nil-uuid'),
     description: 'Consider a nil UUID to be valid for endpoint recovery purposes',
@@ -42,6 +46,7 @@ config_h = configure_file(
 util_sources = ['src/mctp-util.c']
 netlink_sources = ['src/mctp-netlink.c']
 ops_sources = ['src/mctp-ops.c']
+test_ops_sources = ['tests/mctp-ops-test.c']
 
 toml_dep = declare_dependency(
     sources: ['lib/tomlc99/toml.c'],
@@ -51,6 +56,11 @@ toml_dep = declare_dependency(
 executable('mctp',
     sources: ['src/mctp.c'] + netlink_sources + util_sources + ops_sources,
     install: true,
+)
+
+mctp_test = executable('test-mctp',
+    sources: ['src/mctp.c'] + netlink_sources + util_sources + test_ops_sources,
+    include_directories:  include_directories('src'),
 )
 
 executable('mctp-req',
@@ -63,6 +73,11 @@ executable('mctp-echo',
 
 executable('mctp-bench',
     sources: ['src/mctp-bench.c'] + util_sources,
+)
+
+executable('mctp-client',
+    sources: ['src/mctp-client.c'] + util_sources,
+    install: true
 )
 
 if libsystemd.found()
@@ -78,8 +93,7 @@ if libsystemd.found()
     mctpd_test = executable('test-mctpd',
         sources: [
             'src/mctpd.c',
-            'tests/mctp-ops-test.c',
-        ] + netlink_sources + util_sources,
+        ] + test_ops_sources + netlink_sources + util_sources,
         include_directories:  include_directories('src'),
         dependencies: [libsystemd, toml_dep],
     )
@@ -118,8 +132,13 @@ if tests
     # Invoke pytest via a shell script under `dbus-run-session` so we can
     # override the sanitation of `DBUS_STARTER_BUS_TYPE`, ensuring `test-mctpd`
     # connects to the isolated session bus prepared by `dbus-run-session`.
+    #
+    # On newer meson versions, we can use meson test -C build --interactive
+    # to allow pytest to print output directly onto the terminal without
+    # redirecting to a file. We can detect this if stdout is an terminal, and
+    # disable TAP protocol.
     pytest = find_program('pytest')
-    script = 'export DBUS_STARTER_BUS_TYPE=user ; @0@ --tap'.format(pytest.full_path())
+    script = '''export DBUS_STARTER_BUS_TYPE=user; if [ ! -t 1 ]; then PYTEST_FLAGS="--tap"; fi; @0@ $PYTEST_FLAGS $@'''.format(pytest.full_path())
     sh = find_program('sh')
     dbus_run_session = find_program('dbus-run-session')
 
@@ -134,8 +153,9 @@ if tests
     )
 
     test('test-mctpd', dbus_run_session,
-        depends: mctpd_test,
-        args: [ sh.full_path(), '-c', script ],
+        depends: [mctpd_test, mctp_test],
+        args: [ sh.full_path(), '-c', script, '--' ],
         protocol: 'tap',
     )
+
 endif

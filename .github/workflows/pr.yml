@@ -18,10 +18,13 @@ jobs:
         run: pip install --user -r tests/requirements.txt
 
       - name: Configure mctp build
-        run: meson setup build
+        run: meson setup build -Db_sanitize=address
 
       - name: Build mctp
         run: meson compile -C build
+
+      - name: Check formatting
+        run: ninja -C build clang-format-check
 
       - name: Test mctp
         run: meson test -C build

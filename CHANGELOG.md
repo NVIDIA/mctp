@@ -6,12 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+1. Fixed an issue where peer pointers are kept over a potential realloc()
+
+2. Netlink handling now handles interface deletion correctly; we no longer
+   lose sync with the internal linkmap
+
 ### Added
 
 1. New debug tool, `mctp-bench`, for sending and receiving a stream of MCTP
    messages between two processes.
 
-2. mctpd: Add `au.com.codeconstruct.MCTP.Network1` interface
+2. mctpd: Add `au.com.codeconstruct.MCTP.Network1` interface, including
+    - a `LocalEIDs` property, representing the local EIDs assigned on this
+      network
+    - a `LearnEndpoint` method, for enumerating endpoints that already have an
+      address assigned, and are routable
+
+3. tests: the fake mctp environment can now be run standalone, allowing
+   experimentation with different system and network configurations
+
+4. mctpd: Add a `NetworkId` property to the
+   `au.com.codecontruct.MCTP.Interface1` interface, allowing link-to-network
+   lookups
+
+5. mctpd: Better handling of strange cases of Set Endpoint ID responses,
+   where the reported endpoint EID may either be different from expected,
+   or invalid
+
+6. New debug/test tool, `mctp-bench`, for performing basic requests to MCTP
+   endpoints, and printing their responses
+
+7. `mctp` now supports gateway routes
+
+8. `mctp` route can add & delete range routes, using a <min>-<max> range format
+
+9. In-tree tests now include coverage for the `mctp` utility
+
+### Changed
+
+1. tests are now run with address sanitizer enabled (-fsanitize=address)
+
+2. `mctp neigh` hardware address formatting is improved.
+
+### Removed
+
+1. mctpd: Test mode (`-N`) has been removed, as we have a more comprehensive
+   test environment with the python mctpd wrapper code.
+
+   To run using the wrapper:
+
+       (cd obj; python3 ../tests/mctpd/__init__.py)
+
+3. mctp-bench, mctp-req, mctp-echo: Message format has changed to use a
+   vendor-defined message type, rather than MCTP type 1.
 
 ## [2.1] - 2024-12-16
 
