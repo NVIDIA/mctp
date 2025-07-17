@@ -45,6 +45,7 @@
 #define MCTP_DBUS_PATH_LINKS "/au/com/codeconstruct/mctp1/interfaces"
 #define CC_MCTP_DBUS_IFACE_BUSOWNER "au.com.codeconstruct.MCTP.BusOwner1"
 #define CC_MCTP_DBUS_IFACE_ENDPOINT "au.com.codeconstruct.MCTP.Endpoint1"
+#define CC_MCTP_DBUS_IFACE_BRIDGE "au.com.codeconstruct.MCTP.Bridge1"
 #define CC_MCTP_DBUS_IFACE_TESTING "au.com.codeconstruct.MCTPTesting"
 #define MCTP_DBUS_NAME "au.com.codeconstruct.MCTP1"
 #define MCTP_DBUS_IFACE_ENDPOINT "xyz.openbmc_project.MCTP.Endpoint"
@@ -175,6 +176,7 @@ struct peer {
 	bool published;
 	sd_bus_slot *slot_obmc_endpoint;
 	sd_bus_slot *slot_cc_endpoint;
+	sd_bus_slot *slot_bridge;
 	sd_bus_slot *slot_uuid;
 	sd_bus_slot *slot_binding_endpoint;
 	char *path;
@@ -294,6 +296,7 @@ static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid);
 
 static const sd_bus_vtable bus_endpoint_obmc_vtable[];
 static const sd_bus_vtable bus_endpoint_cc_vtable[];
+static const sd_bus_vtable bus_endpoint_bridge[];
 static const sd_bus_vtable bus_endpoint_uuid_vtable[];
 static const sd_bus_vtable bus_endpoint_binding_vtable[];
 
@@ -1841,6 +1844,7 @@ static void free_peers(struct ctx *ctx)
 		free(peer->path);
 		sd_bus_slot_unref(peer->slot_obmc_endpoint);
 		sd_bus_slot_unref(peer->slot_cc_endpoint);
+		sd_bus_slot_unref(peer->slot_bridge);
 		sd_bus_slot_unref(peer->slot_uuid);
 		sd_bus_slot_unref(peer->slot_binding_endpoint);
 		free(peer);
@@ -2898,6 +2902,8 @@ static int unpublish_peer(struct peer *peer)
 		peer->slot_obmc_endpoint = NULL;
 		sd_bus_slot_unref(peer->slot_cc_endpoint);
 		peer->slot_cc_endpoint = NULL;
+		sd_bus_slot_unref(peer->slot_bridge);
+		peer->slot_bridge = NULL;
 		sd_bus_slot_unref(peer->slot_uuid);
 		peer->slot_uuid = NULL;
 		sd_bus_slot_unref(peer->slot_binding_endpoint);
@@ -3350,6 +3356,28 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 };
 // clang-format on
 
+static int bus_bridge_get_prop(sd_bus *bus, const char *path,
+			       const char *interface, const char *property,
+			       sd_bus_message *reply, void *userdata,
+			       sd_bus_error *berr)
+{
+	struct peer *peer = userdata;
+	int rc;
+
+	if (strcmp(property, "PoolStart") == 0) {
+		rc = sd_bus_message_append(reply, "y", peer->pool_start);
+	} else if (strcmp(property, "PoolEnd") == 0) {
+		uint8_t pool_end = peer->pool_start + peer->pool_size - 1;
+		rc = sd_bus_message_append(reply, "y", pool_end);
+	} else {
+		warnx("Unknown bridge property '%s' for %s iface %s", property,
+		      path, interface);
+		rc = -ENOENT;
+	}
+
+	return rc;
+}
+
 static int bus_network_get_prop(sd_bus *bus, const char *path,
 				const char *interface, const char *property,
 				sd_bus_message *reply, void *userdata,
@@ -3619,6 +3647,20 @@ static const sd_bus_vtable bus_service_readiness_vtable[] = {
 			bus_service_readiness_get_prop,
 			0,
 			SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+	SD_BUS_VTABLE_END
+};
+static const sd_bus_vtable bus_endpoint_bridge[] = {
+	SD_BUS_VTABLE_START(0),
+	SD_BUS_PROPERTY("PoolStart",
+			"y",
+			bus_bridge_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_PROPERTY("PoolEnd",
+			"y",
+			bus_bridge_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_VTABLE_END
 };
 
@@ -4783,6 +4825,17 @@ static int endpoint_allocate_eid(struct peer *peer)
 		rc = sd_event_add_time(peer->ctx->event, NULL, CLOCK_MONOTONIC,
 				       timer_usec, 0, cb_populate_pool_eids,
 				       peer);
+
+		sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_bridge, peer->path,
+			CC_MCTP_DBUS_IFACE_BRIDGE, bus_endpoint_bridge,
+			peer);
+
+		rc = sd_bus_emit_interfaces_added(peer->ctx->bus, peer->path,
+					CC_MCTP_DBUS_IFACE_BRIDGE, NULL);
+		if (rc < 0) {
+			warnx("Failed to emit add %s signal for endpoint %d : %s",
+				CC_MCTP_DBUS_IFACE_BRIDGE, peer->eid, strerror(-rc));
+		}
 	}
 
 	return 0;
