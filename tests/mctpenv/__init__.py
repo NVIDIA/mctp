@@ -348,7 +348,7 @@ class Endpoint:
                 # Set Endpoint ID
                 (op, eid) = data[2:]
                 self.eid = eid
-                data = bytes(hdr + [0x00, 0x00, self.eid, 0x00])
+                data = bytes(hdr + [0x00, 0x01 if len(self.bridged_eps) > 0 else 0x00, self.eid, len(self.bridged_eps)])
                 await sock.send(raddr, data)
 
             elif opcode == 2:
@@ -366,21 +366,30 @@ class Endpoint:
                 types = self.types
                 data = bytes(hdr + [0x00, len(types)] + types)
                 await sock.send(raddr, data)
+            
+            elif opcode == 8:
+                # Allocate Endpoint IDs
+                (_, _, _, pool_size, pool_start) = data
+                num_eps = min(pool_size, len(self.bridged_eps))
+                data = bytes(hdr + [0x00, 0x00, num_eps, pool_start])
+
+                # Assign sequential EIDs starting from pool_start
+                for ep in range(num_eps):
+                    self.bridged_eps[ep].eid = pool_start + ep
+
+                await sock.send(raddr, data)
+
 
             else:
                 await sock.send(raddr, bytes(hdr + [0x05])) # unsupported command
 
-    async def send_control(self, sock, cmd_code, data = bytes()):
+    async def send_control(self, sock, cmd):
 
-        typ = MCTPControlCommand.MSGTYPE
+        typ = cmd.MSGTYPE
         # todo: tag 0 implied
         addr = MCTPSockAddr(self.iface.net, self.eid, typ, 0x80)
         if sock.addr_ext:
             addr.set_ext(self.iface.ifindex, self.lladdr)
-
-        # todo: multiple commands; iid 0 implied
-        iid = 0
-        cmd = MCTPControlCommand(True, iid, cmd_code, data)
 
         key = (typ, cmd.iid)
         assert not key in self.commands
@@ -390,8 +399,6 @@ class Endpoint:
         await sock.send(addr, cmd.to_buf())
 
         return await cmd.wait()
-
-
 
 class Network:
     def __init__(self):

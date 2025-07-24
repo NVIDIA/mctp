@@ -66,6 +66,7 @@ static size_t MAX_PEER_SIZE = 1000000;
 
 static const uint8_t RQDI_REQ = 1 << 7;
 static const uint8_t RQDI_RESP = 0x0;
+static const uint8_t IID_MASK = 0x1f;
 static const uint8_t RQDI_IID_MASK = 0x1f;
 
 struct dest_phys {
@@ -122,12 +123,6 @@ static const struct role roles[] = {
 	},
 };
 
-struct routing_table_t {
-	int id;
-	struct routing_table_t* next_entry;
-	struct get_routing_table_entry routing_entry;
-};
-typedef struct routing_table_t routing_table_t;
 struct link {
 	bool published;
 	int ifindex;
@@ -139,6 +134,12 @@ struct link {
 
 	struct ctx *ctx;
 };
+struct routing_table_t {
+	int id;
+	struct routing_table_t *next_entry;
+	struct get_routing_table_entry routing_entry;
+};
+typedef struct routing_table_t routing_table_t;
 
 struct peer {
 	uint32_t net;
@@ -253,6 +254,7 @@ static int peer_neigh_update(struct peer *peer, uint16_t type);
 
 static int add_interface_local(struct ctx *ctx, int ifindex);
 static int del_interface(struct link *link);
+static int rename_interface(struct ctx *ctx, struct link *link, int ifindex);
 static int change_net_interface(struct ctx *ctx, int ifindex, uint32_t old_net);
 static int add_local_eid(struct ctx *ctx, uint32_t net, int eid);
 static int del_local_eid(struct ctx *ctx, uint32_t net, int eid);
@@ -661,8 +663,9 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 	req = (void *)buf;
 
 	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
-	resp->completion_code = 0;
+	resp->ctrl_hdr.rq_dgram_inst =
+		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
+	resp->completion_code = MCTP_CTRL_CC_SUCCESS;
 	resp->status = 0x01 << 4; // Already assigned, TODO
 	resp->eid_set = local_addr(ctx, addr->smctp_ifindex);
 	resp->eid_pool_size = 0;
@@ -692,6 +695,7 @@ handle_control_get_version_support(struct ctx *ctx, int sd,
 
 	req = (void *)buf;
 	resp = (void *)respbuf;
+	memset(resp, 0x0, sizeof(*resp));
 	versions = (void *)(resp + 1);
 	switch (req->msg_type_number) {
 	case 0xff: // Base Protocol
@@ -702,17 +706,19 @@ handle_control_get_version_support(struct ctx *ctx, int sd,
 		versions[2] = htonl(0xF1F2FF00);
 		versions[3] = htonl(0xF1F3F100);
 		resp->number_of_entries = 4;
-		resp->completion_code = 0x00;
+		resp->completion_code = MCTP_CTRL_CC_SUCCESS;
 		resp_len = sizeof(*resp) + 4 * sizeof(*versions);
 		break;
 	default:
 		// Unsupported message type
-		resp->completion_code = 0x80;
+		resp->completion_code =
+			MCTP_CTRL_CC_GET_MCTP_VER_SUPPORT_UNSUPPORTED_TYPE;
 		resp_len = sizeof(*resp);
 	}
 
 	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
+	resp->ctrl_hdr.rq_dgram_inst =
+		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
 	return reply_message(ctx, sd, resp, resp_len, addr);
 }
 
@@ -731,7 +737,8 @@ static int handle_control_get_endpoint_id(struct ctx *ctx, int sd,
 
 	req = (void *)buf;
 	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
+	resp->ctrl_hdr.rq_dgram_inst =
+		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
 
 	resp->eid = local_addr(ctx, addr->smctp_ifindex);
 	if (ctx->default_role == ENDPOINT_ROLE_BUS_OWNER)
@@ -760,7 +767,8 @@ handle_control_get_endpoint_uuid(struct ctx *ctx, int sd,
 
 	req = (void *)buf;
 	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
+	resp->ctrl_hdr.rq_dgram_inst =
+		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
 	memcpy(resp->uuid, ctx->uuid, sizeof(resp->uuid));
 	return reply_message(ctx, sd, resp, sizeof(*resp), addr);
 }
@@ -783,7 +791,8 @@ static int handle_control_get_message_type_support(
 	req = (void *)buf;
 	resp = (void *)resp_buf;
 	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
+	resp->ctrl_hdr.rq_dgram_inst =
+		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
 
 	// Only control messages supported
 	resp->msg_type_count = 1;
@@ -813,11 +822,12 @@ handle_control_resolve_endpoint_id(struct ctx *ctx, int sd,
 	resp = (void *)resp_buf;
 	memset(resp, 0x0, sizeof(*resp));
 	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
+	resp->ctrl_hdr.rq_dgram_inst =
+		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
 
 	peer = find_peer_by_addr(ctx, req->eid, addr->smctp_base.smctp_network);
 	if (!peer) {
-		resp->completion_code = 1;
+		resp->completion_code = MCTP_CTRL_CC_ERROR;
 		resp_len = sizeof(*resp);
 	} else {
 		// TODO: bridging
@@ -830,59 +840,52 @@ handle_control_resolve_endpoint_id(struct ctx *ctx, int sd,
 	return reply_message(ctx, sd, resp, resp_len, addr);
 }
 
-static int handle_control_discovery_notify(struct ctx *ctx,
-    int sd,
-    const struct sockaddr_mctp_ext *addr,
-    const uint8_t *buf,
-    const size_t buf_size)
+static int handle_control_discovery_notify(struct ctx *ctx, int sd,
+					   const struct sockaddr_mctp_ext *addr,
+					   const uint8_t *buf,
+					   const size_t buf_size)
 {
-    if (buf_size < sizeof(struct mctp_ctrl_cmd_discovery_notify))
-    {
-        warnx("short Discovery Notify message");
-        return -ENOMSG;
-    }
+	if (buf_size < sizeof(struct mctp_ctrl_cmd_discovery_notify)) {
+		warnx("short Discovery Notify message");
+		return -ENOMSG;
+	}
 
-    const struct mctp_ctrl_cmd_discovery_notify *req =
-        (const struct mctp_ctrl_cmd_discovery_notify *)buf;
+	const struct mctp_ctrl_cmd_discovery_notify *req =
+		(const struct mctp_ctrl_cmd_discovery_notify *)buf;
 
-    struct mctp_ctrl_resp_discovery_notify resp = {
-        .ctrl_hdr.command_code = MCTP_CTRL_CMD_DISCOVERY_NOTIFY,
-        .ctrl_hdr.rq_dgram_inst = RQDI_RESP | 
-		(req->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK),
-        .completion_code = MCTP_CTRL_CC_SUCCESS,
-    };
+	struct mctp_ctrl_resp_discovery_notify resp = {
+		.ctrl_hdr.command_code = MCTP_CTRL_CMD_DISCOVERY_NOTIFY,
+		.ctrl_hdr.rq_dgram_inst =
+			RQDI_RESP |
+			(req->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK),
+		.completion_code = MCTP_CTRL_CC_SUCCESS,
+	};
 
-    if (ctx->verbose)
-    {
-        printf("Received Discovery Notify from %s",
-              ext_addr_tostr(addr));
-    }
+	if (ctx->verbose) {
+		printf("Received Discovery Notify from %s",
+		       ext_addr_tostr(addr));
+	}
 
-    int r = sd_bus_emit_signal(
-        ctx->bus,
-        MCTP_DBUS_PATH,
-        CC_MCTP_DBUS_IFACE_ENDPOINT,
-        "DiscoveryNotify",
-        "u",
-        addr->smctp_base.smctp_addr.s_addr
-    );
-    if (r < 0)
-    {
-        warnx("Failed to emit DiscoveryNotify signal: %s", strerror(-r));
-        resp.completion_code = MCTP_CTRL_CC_ERROR;
-    }
+	int r = sd_bus_emit_signal(ctx->bus, MCTP_DBUS_PATH,
+				   CC_MCTP_DBUS_IFACE_ENDPOINT,
+				   "DiscoveryNotify", "u",
+				   addr->smctp_base.smctp_addr.s_addr);
+	if (r < 0) {
+		warnx("Failed to emit DiscoveryNotify signal: %s",
+		      strerror(-r));
+		resp.completion_code = MCTP_CTRL_CC_ERROR;
+	}
 
-    if (!(req->ctrl_hdr.rq_dgram_inst & MCTP_CTRL_HDR_FLAG_DGRAM))
-    {
-        return reply_message(ctx, sd, &resp, sizeof(resp), addr);
-    }
+	if (!(req->ctrl_hdr.rq_dgram_inst & MCTP_CTRL_HDR_FLAG_DGRAM)) {
+		return reply_message(ctx, sd, &resp, sizeof(resp), addr);
+	}
 
 	return 0;
 }
 
-static int handle_control_unsupported(struct ctx *ctx,
-	int sd, const struct sockaddr_mctp_ext *addr,
-	const uint8_t *buf, const size_t buf_size)
+static int handle_control_unsupported(struct ctx *ctx, int sd,
+				      const struct sockaddr_mctp_ext *addr,
+				      const uint8_t *buf, const size_t buf_size)
 {
 	struct mctp_ctrl_msg_hdr *req = NULL;
 	struct mctp_ctrl_generic {
@@ -898,7 +901,8 @@ static int handle_control_unsupported(struct ctx *ctx,
 
 	req = (void *)buf;
 	resp->ctrl_hdr.command_code = req->command_code;
-	resp->ctrl_hdr.rq_dgram_inst = RQDI_RESP;
+	resp->ctrl_hdr.rq_dgram_inst = (req->rq_dgram_inst & IID_MASK) |
+				       RQDI_RESP;
 	resp->completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
 	return reply_message(ctx, sd, resp, sizeof(*resp), addr);
 }
@@ -939,42 +943,41 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 		      ctrl_msg->command_code);
 	}
 	switch (ctrl_msg->command_code) {
-		case MCTP_CTRL_CMD_GET_VERSION_SUPPORT:
-			rc = handle_control_get_version_support(ctx,
-				sd, &addr, buf, buf_size);
-			break;
-		case MCTP_CTRL_CMD_SET_ENDPOINT_ID:
-			rc = handle_control_set_endpoint_id(ctx,
-				sd, &addr, buf, buf_size);
-			break;
-		case MCTP_CTRL_CMD_GET_ENDPOINT_ID:
-			rc = handle_control_get_endpoint_id(ctx,
-				sd, &addr, buf, buf_size);
-			break;
-		case MCTP_CTRL_CMD_GET_ENDPOINT_UUID:
-			rc = handle_control_get_endpoint_uuid(ctx,
-				sd, &addr, buf, buf_size);
-			break;
-		case MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT:
-			rc = handle_control_get_message_type_support(ctx,
-				sd, &addr, buf, buf_size);
-			break;
-		case MCTP_CTRL_CMD_RESOLVE_ENDPOINT_ID:
-			rc = handle_control_resolve_endpoint_id(ctx,
-				sd, &addr, buf, buf_size);
-			break;
-		case MCTP_CTRL_CMD_DISCOVERY_NOTIFY:
-        	rc = handle_control_discovery_notify(ctx, 
-				sd, &addr, buf, buf_size);
-        	break;
-		default:
-			if (ctx->verbose) {
-				warnx("Ignoring unsupported command code 0x%02x",
-					ctrl_msg->command_code);
-				rc = -ENOTSUP;
-			}
-			rc = handle_control_unsupported(ctx,
-				sd, &addr, buf, buf_size);
+	case MCTP_CTRL_CMD_GET_VERSION_SUPPORT:
+		rc = handle_control_get_version_support(ctx, sd, &addr, buf,
+							buf_size);
+		break;
+	case MCTP_CTRL_CMD_SET_ENDPOINT_ID:
+		rc = handle_control_set_endpoint_id(ctx, sd, &addr, buf,
+						    buf_size);
+		break;
+	case MCTP_CTRL_CMD_GET_ENDPOINT_ID:
+		rc = handle_control_get_endpoint_id(ctx, sd, &addr, buf,
+						    buf_size);
+		break;
+	case MCTP_CTRL_CMD_GET_ENDPOINT_UUID:
+		rc = handle_control_get_endpoint_uuid(ctx, sd, &addr, buf,
+						      buf_size);
+		break;
+	case MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT:
+		rc = handle_control_get_message_type_support(ctx, sd, &addr,
+							     buf, buf_size);
+		break;
+	case MCTP_CTRL_CMD_RESOLVE_ENDPOINT_ID:
+		rc = handle_control_resolve_endpoint_id(ctx, sd, &addr, buf,
+							buf_size);
+		break;
+	case MCTP_CTRL_CMD_DISCOVERY_NOTIFY:
+		rc = handle_control_discovery_notify(ctx, sd, &addr, buf,
+						     buf_size);
+		break;
+	default:
+		if (ctx->verbose) {
+			warnx("Ignoring unsupported command code 0x%02x",
+			      ctrl_msg->command_code);
+			rc = -ENOTSUP;
+		}
+		rc = handle_control_unsupported(ctx, sd, &addr, buf, buf_size);
 	}
 
 	if (ctx->verbose && rc < 0) {
@@ -1054,7 +1057,8 @@ static int cb_listen_monitor(sd_event_source *s, int sd, uint32_t revents,
 		case MCTP_NL_ADD_LINK: {
 			rc = add_interface_local(ctx, c->ifindex);
 			any_error |= (rc < 0);
-		} break;
+			break;
+		}
 
 		case MCTP_NL_DEL_LINK: {
 			// Local addresses have already been deleted with DEL_EID
@@ -1068,7 +1072,8 @@ static int cb_listen_monitor(sd_event_source *s, int sd, uint32_t revents,
 					 c->ifindex);
 			}
 			any_error |= (rc < 0);
-		} break;
+			break;
+		}
 
 		case MCTP_NL_CHANGE_NET: {
 			// Local addresses have already been deleted with DEL_EID
@@ -1079,22 +1084,41 @@ static int cb_listen_monitor(sd_event_source *s, int sd, uint32_t revents,
 			rc = change_net_interface(ctx, c->ifindex, c->old_net);
 			any_error |= (rc < 0);
 
-		} break;
+			break;
+		}
+
+		case MCTP_NL_CHANGE_NAME: {
+			if (c->link_userdata) {
+				rc = rename_interface(ctx, c->link_userdata,
+						      c->ifindex);
+			} else {
+				rc = -ENOENT;
+				bug_warn(
+					"name change for unconfigured interface %d",
+					c->ifindex);
+			}
+
+			any_error |= (rc < 0);
+			break;
+		}
 
 		case MCTP_NL_ADD_EID: {
 			uint32_t net = mctp_nl_net_byindex(ctx->nl, c->ifindex);
 			rc = add_local_eid(ctx, net, c->eid);
 			any_error |= (rc < 0);
-		} break;
+			break;
+		}
 
 		case MCTP_NL_DEL_EID: {
 			rc = del_local_eid(ctx, c->old_net, c->eid);
 			any_error |= (rc < 0);
-		} break;
+			break;
+		}
 
 		case MCTP_NL_CHANGE_UP: {
 			// 'up' state is currently unused
-		} break;
+			break;
+		}
 		}
 	}
 
@@ -1206,7 +1230,8 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		return -EINVAL;
 	}
 
-	if (rsp_size < exp_size) {
+	/* Error responses only need to include the completion code */
+	if (rsp_size < MCTP_CTRL_ERROR_RESP_LEN) {
 		warnx("%s: Wrong reply length (%zu bytes)",
 		      peer_cmd_prefix(peer, cmd), rsp_size);
 		return -ENOMSG;
@@ -1232,6 +1257,13 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		warnx("%s: Command failed, completion code 0x%02x",
 		      peer_cmd_prefix(peer, cmd), rsp->completion_code);
 		return -ECONNREFUSED;
+	}
+
+	/* Non-error responses must be full sized */
+	if (rsp_size < exp_size) {
+		warnx("%s: Wrong reply length (%zu bytes)",
+		      peer_cmd_prefix(peer, cmd), rsp_size);
+		return -ENOMSG;
 	}
 
 	return 0;
@@ -1462,7 +1494,7 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 		peer->pool_size = resp->eid_pool_size;
 		if (peer->ctx->verbose) {
 			warnx("%s requested allocation of pool size = %d",
-				dest_phys_tostr(dest), peer->pool_size);
+			      dest_phys_tostr(dest), peer->pool_size);
 		}
 	}
 
@@ -1580,6 +1612,13 @@ static int remove_peer(struct peer *peer)
 	free(peer->message_types);
 	free(peer->uuid);
 
+	while (rt) {
+		peer->routing_table_head = peer->routing_table_head->next_entry;
+		rt->next_entry = NULL;
+		free(rt);
+		rt = peer->routing_table_head;
+	}
+
 	for (idx = 0; idx < ctx->num_peers; idx++) {
 		if (ctx->peers[idx] == peer)
 			break;
@@ -1596,14 +1635,6 @@ static int remove_peer(struct peer *peer)
 	memmove(ctx->peers + idx, ctx->peers + idx + 1,
 		(ctx->num_peers - idx) * sizeof(struct peer *));
 
-	while(rt) {
-		peer->routing_table_head = peer->routing_table_head->next_entry;
-		rt->next_entry = NULL;
-		free(rt);
-		rt = peer->routing_table_head;
-	}
-		
-
 	if (ctx->num_peers > 0) {
 		tmp = realloc(ctx->peers,
 			      ctx->num_peers * sizeof(struct peer *));
@@ -1618,6 +1649,7 @@ static int remove_peer(struct peer *peer)
 		ctx->peers = NULL;
 	}
 
+	free(peer);
 
 	return 0;
 }
@@ -2222,14 +2254,14 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 	 * Allocate Endopint EID
 	 * Update pool endpoints to dbus */
 
-	if(peer->pool_size > 0) {
+	if (peer->pool_size > 0) {
 		/* new start eid will be assigned before MCTP Allocate eid control command */
 		peer->pool_start = peer->eid + 1;
 		rc = endpoint_allocate_eid(peer);
 	}
 
-	return sd_bus_reply_method_return(call, "yisb",
-		peer->eid, peer->net, peer_path, 1);
+	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
+					  peer_path, 1);
 err:
 	set_berr(ctx, rc, berr);
 	return rc;
@@ -2307,16 +2339,16 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 
 	/* MCTP Bridge Support */
 	/* Allocate Endopint EID
-	 * Update pool endpoints to dbus 
+	 * Update pool endpoints to dbus
 	 * Get Routing Table Data
 	 * Deprecate non-active eid*/
-	if(peer->pool_size > 0) {
+	if (peer->pool_size > 0) {
 		peer->pool_start = start_eid;
 		rc = endpoint_allocate_eid(peer);
 	}
 
-	return sd_bus_reply_method_return(call, "yisb",
-		peer->eid, peer->net, peer_path, 1);
+	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
+					  peer_path, 1);
 err:
 	set_berr(ctx, rc, berr);
 	return rc;
@@ -2370,19 +2402,20 @@ err:
 	return rc;
 }
 
-static int method_get_routing_table(sd_bus_message *call, void *data, sd_bus_error *berr)
+static int method_get_routing_table(sd_bus_message *call, void *data,
+				    sd_bus_error *berr)
 {
 	dest_phys desti, *dest = &desti;
-	struct peer *peer = NULL;
 	struct link *link = data;
 	struct ctx *ctx = link->ctx;
+	struct peer *peer = NULL;
 	int rc = 0, net = 0;
 	mctp_eid_t eid = 0;
 
 	dest->ifindex = link->ifindex;
 	if (dest->ifindex <= 0)
 		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-			"Unknown MCTP interface");
+					 "Unknown MCTP interface");
 
 	rc = sd_bus_message_read(call, "y", &eid);
 	if (rc < 0)
@@ -2392,14 +2425,13 @@ static int method_get_routing_table(sd_bus_message *call, void *data, sd_bus_err
 	peer = find_peer_by_addr(ctx, eid, net);
 	if (!peer) {
 		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-			"Unknown EID");
-	}
-	else {
-		if(peer->pool_size == 0 || peer->pool_start == 0) {
-			return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-				"Endpoint is not a Bridge");
-		}
-		else {
+					 "Unknown EID");
+	} else {
+		if (peer->pool_size == 0 || peer->pool_start == 0) {
+			return sd_bus_error_setf(berr,
+						 SD_BUS_ERROR_INVALID_ARGS,
+						 "Endpoint is not a Bridge");
+		} else {
 			rc = query_routing_table(peer);
 			if (rc < 0)
 				goto err;
@@ -3055,21 +3087,26 @@ static int bus_link_get_prop(sd_bus *bus, const char *path,
 			     sd_bus_error *berr)
 {
 	struct link *link = userdata;
-	char *link_name = NULL, *link_altname = NULL, *tmpstr = NULL;
+	const char *link_name = NULL, *link_altname = NULL;
 	int rc = 0;
 
-	link_altname = mctp_nl_altname_byname(link->ctx->nl, link_name);
-	if(!link_altname)
-	{
-		link_altname = ""; 
+	link_name = mctp_nl_if_byindex(link->ctx->nl, link->ifindex);
+	if (!link_name) {
+		link_name = "";
+		link_altname = "";
+	} else {
+		link_altname = mctp_nl_altname_byname(link->ctx->nl, link_name);
+		if (!link_altname) {
+			link_altname = "";
+		}
 	}
 
 	if (link->published && strcmp(property, "Role") == 0) {
 		rc = sd_bus_message_append(reply, "s",
 					   roles[link->role].dbus_val);
-	} else if (link->published  && strcmp(property, "Interface") == 0) {
+	} else if (strcmp(property, "Interface") == 0) {
 		rc = sd_bus_message_append(reply, "s", link_name);
-	} else if (link->published  && strcmp(property, "Alias") == 0) {
+	} else if (strcmp(property, "Alias") == 0) {
 		rc = sd_bus_message_append(reply, "s", link_altname);
 	} else if (strcmp(property, "NetworkId") == 0) {
 		uint32_t net =
@@ -3082,7 +3119,6 @@ static int bus_link_get_prop(sd_bus *bus, const char *path,
 	}
 
 	set_berr(link->ctx, rc, berr);
-
 	return rc;
 }
 
@@ -3252,15 +3288,15 @@ static const sd_bus_vtable bus_link_vtable[] = {
 			0,
 			SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
 	SD_BUS_PROPERTY("Interface",
-			"s",
-			bus_link_get_prop,
-			0,
-			SD_BUS_VTABLE_PROPERTY_CONST),
+		"s",
+		bus_link_get_prop,
+		0,
+	SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_PROPERTY("Alias",
-			"s",
-			bus_link_get_prop,
-			0,
-			SD_BUS_VTABLE_PROPERTY_CONST),
+		"s",
+		bus_link_get_prop,
+		0,
+		SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_VTABLE_END
 };
 
@@ -3558,6 +3594,48 @@ static int del_interface(struct link *link)
 		      link->ifindex);
 	prune_old_nets(ctx);
 	free_link(link);
+
+	return 0;
+}
+
+static int rename_interface(struct ctx *ctx, struct link *link, int ifindex)
+{
+	const char *ifname;
+	char *path;
+	int rc;
+
+	ifname = mctp_nl_if_byindex(ctx->nl, ifindex);
+	if (!ifname) {
+		warnx("no name for interface %d during rename?", ifindex);
+		return -ENODEV;
+	}
+
+	rc = asprintf(&path, "%s/%s", MCTP_DBUS_PATH_LINKS, ifname);
+	if (rc < 0)
+		return -ENOMEM;
+
+	/* remove existing dbus object */
+	emit_interface_removed(link);
+	sd_bus_slot_unref(link->slot_iface);
+	link->slot_iface = NULL;
+	sd_bus_slot_unref(link->slot_busowner);
+	link->slot_busowner = NULL;
+	free(link->path);
+
+	/* set new path and re-add */
+	link->path = path;
+	sd_bus_add_object_vtable(link->ctx->bus, &link->slot_iface, link->path,
+				 CC_MCTP_DBUS_IFACE_INTERFACE, bus_link_vtable,
+				 link);
+
+	if (link->role == ENDPOINT_ROLE_BUS_OWNER) {
+		sd_bus_add_object_vtable(link->ctx->bus, &link->slot_busowner,
+					 link->path,
+					 CC_MCTP_DBUS_IFACE_BUSOWNER,
+					 bus_link_owner_vtable, link);
+	}
+
+	emit_interface_added(link);
 
 	return 0;
 }
@@ -4094,12 +4172,20 @@ static void setup_config_defaults(struct ctx *ctx)
 	ctx->default_role = ENDPOINT_ROLE_BUS_OWNER;
 }
 
+static void free_config(struct ctx *ctx)
+{
+	free(ctx->config_filename);
+}
+
 static int endpoint_send_allocate_endpoint_id(struct peer *peer,
-	mctp_eid_t eid_start, uint8_t eid_pool_size, mctp_ctrl_cmd_alloc_eid_op oper,
-	uint8_t *allocated_pool_size, mctp_eid_t *allocated_pool_start)
+					      mctp_eid_t eid_start,
+					      uint8_t eid_pool_size,
+					      mctp_ctrl_cmd_alloc_eid_op oper,
+					      uint8_t *allocated_pool_size,
+					      mctp_eid_t *allocated_pool_start)
 {
 	struct sockaddr_mctp_ext addr;
-	struct mctp_ctrl_cmd_alloc_eid req = {0};
+	struct mctp_ctrl_cmd_alloc_eid req = { 0 };
 	struct mctp_ctrl_resp_alloc_eid *resp = NULL;
 	uint8_t *buf = NULL;
 	size_t buf_size;
@@ -4112,14 +4198,14 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 	req.alloc_eid_op = alloc_eid;
 	req.pool_size = eid_pool_size;
 	req.start_eid = eid_start;
-	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req, sizeof(req),
-							&buf, &buf_size, &addr);
+	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
+				 sizeof(req), &buf, &buf_size, &addr);
 	if (rc < 0)
 		goto out;
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
-									peer_tostr_short(peer), iid,
-									MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS);
+					 peer_tostr_short(peer), iid,
+					 MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS);
 
 	if (rc)
 		goto out;
@@ -4132,19 +4218,20 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 
 	stat = resp->status & 0x03;
 	if (stat == 0x00) {
-		if(peer->ctx->verbose) {
+		if (peer->ctx->verbose) {
 			fprintf(stderr, "%s Allocation Accepted \n", __func__);
 		}
-	}
-	else if (stat == 0x1) {
-		warnx("%s Allocation was rejected as it was Allocated by other bus \n", __func__);
+	} else if (stat == 0x1) {
+		warnx("%s Allocation was rejected as it was Allocated by other bus \n",
+		      __func__);
 	}
 
 	*allocated_pool_size = resp->eid_pool_size;
 	*allocated_pool_start = resp->eid_set;
-	if(peer->ctx->verbose) {
-		fprintf(stderr, "%s Allocated size of %d, starting from EID %d\n", __func__,
-				resp->eid_pool_size, resp->eid_set);
+	if (peer->ctx->verbose) {
+		fprintf(stderr,
+			"%s Allocated size of %d, starting from EID %d\n",
+			__func__, resp->eid_pool_size, resp->eid_set);
 	}
 
 	return 0;
@@ -4152,36 +4239,14 @@ out:
 	free(buf);
 	return rc;
 }
-
-static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void* data)
+static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void *data)
 {
 	struct peer *peer = data;
-	int net = peer->net;
-	struct peer *allocated_peer = NULL;
-	dest_phys dest = peer->phys;
 	int rc;
 
-	fprintf (stderr, "Bridge Time expired, set pool eids\n");
-	for (mctp_eid_t eid = peer->pool_start;
-		eid < peer->pool_start + peer->pool_size; eid++) {
-		rc = add_peer(peer->ctx, &dest, eid, net, &allocated_peer);
-		if (rc < 0) {
-			warnx("%s failed to find peer for allocated eid %d\n",
-					__func__, eid);
-			continue;
-		}
-
-		rc = setup_added_peer(allocated_peer);
-		if (rc < 0) {
-			warnx("%s failed to setup peer for allocated eid %d\n",
-					__func__, eid);
-			continue;
-		}
-	}
-
+	fprintf(stderr, "Bridge Time expired\n");
 	/* call to populate RoutingTable information*/
-	fprintf(stderr, "Call into GetRouting Table for EID %d\n",
-			peer->eid);
+	fprintf(stderr, "Call into GetRouting Table for EID %d\n", peer->eid);
 	rc = query_routing_table(peer);
 	if (rc < 0) {
 		warnx("Failed to get Routing Table information\n");
@@ -4190,14 +4255,16 @@ static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void* data)
 	return 0;
 }
 
-static mctp_eid_t get_pool_start (struct peer *peer, mctp_eid_t eid_start, uint8_t pool_size)
+static mctp_eid_t get_pool_start(struct peer *peer, mctp_eid_t eid_start,
+				 uint8_t pool_size)
 {
 	uint8_t count = 0;
 	mctp_eid_t pool_start = eid_alloc_max;
 	struct net *n = lookup_net(peer->ctx, peer->net);
 
 	if (!n) {
-		warnx("BUG: Unknown net %d : failed to get pool start\n", peer->net);
+		warnx("BUG: Unknown net %d : failed to get pool start\n",
+		      peer->net);
 		return eid_alloc_max;
 	}
 
@@ -4207,7 +4274,8 @@ static mctp_eid_t get_pool_start (struct peer *peer, mctp_eid_t eid_start, uint8
 				pool_start = e;
 			}
 			count++;
-			if (count == pool_size) return pool_start;
+			if (count == pool_size)
+				return pool_start;
 		} else {
 			pool_start = eid_alloc_max;
 			count = 0;
@@ -4217,26 +4285,32 @@ static mctp_eid_t get_pool_start (struct peer *peer, mctp_eid_t eid_start, uint8
 	return eid_alloc_max;
 }
 
-static int endpoint_allocate_eid(struct peer* peer)
+static int endpoint_allocate_eid(struct peer *peer)
 {
 	uint8_t allocated_pool_size = 0;
 	mctp_eid_t allocated_pool_start = 0;
 
 	/* Find pool sized contiguous unused eids to allocate on the bridge. */
-	peer->pool_start = get_pool_start(peer, peer->pool_start, peer->pool_size);
-	if(peer->pool_start == eid_alloc_max) {
-		warnx("%s failed to find contiguous EIDs of required size", __func__);
+	peer->pool_start =
+		get_pool_start(peer, peer->pool_start, peer->pool_size);
+	if (peer->pool_start == eid_alloc_max) {
+		warnx("%s failed to find contiguous EIDs of required size",
+		      __func__);
 		return 0;
 	} else {
-		if(peer->ctx->verbose)
-			fprintf(stderr, "%s Asking for contiguous EIDs for pool with start eid : %d\n", __func__, peer->pool_start);
+		if (peer->ctx->verbose)
+			fprintf(stderr,
+				"%s Asking for contiguous EIDs for pool with start eid : %d\n",
+				__func__, peer->pool_start);
 	}
 
-	int rc = endpoint_send_allocate_endpoint_id(peer, peer->pool_start, peer->pool_size,
-				alloc_eid, &allocated_pool_size, &allocated_pool_start);
+	int rc = endpoint_send_allocate_endpoint_id(peer, peer->pool_start,
+						    peer->pool_size, alloc_eid,
+						    &allocated_pool_size,
+						    &allocated_pool_start);
 	if (rc) {
 		warnx("%s failed to allocate endpoints, returned %s %d\n",
-				__func__, strerror(-rc), rc);
+		      __func__, strerror(-rc), rc);
 	} else {
 		peer->pool_size = allocated_pool_size;
 		peer->pool_start = allocated_pool_start;
@@ -4244,44 +4318,47 @@ static int endpoint_allocate_eid(struct peer* peer)
 		//delay for settling MCTP Bridge after allocation of downstream eid
 		uint64_t now_usec, timer_usec;
 		// Get the current time in microseconds
-		if (sd_event_now(peer->ctx->event, CLOCK_MONOTONIC, &now_usec) < 0) {
+		if (sd_event_now(peer->ctx->event, CLOCK_MONOTONIC, &now_usec) <
+		    0) {
 			warnx("Failed to get current time");
 			return -1;
 		}
 		timer_usec = now_usec + BRIDGE_SETTLE_DELAY_SEC * 1000000ULL;
-		rc = sd_event_add_time(peer->ctx->event, NULL,
-				CLOCK_MONOTONIC, timer_usec, 0,
-				cb_populate_pool_eids, peer);
+		rc = sd_event_add_time(peer->ctx->event, NULL, CLOCK_MONOTONIC,
+				       timer_usec, 0, cb_populate_pool_eids,
+				       peer);
 	}
 
 	return 0;
 }
 
 /* check for existing routing entry in local routing table*/
-bool check_local_routing (struct peer *peer, struct get_routing_table_entry *routing_entry)
+bool check_local_routing(struct peer *peer,
+			 struct get_routing_table_entry *routing_entry)
 {
 	routing_table_t *rt_entry = peer->routing_table_head;
-	while(rt_entry)
-	{
-		if (routing_entry->starting_eid == rt_entry->routing_entry.starting_eid) 
+	while (rt_entry) {
+		if (routing_entry->starting_eid ==
+		    rt_entry->routing_entry.starting_eid)
 			return true;
 		rt_entry = rt_entry->next_entry;
 	}
-	return false;	
+	return false;
 }
 
-static void update_local_routing (struct peer *peer, struct get_routing_table_entry *rt_entry)
+static void update_local_routing(struct peer *peer,
+				 struct get_routing_table_entry *rt_entry)
 {
 	routing_table_t *entry = malloc(sizeof(routing_table_t));
-	memcpy(&entry->routing_entry, rt_entry, sizeof(struct get_routing_table_entry));
+	memcpy(&entry->routing_entry, rt_entry,
+	       sizeof(struct get_routing_table_entry));
 	entry->next_entry = NULL;
 
-	if(peer->routing_table_head == NULL) {
+	if (peer->routing_table_head == NULL) {
 		peer->routing_table_head = entry;
 		peer->routing_table_tail = entry;
 		entry->id = 0;
-	}
-	else {
+	} else {
 		entry->id = peer->routing_table_tail->id + 1;
 		peer->routing_table_tail->next_entry = entry;
 		peer->routing_table_tail = entry;
@@ -4289,8 +4366,10 @@ static void update_local_routing (struct peer *peer, struct get_routing_table_en
 }
 
 /* Get Routing Table data and update into local routing table */
-static int endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
-	uint8_t *next_handle, bool *active_pool_eid)
+static int endpoint_send_get_routing_table(struct peer *peer,
+					   uint8_t entry_handle,
+					   uint8_t *next_handle,
+					   bool *active_pool_eid)
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_routing_table req;
@@ -4305,14 +4384,14 @@ static int endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_hand
 	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
 	req.entry_handle = entry_handle;
 
-	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req, sizeof(req),
-							&buf, &buf_size, &addr);
+	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
+				 sizeof(req), &buf, &buf_size, &addr);
 	if (rc < 0)
 		goto out;
 
-	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
-									 peer_tostr_short(peer), iid,
-									 MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES);
+	rc = mctp_ctrl_validate_response(
+		buf, buf_size, sizeof(*resp), peer_tostr_short(peer), iid,
+		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES);
 	if (rc)
 		goto out;
 
@@ -4322,25 +4401,32 @@ static int endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_hand
 		return -ENOMEM;
 	}
 
-	if(peer->ctx->verbose)
-	{
-		fprintf(stderr, "%s: returned routing entries %x, next handle %x\n",__func__, resp->number_of_entries, resp->next_entry_handle);
+	if (peer->ctx->verbose) {
+		fprintf(stderr,
+			"%s: returned routing entries %x, next handle %x\n",
+			__func__, resp->number_of_entries,
+			resp->next_entry_handle);
 	}
 
 	*next_handle = resp->next_entry_handle;
-	if(resp->number_of_entries) {
-		struct get_routing_table_entry *entry = (struct get_routing_table_entry*)resp->routing_entries;
-		for( uint8_t idx =0; idx < resp->number_of_entries; idx++) {
-			if(entry->starting_eid >= peer->pool_start) {
-				active_pool_eid[entry->starting_eid - peer->pool_start] = true;
+	if (resp->number_of_entries) {
+		struct get_routing_table_entry *entry =
+			(struct get_routing_table_entry *)resp->routing_entries;
+		for (uint8_t idx = 0; idx < resp->number_of_entries; idx++) {
+			if (entry->starting_eid >= peer->pool_start) {
+				active_pool_eid[entry->starting_eid -
+						peer->pool_start] = true;
 			}
 
 			if (check_local_routing(peer, entry))
-				warnx("%s skipping the entry %d, already exists\n", __func__, entry->starting_eid);
+				warnx("%s skipping the entry %d, already exists\n",
+				      __func__, entry->starting_eid);
 			else
 				update_local_routing(peer, entry);
 
-			entry = (struct get_routing_table_entry*)((char*)(&entry->phys_address_size) + entry->phys_address_size + 1);
+			entry = (struct get_routing_table_entry
+					 *)((char *)(&entry->phys_address_size) +
+					    entry->phys_address_size + 1);
 		}
 	}
 
@@ -4354,78 +4440,130 @@ out:
 static int query_routing_table(struct peer *peer)
 {
 	uint8_t next_handle = 0, entry_handle = 0;
+	int net = peer->net;
+	dest_phys dest = peer->phys;
 	int rc = 0;
 	//track active endpoints from Bridge perspective
 	bool *active_pool_eid = NULL;
 
 	if (peer->pool_size) {
-		active_pool_eid = (bool*)malloc(peer->pool_size);
+		active_pool_eid = (bool *)malloc(peer->pool_size);
 		if (active_pool_eid) {
-			for (uint8_t idx =0; idx < peer->pool_size; idx++) {
+			for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
 				(active_pool_eid)[idx] = false;
 			}
 		}
-	}
-	else {
-		warnx(" %s Not a Bridge peer, pool->size %d\n", __func__, peer->pool_size);	
+	} else {
+		warnx(" %s Not a Bridge peer, pool size = %d", __func__,
+		      peer->pool_size);
+		return -1;
 	}
 
-	while(next_handle != 0xFF)
-	{
-		rc = endpoint_send_get_routing_table(peer, entry_handle, &next_handle, active_pool_eid);
-		if(rc <0) {
+	while (next_handle != 0xFF) {
+		rc = endpoint_send_get_routing_table(
+			peer, entry_handle, &next_handle, active_pool_eid);
+		if (rc < 0) {
 			goto out;
 		}
 		entry_handle = next_handle;
 	}
 
-	//deprecate eids which are not active
-	if(active_pool_eid) {
-		mctp_eid_t defer_eid = 0;
-		struct peer *defer_peer = NULL;
-		char* defer_peer_path = NULL;
-		for(uint8_t index = 0; index < peer->pool_size; index++) {
-			defer_eid = index + peer->pool_start;
-			defer_peer = find_peer_by_addr(peer->ctx, defer_eid, peer->net);
-			if (!defer_peer) {
-				if(peer->ctx->verbose) {
-					fprintf(stderr, "%s unable to find defer peer %d\n", __func__, defer_eid);
-				}
-				continue;
-			}
-			if (!active_pool_eid[index]) {
-				if (defer_peer->degraded == false) {
-									defer_peer->degraded = true;
-				defer_peer_path = path_from_peer(defer_peer);
-				if (!defer_peer_path) {
-					warnx("%s: path_from_peer failed", __func__);
-					continue;
-				}
-					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
+	//Manage downstream endpoint objects based on active routing table
+	if (active_pool_eid) {
+		for (uint8_t index = 0; index < peer->pool_size; index++) {
+			mctp_eid_t eid = index + peer->pool_start;
+			struct peer *existing_peer =
+				find_peer_by_addr(peer->ctx, eid, net);
+
+			if (active_pool_eid[index]) {
+				if (!existing_peer) {
+					// EID is active but doesn't exist locally - create it
+					struct peer *allocated_peer = NULL;
+					rc = add_peer(peer->ctx, &dest, eid,
+						      net, &allocated_peer);
+					if (rc < 0) {
+						warnx("%s failed to add peer for active eid %d: %d %s",
+						      __func__, eid, rc,
+						      strerror(-rc));
+						continue;
+					}
+
+					rc = setup_added_peer(allocated_peer);
+					if (rc < 0) {
+						warnx("%s failed to setup peer for active eid %d: %d %s",
+						      __func__, eid, rc,
+						      strerror(-rc));
+						continue;
+					}
+
+					if (peer->ctx->verbose) {
+						fprintf(stderr,
+							"created new endpoint %d\n",
+							eid);
+					}
+				} else {
+					// EID is active and exists locally - send connectivity change
+					existing_peer->degraded = false;
+					//to fetch latest UUID/MessageType
+					rc = query_peer_properties(
+						existing_peer);
 					if (rc < 0)
-						warnx("%s: Connectivity change emit failed: failed: %d %s", __func__, rc, strerror(-rc));
-					free(defer_peer_path);
-					defer_peer_path = NULL;
+						warnx("%s: query_peer_properties failed: %d %s",
+						      __func__, rc,
+						      strerror(-rc));
+
+					const char *peer_path =
+						path_from_peer(existing_peer);
+					if (!peer_path) {
+						warnx("%s: no path to peer exists",
+						      __func__);
+						continue;
+					}
+					rc = sd_bus_emit_properties_changed(
+						peer->ctx->bus, peer_path,
+						CC_MCTP_DBUS_IFACE_ENDPOINT,
+						"Connectivity", NULL);
+					if (rc < 0) {
+						warnx("%s: Connectivity change emit failed: %d %s",
+						      __func__, rc,
+						      strerror(-rc));
+						continue;
+					}
+					if (peer->ctx->verbose) {
+						fprintf(stderr,
+							"keeping existing active endpoint %d\n",
+							eid);
+					}
 				}
-			}
-			else {
-				if (defer_peer->degraded == true) {
-					rc = query_peer_properties(defer_peer);
-					if (rc < 0)
-						warnx("%s: query_peer_properties failed: %d %s", __func__, rc, strerror(-rc));
-									defer_peer->degraded = false;
-				defer_peer_path = path_from_peer(defer_peer);
-				if (!defer_peer_path) {
-					warnx("%s: path_from_peer failed", __func__);
-					continue;
-				}
-					rc = sd_bus_emit_properties_changed(peer->ctx->bus, defer_peer_path,
-						CC_MCTP_DBUS_IFACE_ENDPOINT, "Connectivity", NULL);
-					if (rc < 0)
-						warnx("%s: Connectivity change emit failed: %d %s", __func__, rc, strerror(-rc));
-					free(defer_peer_path);
-					defer_peer_path = NULL;
+			} else {
+				if (existing_peer) {
+					// EID is not active but exists locally - mark degraded it
+					if (!existing_peer->degraded) {
+						existing_peer->degraded = true;
+						const char *peer_path =
+							path_from_peer(
+								existing_peer);
+						if (!peer_path) {
+							warnx("%s: no path to peer exists", __func__);
+							continue;
+						}
+						rc = sd_bus_emit_properties_changed(
+							peer->ctx->bus,
+							peer_path,
+							CC_MCTP_DBUS_IFACE_ENDPOINT,
+							"Connectivity", NULL);
+						if (rc < 0) {
+							warnx("%s: Connectivity change emit failed: %d %s",
+							      __func__, rc,
+							      strerror(-rc));
+							continue;
+						}
+						if (peer->ctx->verbose) {
+							fprintf(stderr,
+								"Marking degraded inactive endpoint %d\n",
+								eid);
+						}
+					}
 				}
 			}
 		}
@@ -4435,13 +4573,9 @@ static int query_routing_table(struct peer *peer)
 	return 0;
 out:
 	free(active_pool_eid);
-	warnx(" %s Failed to get routing table data for handle %d\n", __func__, entry_handle);
+	warnx(" %s Failed to get routing table data for handle %d\n", __func__,
+	      entry_handle);
 	return rc;
-}
-
-static void free_config(struct ctx *ctx)
-{
-	free(ctx->config_filename);
 }
 
 int main(int argc, char **argv)
@@ -4457,7 +4591,7 @@ int main(int argc, char **argv)
 	if (rc != 0) {
 		return rc;
 	}
-	ctx->verbose = true;
+
 	rc = parse_config(ctx);
 	if (rc) {
 		err(EXIT_FAILURE, "Can't read configuration");

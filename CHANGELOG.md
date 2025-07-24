@@ -13,6 +13,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 2. Netlink handling now handles interface deletion correctly; we no longer
    lose sync with the internal linkmap
 
+3. When operating as a responder, mctpd now uses the correct instance id (IID)
+   in the control protocol header
+
+4. `mctpd` now correctly handles error responses that contain only the CC,
+   as permitted by the spec
+
+5. Ensure that `mctpd` error response data is initialised
+
 ### Added
 
 1. New debug tool, `mctp-bench`, for sending and receiving a stream of MCTP
@@ -44,11 +52,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 9. In-tree tests now include coverage for the `mctp` utility
 
+10. `mctpd` now handles interface name changes, updating dbus objects to
+    reflect new interface names.
+
 ### Changed
 
 1. tests are now run with address sanitizer enabled (-fsanitize=address)
 
 2. `mctp neigh` hardware address formatting is improved.
+
+3. `mctp-bench` now reports at 2-second intervals rather than 10.
 
 ### Removed
 

@@ -15,12 +15,12 @@
 struct socket_ops {
 	int (*socket)(void);
 	int (*setsockopt)(int sd, int level, int optname, void *optval,
-			  socklen_t optlen);
+			socklen_t optlen);
 	int (*bind)(int sd, struct sockaddr *addr, socklen_t addrlen);
 	ssize_t (*sendto)(int sd, const void *buf, size_t len, int flags,
-			  const struct sockaddr *dest, socklen_t addrlen);
+			const struct sockaddr *dest, socklen_t addrlen);
 	ssize_t (*recvfrom)(int sd, void *buf, size_t len, int flags,
-			    struct sockaddr *src, socklen_t *addrlen);
+				struct sockaddr *src, socklen_t *addrlen);
 	int (*close)(int sd);
 };
 

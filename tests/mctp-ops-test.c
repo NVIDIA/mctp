@@ -59,7 +59,7 @@ static int mctp_op_socket(int type)
 
 	cmsg = CMSG_FIRSTHDR(&hdr);
 	if (!cmsg || cmsg->cmsg_len != CMSG_LEN(sizeof(int)) ||
-	    cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
+		cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
 		errx(EXIT_FAILURE, "invalid control response");
 	}
 
@@ -110,7 +110,7 @@ static int mctp_op_bind(int sd, struct sockaddr *addr, socklen_t addrlen)
 }
 
 static int mctp_op_setsockopt(int sd, int level, int optname, void *optval,
-			      socklen_t optlen)
+				socklen_t optlen)
 {
 	struct msghdr msg = { 0 };
 	struct sock_msg sock_msg = { 0 };
@@ -143,7 +143,7 @@ static int mctp_op_setsockopt(int sd, int level, int optname, void *optval,
 }
 
 static ssize_t mctp_op_sendto(int sd, const void *buf, size_t len, int flags,
-			      const struct sockaddr *dest, socklen_t addrlen)
+				const struct sockaddr *dest, socklen_t addrlen)
 {
 	struct msghdr msg = { 0 };
 	struct sock_msg sock_msg = { 0 };
@@ -199,7 +199,7 @@ static ssize_t mctp_op_recvfrom(int sd, void *buf, size_t len, int flags,
 
 	if (sock_msg.type != SOCK_RECV)
 		errx(EXIT_FAILURE, "Unexpected message type %d?",
-		     sock_msg.type);
+			sock_msg.type);
 
 	if (src)
 		memcpy(src, &sock_msg.recv.addr.buf, sock_msg.recv.addrlen);
