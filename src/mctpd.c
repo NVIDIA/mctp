@@ -3579,13 +3579,15 @@ static int del_interface(struct link *link)
 	if (ctx->verbose) {
 		fprintf(stderr, "Deleting interface #%d\n", ifindex);
 	}
-	for (size_t i = 0; i < ctx->num_peers; i++) {
+	for (size_t i = 0; i < ctx->num_peers; ) {
 		struct peer *p = ctx->peers[i];
 		if (p->state == REMOTE && p->phys.ifindex == ifindex) {
 			// Linux removes routes to deleted links, so no need to request removal.
 			p->have_neigh = false;
 			p->have_route = false;
 			remove_peer(p);
+		} else {
+			i++;
 		}
 	}
 
