@@ -159,11 +159,11 @@ static const char *rtattr_name(enum attrgroup group, unsigned int type)
 }
 
 static void dump_rtnlmsg_attrs(enum attrgroup group, struct rtattr *rta,
-				size_t len)
+			       size_t len)
 {
 	for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
 		printf("attr %s (0x%x)\n", rtattr_name(group, rta->rta_type),
-			rta->rta_type);
+		       rta->rta_type);
 		mctp_hexdump(RTA_DATA(rta), RTA_PAYLOAD(rta), "  ");
 	}
 }
@@ -209,7 +209,7 @@ static int display_ifinfo(struct ctx *ctx, void *p, size_t len)
 		return 0;
 	}
 	if (!mctp_get_rtnlmsg_attr_u32(IFLA_MCTP_NET, rt_mctp, mctp_len,
-					&net)) {
+				       &net)) {
 		warnx("No network attribute from %*s", (int)name_len, name);
 	}
 
@@ -217,7 +217,7 @@ static int display_ifinfo(struct ctx *ctx, void *p, size_t len)
 	// not sure if will be NULL terminated, handle either
 	name_len = strnlen(name, name_len);
 	printf("dev %*s index %d address ", (int)name_len, name,
-		msg->ifi_index);
+	       msg->ifi_index);
 	if (addr_len == 1) {
 		// make it clear that it is hex not decimal
 		printf("0x");
@@ -246,7 +246,7 @@ static void dump_rtnlmsg_ifinfo(struct ctx *ctx, struct ifinfomsg *msg,
 	printf("  flags:  0x%08x\n", msg->ifi_flags);
 
 	dump_rtnlmsg_attrs(RTA_GROUP_IFLA, (void *)(msg + 1),
-			len - sizeof(*msg));
+			   len - sizeof(*msg));
 }
 
 static int display_ifaddr(struct ctx *ctx, void *p, size_t len)
@@ -266,8 +266,8 @@ static int display_ifaddr(struct ctx *ctx, void *p, size_t len)
 	eid = 0;
 	mctp_get_rtnlmsg_attr_u8(IFA_LOCAL, rta, rta_len, &eid);
 	printf("eid %d net %u dev %s\n", eid,
-		mctp_nl_net_byindex(ctx->nl, msg->ifa_index),
-		mctp_nl_if_byindex(ctx->nl, msg->ifa_index));
+	       mctp_nl_net_byindex(ctx->nl, msg->ifa_index),
+	       mctp_nl_if_byindex(ctx->nl, msg->ifa_index));
 
 	return 0;
 }
@@ -289,7 +289,7 @@ static void dump_rtnlmsg_ifaddr(struct ctx *ctx, struct ifaddrmsg *msg,
 	printf("  index:  %d\n", msg->ifa_index);
 
 	dump_rtnlmsg_attrs(RTA_GROUP_IFA, (void *)(msg + 1),
-			len - sizeof(*msg));
+			   len - sizeof(*msg));
 }
 
 static int display_neighbour(struct ctx *ctx, void *p, size_t len)
@@ -312,8 +312,8 @@ static int display_neighbour(struct ctx *ctx, void *p, size_t len)
 	mctp_get_rtnlmsg_attr_u8(NDA_DST, rta, rta_len, &eid);
 	lladdr = mctp_get_rtnlmsg_attr(NDA_LLADDR, rta, rta_len, &lladdr_len);
 	printf("eid %d net %u dev %s lladdr ", eid,
-		mctp_nl_net_byindex(ctx->nl, msg->ndm_ifindex),
-		mctp_nl_if_byindex(ctx->nl, msg->ndm_ifindex));
+	       mctp_nl_net_byindex(ctx->nl, msg->ndm_ifindex),
+	       mctp_nl_if_byindex(ctx->nl, msg->ndm_ifindex));
 	if (lladdr_len == 1) {
 		printf("0x");
 	}
@@ -326,7 +326,7 @@ static int display_neighbour(struct ctx *ctx, void *p, size_t len)
 }
 
 static void dump_rtnlmsg_neighbour(struct ctx *ctx, struct ndmsg *msg,
-				size_t len)
+				   size_t len)
 {
 	if (len < sizeof(*msg)) {
 		printf("not enough data for a ndmsg\n");
@@ -342,7 +342,7 @@ static void dump_rtnlmsg_neighbour(struct ctx *ctx, struct ndmsg *msg,
 	printf("  type:    %d\n", msg->ndm_type);
 
 	dump_rtnlmsg_attrs(RTA_GROUP_NDA, (void *)(msg + 1),
-			len - sizeof(*msg));
+			   len - sizeof(*msg));
 }
 
 static int display_route(struct ctx *ctx, void *p, size_t len)
@@ -375,17 +375,17 @@ static int display_route(struct ctx *ctx, void *p, size_t len)
 
 	if (has_gw) {
 		printf("eid min %d max %d net %d gw %d mtu %d\n", dst,
-			dst + msg->rtm_dst_len, gw.net, gw.eid, mtu);
+		       dst + msg->rtm_dst_len, gw.net, gw.eid, mtu);
 
 	} else if (has_if) {
 		uint32_t net = mctp_nl_net_byindex(ctx->nl, ifindex);
 
 		printf("eid min %d max %d net %d dev %s mtu %d\n", dst,
-			dst + msg->rtm_dst_len, net,
-			mctp_nl_if_byindex(ctx->nl, ifindex), mtu);
+		       dst + msg->rtm_dst_len, net,
+		       mctp_nl_if_byindex(ctx->nl, ifindex), mtu);
 	} else {
 		printf("eid min %d max %d <invalid dst!> mtu %d\n", dst,
-			dst + msg->rtm_dst_len, mtu);
+		       dst + msg->rtm_dst_len, mtu);
 	}
 
 	return 0;
@@ -470,7 +470,7 @@ static void dump_rtnlmsgs(struct ctx *ctx, struct nlmsghdr *msg, size_t len)
 
 // Calls pretty printing display_ function for wanted message type
 void display_rtnlmsgs(struct ctx *ctx, struct nlmsghdr *msg, size_t len,
-			int want_type, display_fn_t display_fn)
+		      int want_type, display_fn_t display_fn)
 
 {
 	if (ctx->verbose) {
@@ -489,8 +489,8 @@ void display_rtnlmsgs(struct ctx *ctx, struct nlmsghdr *msg, size_t len,
 				break;
 			case NLMSG_ERROR:
 				mctp_display_nlmsg_error(ctx->nl,
-							NLMSG_DATA(msg),
-							NLMSG_PAYLOAD(msg, 0));
+							 NLMSG_DATA(msg),
+							 NLMSG_PAYLOAD(msg, 0));
 				break;
 			default:
 				printf("unknown nlmsg type\n");
@@ -545,7 +545,7 @@ static int cmd_link_show(struct ctx *ctx, int argc, const char **argv)
 }
 
 static int do_link_set(struct ctx *ctx, int ifindex, bool have_updown, bool up,
-			uint32_t mtu, bool have_net, uint32_t net)
+		       uint32_t mtu, bool have_net, uint32_t net)
 {
 	struct {
 		struct nlmsghdr nh;
@@ -595,8 +595,8 @@ static int do_link_set(struct ctx *ctx, int ifindex, bool have_updown, bool up,
 		rta1 = (void *)buff1;
 		rta_len1 = sizeof(buff1);
 		space1 = mctp_put_rtnlmsg_attr(&rta1, &rta_len1,
-						AF_MCTP | NLA_F_NESTED, buff2,
-						space2);
+					       AF_MCTP | NLA_F_NESTED, buff2,
+					       space2);
 		msg.nh.nlmsg_len += mctp_put_rtnlmsg_attr(
 			&rta, &rta_len, IFLA_AF_SPEC | NLA_F_NESTED, buff1,
 			space1);
@@ -776,7 +776,7 @@ static int cmd_addr_show(struct ctx *ctx, int argc, const char **argv)
 // cmdname is for error messages.
 // rtm_command is RTM_NEWADDR or RTM_DELADDR
 static int cmd_addr_addremove(struct ctx *ctx, const char *cmdname,
-				int rtm_command, int argc, const char **argv)
+			      int rtm_command, int argc, const char **argv)
 {
 	const char *eidstr, *linkstr;
 	mctp_eid_t eid;
@@ -883,7 +883,7 @@ static int cmd_route_show(struct ctx *ctx, int argc, const char **argv)
 * If a single EID is given, *extent will be zero. Returns -1 on failure.
 */
 static int parse_eid_range(const char *str, mctp_eid_t *eid,
-			unsigned int *extent)
+			   unsigned int *extent)
 {
 	char tmp[10]; /* sufficient length to handle "100-101" */
 	mctp_eid_t min, max;
@@ -927,9 +927,9 @@ static int parse_eid_range(const char *str, mctp_eid_t *eid,
 }
 
 static int parse_route_args(struct ctx *ctx, int argc, const char **argv,
-				mctp_eid_t *eidp, unsigned int *extentp,
-				int *ifindexp, struct mctp_fq_addr *gwp,
-				unsigned int *mtup)
+			    mctp_eid_t *eidp, unsigned int *extentp,
+			    int *ifindexp, struct mctp_fq_addr *gwp,
+			    unsigned int *mtup)
 {
 	const char *eidstr, *linkstr = NULL;
 	struct mctp_fq_addr gw = { 0 };
@@ -1022,7 +1022,7 @@ static int cmd_route_add(struct ctx *ctx, int argc, const char **argv)
 	mctp_eid_t eid;
 
 	rc = parse_route_args(ctx, argc - 1, argv + 1, &eid, &extent, &ifindex,
-				&gw, &mtu);
+			      &gw, &mtu);
 	if (rc) {
 		warnx("add: invalid command line arguments");
 		return -1;
@@ -1040,7 +1040,7 @@ static int cmd_route_del(struct ctx *ctx, int argc, const char **argv)
 	int rc;
 
 	rc = parse_route_args(ctx, argc - 1, argv + 1, &eid, &extent, &ifindex,
-				&gw, &mtu);
+			      &gw, &mtu);
 	if (rc) {
 		warnx("del: invalid command line arguments");
 		return -1;
@@ -1172,7 +1172,7 @@ static int fill_neighalter_args(struct ctx *ctx,
 	rta = (void *)msg->rta_buff;
 
 	msg->nh.nlmsg_len += mctp_put_rtnlmsg_attr(&rta, &rta_len, NDA_DST,
-						&eid, sizeof(eid));
+						   &eid, sizeof(eid));
 
 	if (prta)
 		*prta = rta;
@@ -1224,7 +1224,7 @@ static int cmd_neigh_add(struct ctx *ctx, int argc, const char **argv)
 
 	msg.nh.nlmsg_type = RTM_NEWNEIGH;
 	msg.nh.nlmsg_len += mctp_put_rtnlmsg_attr(&rta, &rta_len, NDA_LLADDR,
-						llbuf, llbuf_len);
+						  llbuf, llbuf_len);
 	return mctp_nl_send(ctx->nl, &msg.nh);
 }
 

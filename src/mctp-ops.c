@@ -30,13 +30,13 @@ static int mctp_op_bind(int sd, struct sockaddr *addr, socklen_t addrlen)
 }
 
 static int mctp_op_setsockopt(int sd, int level, int optname, void *optval,
-				socklen_t optlen)
+			      socklen_t optlen)
 {
 	return setsockopt(sd, level, optname, optval, optlen);
 }
 
 static ssize_t mctp_op_sendto(int sd, const void *buf, size_t len, int flags,
-				const struct sockaddr *dest, socklen_t addrlen)
+			      const struct sockaddr *dest, socklen_t addrlen)
 {
 	return sendto(sd, buf, len, flags, dest, addrlen);
 }

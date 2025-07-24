@@ -111,15 +111,15 @@ static int do_send_recv(unsigned int net, mctp_eid_t eid, uint8_t type,
 	addr.smctp_addr.s_addr = eid;
 
 	rc = sendto(sd, data->data, data->len, 0, (struct sockaddr *)&addr,
-			sizeof(addr));
+		    sizeof(addr));
 	if (rc < 0)
 		err(EXIT_FAILURE, "sendto(%zd) failed", data->len);
 	if (rc != (ssize_t)data->len)
 		err(EXIT_FAILURE, "sendto(%zd) partial send (%zd)", data->len,
-			rc);
+		    rc);
 
 	recvlen = recvfrom(sd, NULL, 0, MSG_TRUNC | MSG_PEEK,
-			(struct sockaddr *)&addr, &addrlen);
+			   (struct sockaddr *)&addr, &addrlen);
 	if (recvlen < 0)
 		err(EXIT_FAILURE, "receive failed %zd", recvlen);
 
@@ -128,14 +128,14 @@ static int do_send_recv(unsigned int net, mctp_eid_t eid, uint8_t type,
 		errx(EXIT_FAILURE, "malloc failed for recv");
 
 	rc = recvfrom(sd, recv_buffer, recvlen, MSG_TRUNC,
-			(struct sockaddr *)&addr, &addrlen);
+		      (struct sockaddr *)&addr, &addrlen);
 
 	if (rc < 0)
 		err(EXIT_FAILURE, "receive failed %zd", recvlen);
 
 	if (recvlen != rc)
 		errx(EXIT_FAILURE, "invalid bytes received: %zd, expected %zd",
-			rc, recvlen);
+		     rc, recvlen);
 
 	for (ctr = 0; ctr < rc; ++ctr) {
 		printf("%02X", recv_buffer[ctr]);
@@ -158,7 +158,7 @@ static void print_usage()
 	printf("possible types:\n");
 	for (ctr = 0; ctr < ARRAY_SIZE(type_lookup); ++ctr) {
 		printf("\t%s: %s\n", type_lookup[ctr].name,
-			type_lookup[ctr].description);
+		       type_lookup[ctr].description);
 	}
 	printf("return data is always output as space delimited hexadecimal\n");
 }
@@ -185,10 +185,10 @@ static struct data_t create_data(char **data_start, size_t count)
 			errx(EXIT_FAILURE, "data must be the last parameter");
 		if (tmp == ULONG_MAX)
 			errx(EXIT_FAILURE, "failed to parse: %s",
-				data_start[ctr]);
+			     data_start[ctr]);
 		if (tmp > 0xff)
 			errx(EXIT_FAILURE, "data parsed is invalid: %s",
-				data_start[ctr]);
+			     data_start[ctr]);
 		data.data[ctr] = tmp;
 	}
 

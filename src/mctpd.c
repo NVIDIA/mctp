@@ -3288,15 +3288,15 @@ static const sd_bus_vtable bus_link_vtable[] = {
 			0,
 			SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
 	SD_BUS_PROPERTY("Interface",
-		"s",
-		bus_link_get_prop,
-		0,
-	SD_BUS_VTABLE_PROPERTY_CONST),
+			"s",
+			bus_link_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_PROPERTY("Alias",
-		"s",
-		bus_link_get_prop,
-		0,
-		SD_BUS_VTABLE_PROPERTY_CONST),
+			"s",
+			bus_link_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_VTABLE_END
 };
 
@@ -4544,7 +4544,8 @@ static int query_routing_table(struct peer *peer)
 							path_from_peer(
 								existing_peer);
 						if (!peer_path) {
-							warnx("%s: no path to peer exists", __func__);
+							warnx("%s: no path to peer exists",
+							      __func__);
 							continue;
 						}
 						rc = sd_bus_emit_properties_changed(
