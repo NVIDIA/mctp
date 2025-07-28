@@ -49,6 +49,7 @@
 #define MCTP_DBUS_NAME "au.com.codeconstruct.MCTP1"
 #define MCTP_DBUS_IFACE_ENDPOINT "xyz.openbmc_project.MCTP.Endpoint"
 #define OPENBMC_IFACE_COMMON_UUID "xyz.openbmc_project.Common.UUID"
+#define MCTP_DBUS_IFACE_BINDING "xyz.openbmc_project.MCTP.Binding"
 #define CC_MCTP_DBUS_IFACE_INTERFACE "au.com.codeconstruct.MCTP.Interface1"
 #define CC_MCTP_DBUS_NETWORK_INTERFACE "au.com.codeconstruct.MCTP.Network1"
 
@@ -164,6 +165,7 @@ struct peer {
 	sd_bus_slot *slot_obmc_endpoint;
 	sd_bus_slot *slot_cc_endpoint;
 	sd_bus_slot *slot_uuid;
+	sd_bus_slot *slot_binding_endpoint;
 	char *path;
 
 	bool have_neigh;
@@ -267,6 +269,7 @@ static int query_routing_table(struct peer *peer);
 static const sd_bus_vtable bus_endpoint_obmc_vtable[];
 static const sd_bus_vtable bus_endpoint_cc_vtable[];
 static const sd_bus_vtable bus_endpoint_uuid_vtable[];
+static const sd_bus_vtable bus_endpoint_binding_vtable[];
 
 __attribute__((format(printf, 1, 2))) static void bug_warn(const char *fmt, ...)
 {
@@ -1664,6 +1667,7 @@ static void free_peers(struct ctx *ctx)
 		sd_bus_slot_unref(peer->slot_obmc_endpoint);
 		sd_bus_slot_unref(peer->slot_cc_endpoint);
 		sd_bus_slot_unref(peer->slot_uuid);
+		sd_bus_slot_unref(peer->slot_binding_endpoint);
 		free(peer);
 	}
 
@@ -2625,6 +2629,10 @@ static int publish_peer(struct peer *peer, bool add_route)
 					 bus_endpoint_uuid_vtable, peer);
 	}
 
+	sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_binding_endpoint,
+				 peer->path, MCTP_DBUS_IFACE_BINDING,
+				 bus_endpoint_binding_vtable, peer);
+
 	rc = emit_endpoint_added(peer);
 	if (rc > 0)
 		rc = 0;
@@ -2671,6 +2679,8 @@ static int unpublish_peer(struct peer *peer)
 		peer->slot_cc_endpoint = NULL;
 		sd_bus_slot_unref(peer->slot_uuid);
 		peer->slot_uuid = NULL;
+		sd_bus_slot_unref(peer->slot_binding_endpoint);
+		peer->slot_binding_endpoint = NULL;
 		peer->published = false;
 		free(peer->path);
 	}
@@ -2968,6 +2978,96 @@ err:
 	return rc;
 }
 
+/* Helper function to determine binding type from interface name */
+static const char *get_binding_from_ifname(const char *ifname)
+{
+	if (!ifname)
+		return "Unknown";
+	if (strstr(ifname, "mctpi2c"))
+		return "SMBus";
+	if (strstr(ifname, "mctpusb"))
+		return "USB";
+	if (strstr(ifname, "mctpspi"))
+		return "SPI";
+	return "Unknown";
+}
+
+/* Helper function to get binding type for a peer */
+static const char *get_peer_binding_type(const struct peer *peer)
+{
+	const char *binding_name = "Unknown";
+
+	/* Check interface name first */
+	if (peer->state == REMOTE && peer->phys.ifindex > 0) {
+		const char *ifname =
+			mctp_nl_if_byindex(peer->ctx->nl, peer->phys.ifindex);
+		binding_name = get_binding_from_ifname(ifname);
+	} else if (peer->state == LOCAL) {
+		size_t num_ifs;
+		int *ifs = mctp_nl_if_list(peer->ctx->nl, &num_ifs);
+		if (ifs) {
+			for (size_t i = 0; i < num_ifs; i++) {
+				if (local_addr(peer->ctx, ifs[i]) ==
+				    peer->eid) {
+					const char *ifname = mctp_nl_if_byindex(
+						peer->ctx->nl, ifs[i]);
+					binding_name =
+						get_binding_from_ifname(ifname);
+					break;
+				}
+			}
+			free(ifs);
+		}
+	}
+
+	return binding_name;
+}
+
+static int bus_endpoint_get_prop(sd_bus *bus, const char *path,
+				 const char *interface, const char *property,
+				 sd_bus_message *reply, void *userdata,
+				 sd_bus_error *berr)
+{
+	struct peer *peer = userdata;
+	int rc;
+
+	if (strcmp(property, "NetworkId") == 0) {
+		rc = sd_bus_message_append(reply, "u", peer->net);
+	} else if (strcmp(property, "EID") == 0) {
+		rc = sd_bus_message_append(reply, "y", peer->eid);
+	} else if (strcmp(property, "SupportedMessageTypes") == 0) {
+		rc = sd_bus_message_append_array(reply, 'y',
+						 peer->message_types,
+						 peer->num_message_types);
+	} else if (strcmp(property, "UUID") == 0 && peer->uuid) {
+		const char *s = dfree(bytes_to_uuid(peer->uuid));
+		rc = sd_bus_message_append(reply, "s", s);
+	} else if (strcmp(property, "Connectivity") == 0) {
+		rc = sd_bus_message_append(
+			reply, "s", peer->degraded ? "Degraded" : "Available");
+	} else if (strcmp(property, "MediumType") == 0) {
+		char medium_type_str[128];
+		const char *medium_type = get_peer_binding_type(peer);
+		snprintf(medium_type_str, sizeof(medium_type_str),
+			 "xyz.openbmc_project.MCTP.Endpoint.MediaTypes.%s",
+			 medium_type);
+		rc = sd_bus_message_append(reply, "s", medium_type_str);
+	} else if (strcmp(property, "BindingType") == 0) {
+		char binding_type_str[128];
+		const char *binding_name = get_peer_binding_type(peer);
+		snprintf(binding_type_str, sizeof(binding_type_str),
+			 "xyz.openbmc_project.MCTP.Binding.BindingTypes.%s",
+			 binding_name);
+		rc = sd_bus_message_append(reply, "s", binding_type_str);
+	} else {
+		warnx("Unknown property '%s' for %s iface %s", property, path,
+		      interface);
+		rc = -ENOENT;
+	}
+
+	return rc;
+}
+
 // clang-format off
 static const sd_bus_vtable bus_link_owner_vtable[] = {
 	SD_BUS_VTABLE_START(0),
@@ -3023,41 +3123,9 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 		SD_BUS_NO_RESULT,
 		method_get_routing_table,
 		0),
-
 	SD_BUS_VTABLE_END,
 };
 // clang-format on
-
-static int bus_endpoint_get_prop(sd_bus *bus, const char *path,
-				 const char *interface, const char *property,
-				 sd_bus_message *reply, void *userdata,
-				 sd_bus_error *berr)
-{
-	struct peer *peer = userdata;
-	int rc;
-
-	if (strcmp(property, "NetworkId") == 0) {
-		rc = sd_bus_message_append(reply, "u", peer->net);
-	} else if (strcmp(property, "EID") == 0) {
-		rc = sd_bus_message_append(reply, "y", peer->eid);
-	} else if (strcmp(property, "SupportedMessageTypes") == 0) {
-		rc = sd_bus_message_append_array(reply, 'y',
-						 peer->message_types,
-						 peer->num_message_types);
-	} else if (strcmp(property, "UUID") == 0 && peer->uuid) {
-		const char *s = dfree(bytes_to_uuid(peer->uuid));
-		rc = sd_bus_message_append(reply, "s", s);
-	} else if (strcmp(property, "Connectivity") == 0) {
-		rc = sd_bus_message_append(
-			reply, "s", peer->degraded ? "Degraded" : "Available");
-	} else {
-		warnx("Unknown property '%s' for %s iface %s", property, path,
-		      interface);
-		rc = -ENOENT;
-	}
-
-	return rc;
-}
 
 static int bus_network_get_prop(sd_bus *bus, const char *path,
 				const char *interface, const char *property,
@@ -3227,12 +3295,27 @@ static const sd_bus_vtable bus_endpoint_obmc_vtable[] = {
 			bus_endpoint_get_prop,
 			0,
 			SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_PROPERTY("MediumType",
+			"s",
+			bus_endpoint_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_VTABLE_END
 };
 
 static const sd_bus_vtable bus_endpoint_uuid_vtable[] = {
 	SD_BUS_VTABLE_START(0),
 	SD_BUS_PROPERTY("UUID",
+			"s",
+			bus_endpoint_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_VTABLE_END
+};
+
+static const sd_bus_vtable bus_endpoint_binding_vtable[] = {
+	SD_BUS_VTABLE_START(0),
+	SD_BUS_PROPERTY("BindingType",
 			"s",
 			bus_endpoint_get_prop,
 			0,
