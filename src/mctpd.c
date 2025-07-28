@@ -4415,6 +4415,10 @@ static int endpoint_send_get_routing_table(struct peer *peer,
 		struct get_routing_table_entry *entry =
 			(struct get_routing_table_entry *)resp->routing_entries;
 		for (uint8_t idx = 0; idx < resp->number_of_entries; idx++) {
+			if (entry->starting_eid == peer->eid) {
+				// Skip bridge's own eid
+				continue;
+			}
 			if (entry->starting_eid >= peer->pool_start) {
 				active_pool_eid[entry->starting_eid -
 						peer->pool_start] = true;
