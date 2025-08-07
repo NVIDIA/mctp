@@ -4685,7 +4685,8 @@ static int query_routing_table(struct peer *peer)
 					}
 				}
 			} else {
-				if (existing_peer) {
+				if (existing_peer &&
+				    false == should_ignore_eid(peer, eid)) {
 					// EID is not active but exists locally - mark degraded it
 					if (!existing_peer->degraded) {
 						existing_peer->degraded = true;
