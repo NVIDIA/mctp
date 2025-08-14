@@ -52,8 +52,17 @@
 #define MCTP_DBUS_IFACE_BINDING "xyz.openbmc_project.MCTP.Binding"
 #define CC_MCTP_DBUS_IFACE_INTERFACE "au.com.codeconstruct.MCTP.Interface1"
 #define CC_MCTP_DBUS_NETWORK_INTERFACE "au.com.codeconstruct.MCTP.Network1"
+#define OPENBMC_SERVICE_READINESS_IFACE "xyz.openbmc_project.State.ServiceReady"
 
 #define BRIDGE_SETTLE_DELAY_SEC 4
+
+// Service readiness state constants
+#define SERVICE_STATE_STARTING_STR \
+	"xyz.openbmc_project.State.ServiceReady.States.Starting"
+#define SERVICE_STATE_ENABLED_STR \
+	"xyz.openbmc_project.State.ServiceReady.States.Enabled"
+#define SERVICE_TYPE_MCTP_STR \
+	"xyz.openbmc_project.State.ServiceReady.ServiceTypes.MCTP"
 // an arbitrary constant for use with sd_id128_get_machine_app_specific()
 static const char *mctpd_appid = "67369c05-4b97-4b7e-be72-65cfd8639f10";
 
@@ -132,8 +141,15 @@ struct link {
 	char *path;
 	sd_bus_slot *slot_iface;
 	sd_bus_slot *slot_busowner;
+	sd_bus_slot *slot_service_readiness;
 
 	struct ctx *ctx;
+
+	// Service readiness state
+	enum {
+		SERVICE_STATE_STARTING,
+		SERVICE_STATE_ENABLED,
+	} service_state;
 };
 struct routing_table_t {
 	int id;
@@ -1829,6 +1845,23 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 	rc = setup_added_peer(peer);
 	if (rc < 0)
 		return rc;
+
+	// Set service state to Enabled for non-bridge endpoints after discovery completion
+	if (peer->pool_size == 0) {
+		struct link *link =
+			mctp_nl_get_link_userdata(ctx->nl, dest->ifindex);
+		if (link && link->service_state == SERVICE_STATE_STARTING) {
+			link->service_state = SERVICE_STATE_ENABLED;
+			rc = sd_bus_emit_properties_changed(
+				ctx->bus, link->path,
+				OPENBMC_SERVICE_READINESS_IFACE, "State", NULL);
+			if (rc < 0) {
+				warnx("%s: Service state change emit failed: %d %s",
+				      __func__, rc, strerror(-rc));
+			}
+		}
+	}
+
 	*ret_peer = peer;
 
 	return 0;
@@ -3022,13 +3055,14 @@ err:
 /* Helper function to determine binding type from interface name */
 static const char *get_binding_from_ifname(const char *ifname)
 {
+	// TODO: Get this from the IFLA attribute instead of the interface name
 	if (!ifname)
 		return "Unknown";
-	if (strstr(ifname, "mctpi2c"))
+	if (strstr(ifname, "i2c"))
 		return "SMBus";
-	if (strstr(ifname, "mctpusb"))
+	if (strstr(ifname, "usb"))
 		return "USB";
-	if (strstr(ifname, "mctpspi"))
+	if (strstr(ifname, "spi"))
 		return "SPI";
 	return "Unknown";
 }
@@ -3232,6 +3266,33 @@ static int bus_link_get_prop(sd_bus *bus, const char *path,
 	return rc;
 }
 
+static int bus_service_readiness_get_prop(sd_bus *bus, const char *path,
+					  const char *interface,
+					  const char *property,
+					  sd_bus_message *reply, void *userdata,
+					  sd_bus_error *berr)
+{
+	struct link *link = userdata;
+	int rc = 0;
+
+	if (strcmp(property, "ServiceType") == 0) {
+		rc = sd_bus_message_append(reply, "s", SERVICE_TYPE_MCTP_STR);
+	} else if (strcmp(property, "State") == 0) {
+		const char *state_str =
+			(link->service_state == SERVICE_STATE_ENABLED) ?
+				SERVICE_STATE_ENABLED_STR :
+				SERVICE_STATE_STARTING_STR;
+		rc = sd_bus_message_append(reply, "s", state_str);
+	} else {
+		sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
+				  "Unknown property.");
+		rc = -ENOENT;
+	}
+
+	set_berr(link->ctx, rc, berr);
+	return rc;
+}
+
 static int bus_link_set_prop(sd_bus *bus, const char *path,
 			     const char *interface, const char *property,
 			     sd_bus_message *value, void *userdata,
@@ -3396,6 +3457,21 @@ static const sd_bus_vtable bus_endpoint_cc_vtable[] = {
 		0,
 		SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
 #endif
+	SD_BUS_VTABLE_END
+};
+
+static const sd_bus_vtable bus_service_readiness_vtable[] = {
+	SD_BUS_VTABLE_START(0),
+	SD_BUS_PROPERTY("ServiceType",
+			"s",
+			bus_service_readiness_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_PROPERTY("State",
+			"s",
+			bus_service_readiness_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
 	SD_BUS_VTABLE_END
 };
 
@@ -3690,6 +3766,7 @@ static void free_link(struct link *link)
 {
 	sd_bus_slot_unref(link->slot_iface);
 	sd_bus_slot_unref(link->slot_busowner);
+	sd_bus_slot_unref(link->slot_service_readiness);
 	free(link->path);
 	free(link);
 }
@@ -3747,6 +3824,8 @@ static int rename_interface(struct ctx *ctx, struct link *link, int ifindex)
 	link->slot_iface = NULL;
 	sd_bus_slot_unref(link->slot_busowner);
 	link->slot_busowner = NULL;
+	sd_bus_slot_unref(link->slot_service_readiness);
+	link->slot_service_readiness = NULL;
 	free(link->path);
 
 	/* set new path and re-add */
@@ -3754,6 +3833,11 @@ static int rename_interface(struct ctx *ctx, struct link *link, int ifindex)
 	sd_bus_add_object_vtable(link->ctx->bus, &link->slot_iface, link->path,
 				 CC_MCTP_DBUS_IFACE_INTERFACE, bus_link_vtable,
 				 link);
+
+	// Add the service readiness interface
+	sd_bus_add_object_vtable(link->ctx->bus, &link->slot_service_readiness,
+				 link->path, OPENBMC_SERVICE_READINESS_IFACE,
+				 bus_service_readiness_vtable, link);
 
 	if (link->role == ENDPOINT_ROLE_BUS_OWNER) {
 		sd_bus_add_object_vtable(link->ctx->bus, &link->slot_busowner,
@@ -4047,11 +4131,18 @@ static int add_interface(struct ctx *ctx, int ifindex)
 	if (!link)
 		return -ENOMEM;
 
+	// Initialize slots to NULL
+	link->slot_iface = NULL;
+	link->slot_busowner = NULL;
+	link->slot_service_readiness = NULL;
+
 	link->published = false;
 	link->ifindex = ifindex;
 	link->ctx = ctx;
 	/* Use the `mode` setting in conf/mctp.conf */
 	link->role = ctx->default_role;
+	/* Initialize service state to Starting */
+	link->service_state = SERVICE_STATE_STARTING;
 	rc = asprintf(&link->path, "%s/%s", MCTP_DBUS_PATH_LINKS, ifname);
 	if (rc < 0) {
 		rc = -ENOMEM;
@@ -4067,6 +4158,11 @@ static int add_interface(struct ctx *ctx, int ifindex)
 	sd_bus_add_object_vtable(link->ctx->bus, &link->slot_iface, link->path,
 				 CC_MCTP_DBUS_IFACE_INTERFACE, bus_link_vtable,
 				 link);
+
+	// Add the service readiness interface
+	sd_bus_add_object_vtable(link->ctx->bus, &link->slot_service_readiness,
+				 link->path, OPENBMC_SERVICE_READINESS_IFACE,
+				 bus_service_readiness_vtable, link);
 
 	if (link->role == ENDPOINT_ROLE_BUS_OWNER) {
 		sd_bus_add_object_vtable(link->ctx->bus, &link->slot_busowner,
@@ -4594,6 +4690,8 @@ static int query_routing_table(struct peer *peer)
 	int rc = 0;
 	//track active endpoints from Bridge perspective
 	bool *active_pool_eid = NULL;
+	struct link *link =
+		mctp_nl_get_link_userdata(peer->ctx->nl, peer->phys.ifindex);
 
 	if (peer->pool_size) {
 		active_pool_eid = (bool *)malloc(peer->pool_size);
@@ -4721,6 +4819,19 @@ static int query_routing_table(struct peer *peer)
 	}
 
 	free(active_pool_eid);
+
+	// Set service state to Enabled for bridge endpoints after routing table processing
+	if (link && link->service_state == SERVICE_STATE_STARTING) {
+		link->service_state = SERVICE_STATE_ENABLED;
+		rc = sd_bus_emit_properties_changed(
+			peer->ctx->bus, link->path,
+			OPENBMC_SERVICE_READINESS_IFACE, "State", NULL);
+		if (rc < 0) {
+			warnx("%s: Service state change emit failed: %d %s",
+			      __func__, rc, strerror(-rc));
+		}
+	}
+
 	return 0;
 out:
 	free(active_pool_eid);
