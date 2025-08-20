@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## Fixed
+
+1. mctpd: fixed an issue where endpoints may persist when their dependent
+   interface is deleted
+
+2. Header compatibility fixes for environments without a recent linux/mctp.h
+
+## Added
+
+1. `mctp-bench` now supports a "request receive" mode, where
+   `mctp-bench recv eid <...>` sends a command to start the benchmark session.
+
+2. `mctpd` now supports a bus-owner configuration section
+
+3. Added documentation for `mctpd.conf` settings
+
+4. `mctpd`'s dynamic EID range is now configurable
+
+5. When in endpoint mode, `mctpd` now handles to Set Endpoint ID messages,
+   assigning an EID to local interfaces.
+
+## [2.2] - 2025-07-28
+
 ### Fixed
 
 1. Fixed an issue where peer pointers are kept over a potential realloc()

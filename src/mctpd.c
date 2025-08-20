@@ -59,16 +59,11 @@ static const char *mctpd_appid = "67369c05-4b97-4b7e-be72-65cfd8639f10";
 
 static const char *conf_file_default = MCTPD_CONF_FILE_DEFAULT;
 
-static mctp_eid_t eid_alloc_min = 0x08;
-static mctp_eid_t eid_alloc_max = 0xfe;
+static const mctp_eid_t eid_alloc_min = 0x08;
+static const mctp_eid_t eid_alloc_max = 0xfe;
 
 // arbitrary sanity
 static size_t MAX_PEER_SIZE = 1000000;
-
-static const uint8_t RQDI_REQ = 1 << 7;
-static const uint8_t RQDI_RESP = 0x0;
-static const uint8_t IID_MASK = 0x1f;
-static const uint8_t RQDI_IID_MASK = 0x1f;
 
 struct dest_phys {
 	int ifindex;
@@ -229,6 +224,10 @@ struct ctx {
 	struct net **nets;
 	size_t num_nets;
 
+	// the range we allocate any dynamic EIDs from
+	mctp_eid_t dyn_eid_min;
+	mctp_eid_t dyn_eid_max;
+
 	// Timeout in usecs for a MCTP response
 	uint64_t mctp_timeout;
 
@@ -239,6 +238,9 @@ struct ctx {
 
 	// Verbose logging
 	bool verbose;
+
+	//  maximum pool size for assumed MCTP Bridge
+	uint8_t max_pool_size;
 };
 
 static int emit_endpoint_added(const struct peer *peer);
@@ -247,10 +249,16 @@ static int emit_interface_added(struct link *link);
 static int emit_interface_removed(struct link *link);
 static int emit_net_added(struct ctx *ctx, struct net *net);
 static int emit_net_removed(struct ctx *ctx, struct net *net);
+static int add_peer(struct ctx *ctx, const dest_phys *dest, mctp_eid_t eid,
+		    uint32_t net, struct peer **ret_peer);
+static int add_peer_from_addr(struct ctx *ctx,
+			      const struct sockaddr_mctp_ext *addr,
+			      struct peer **ret_peer);
+static int remove_peer(struct peer *peer);
 static int query_peer_properties(struct peer *peer);
 static int setup_added_peer(struct peer *peer);
 static void add_peer_route(struct peer *peer);
-static int publish_peer(struct peer *peer, bool add_route);
+static int publish_peer(struct peer *peer);
 static int unpublish_peer(struct peer *peer);
 static int peer_route_update(struct peer *peer, uint16_t type);
 static int peer_neigh_update(struct peer *peer, uint16_t type);
@@ -651,7 +659,64 @@ static int reply_message(struct ctx *ctx, int sd, const void *resp,
 	return 0;
 }
 
-// Handles new Incoming Set Endpoint ID request
+/// Clear interface local addresses and remote cached peers
+static void clear_interface_addrs(struct ctx *ctx, int ifindex)
+{
+	mctp_eid_t *addrs;
+	size_t addrs_num;
+	size_t i;
+	int rc;
+
+	// Remove all addresses on this interface
+	addrs = mctp_nl_addrs_byindex(ctx->nl, ifindex, &addrs_num);
+	if (addrs) {
+		for (i = 0; i < addrs_num; i++) {
+			rc = mctp_nl_addr_del(ctx->nl, addrs[i], ifindex);
+			if (rc < 0) {
+				errx(rc,
+				     "ERR: cannot remove local eid %d ifindex %d",
+				     addrs[i], ifindex);
+			}
+		}
+		free(addrs);
+	}
+
+	// Remove all peers on this interface
+	for (i = 0; i < ctx->num_peers; i++) {
+		struct peer *p = ctx->peers[i];
+		if (p->state == REMOTE && p->phys.ifindex == ifindex) {
+			remove_peer(p);
+		}
+	}
+}
+
+/// Handles new Incoming Set Endpoint ID request
+///
+/// This currently handles two cases: Top-most bus owner and Endpoint. No bridge
+/// support yet.
+///
+///
+/// # References
+///
+/// The DSP0236 1.3.3 specification describes Set Endpoint ID in the following
+/// sections:
+///
+/// - 8.18  Endpoint ID assignment and endpoint ID pools
+///
+///   > A non-bridge device that is connected to multiple different buses
+///   > will have one EID for each bus it is attached to.
+///
+/// - 9.1.3 EID options for MCTP bridge
+///
+///   > There are three general options:
+///   > - The bridge uses a single MCTP endpoint
+///   > - The bridge uses an MCTP endpoint for each bus that connects to a bus owner
+///   > - The bridge uses an MCTP endpoint for every bus to which it connects
+///
+/// - 12.4  Set Endpoint ID
+///
+///   [the whole section]
+///
 static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 					  struct sockaddr_mctp_ext *addr,
 					  const uint8_t *buf,
@@ -659,26 +724,99 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 {
 	struct mctp_ctrl_cmd_set_eid *req = NULL;
 	struct mctp_ctrl_resp_set_eid respi = { 0 }, *resp = &respi;
+	struct link *link_data;
+	struct peer *peer;
 	size_t resp_len;
+	int rc;
 
 	if (buf_size < sizeof(*req)) {
-		warnx("short Set Endpoint ID message");
+		bug_warn("short Set Endpoint ID message");
 		return -ENOMSG;
 	}
 	req = (void *)buf;
 
-	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst =
-		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
+	link_data = mctp_nl_get_link_userdata(ctx->nl, addr->smctp_ifindex);
+	if (!link_data) {
+		bug_warn("unconfigured interface %d", addr->smctp_ifindex);
+		return -ENOENT;
+	}
+
+	mctp_ctrl_msg_hdr_init_resp(&respi.ctrl_hdr, req->ctrl_hdr);
 	resp->completion_code = MCTP_CTRL_CC_SUCCESS;
-	resp->status = 0x01 << 4; // Already assigned, TODO
-	resp->eid_set = local_addr(ctx, addr->smctp_ifindex);
-	resp->eid_pool_size = 0;
 	resp_len = sizeof(struct mctp_ctrl_resp_set_eid);
 
-	// TODO: learn busowner route and neigh
+	// reject if we are bus owner
+	if (link_data->role == ENDPOINT_ROLE_BUS_OWNER) {
+		warnx("Rejected set EID %d request from (%s) because we are the bus owner",
+		      req->eid, ext_addr_tostr(addr));
+		resp->completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
+		resp_len = sizeof(struct mctp_ctrl_resp);
+		return reply_message(ctx, sd, resp, resp_len, addr);
+	}
 
-	return reply_message(ctx, sd, resp, resp_len, addr);
+	// error if EID is invalid
+	if (req->eid < 0x08 || req->eid == 0xFF) {
+		warnx("Rejected invalid EID %d", req->eid);
+		resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+		resp_len = sizeof(struct mctp_ctrl_resp);
+		return reply_message(ctx, sd, resp, resp_len, addr);
+	}
+
+	switch (GET_MCTP_SET_EID_OPERATION(req->operation)) {
+	case MCTP_SET_EID_SET:
+		// TODO: for bridges, only accept EIDs from originator bus
+		//
+		// We currently only support endpoints, which require separate
+		// EIDs on interfaces (see function comment). For bridges, we
+		// might need to support sharing a single EID for multiple
+		// interfaces. We will need to:
+		// - track the first bus assigned the EID.
+		// - policy for propagating EID to other interfaces (see bridge
+		//   EID options in function comment above)
+
+		// fallthrough
+	case MCTP_SET_EID_FORCE:
+
+		fprintf(stderr, "setting EID to %d\n", req->eid);
+
+		// When we are assigned a new EID, assume our world view of the
+		// network reachable from this interface has been stale. Reset
+		// everything.
+		clear_interface_addrs(ctx, addr->smctp_ifindex);
+
+		rc = mctp_nl_addr_add(ctx->nl, req->eid, addr->smctp_ifindex);
+		if (rc < 0) {
+			warnx("ERR: cannot add local eid %d to ifindex %d",
+			      req->eid, addr->smctp_ifindex);
+			resp->completion_code = MCTP_CTRL_CC_ERROR_NOT_READY;
+		}
+
+		rc = add_peer_from_addr(ctx, addr, &peer);
+		if (rc == 0) {
+			rc = setup_added_peer(peer);
+		}
+		if (rc < 0) {
+			warnx("ERR: cannot add bus owner to object lists");
+		}
+
+		resp->status =
+			SET_MCTP_EID_ASSIGNMENT_STATUS(MCTP_SET_EID_ACCEPTED) |
+			SET_MCTP_EID_ALLOCATION_STATUS(MCTP_SET_EID_POOL_NONE);
+		resp->eid_set = req->eid;
+		resp->eid_pool_size = 0;
+		fprintf(stderr, "Accepted set eid %d\n", req->eid);
+		return reply_message(ctx, sd, resp, resp_len, addr);
+
+	case MCTP_SET_EID_DISCOVERED:
+	case MCTP_SET_EID_RESET:
+		// unsupported
+		resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+		return reply_message(ctx, sd, resp, resp_len, addr);
+
+	default:
+		bug_warn("unreachable Set EID operation code");
+		return -EINVAL;
+	}
 }
 
 static int
@@ -690,7 +828,7 @@ handle_control_get_version_support(struct ctx *ctx, int sd,
 	struct mctp_ctrl_resp_get_mctp_ver_support *resp = NULL;
 	uint32_t *versions = NULL;
 	// space for 4 versions
-	uint8_t respbuf[sizeof(*resp) + 4 * sizeof(*versions)];
+	uint8_t respbuf[sizeof(*resp) + 4 * sizeof(*versions)] = { 0 };
 	size_t resp_len;
 
 	if (buf_size < sizeof(struct mctp_ctrl_cmd_get_mctp_ver_support)) {
@@ -700,7 +838,7 @@ handle_control_get_version_support(struct ctx *ctx, int sd,
 
 	req = (void *)buf;
 	resp = (void *)respbuf;
-	memset(resp, 0x0, sizeof(*resp));
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, req->ctrl_hdr);
 	versions = (void *)(resp + 1);
 	switch (req->msg_type_number) {
 	case 0xff: // Base Protocol
@@ -721,9 +859,6 @@ handle_control_get_version_support(struct ctx *ctx, int sd,
 		resp_len = sizeof(*resp);
 	}
 
-	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst =
-		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
 	return reply_message(ctx, sd, resp, resp_len, addr);
 }
 
@@ -741,15 +876,15 @@ static int handle_control_get_endpoint_id(struct ctx *ctx, int sd,
 	}
 
 	req = (void *)buf;
-	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst =
-		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, req->ctrl_hdr);
 
 	resp->eid = local_addr(ctx, addr->smctp_ifindex);
+
+	resp->eid_type = 0;
 	if (ctx->default_role == ENDPOINT_ROLE_BUS_OWNER)
-		SET_ENDPOINT_TYPE(resp->eid_type, MCTP_BUS_OWNER_BRIDGE);
-	// 10b = 2 = static EID supported, matches currently assigned.
-	SET_ENDPOINT_ID_TYPE(resp->eid_type, 2);
+		resp->eid_type |= SET_ENDPOINT_TYPE(MCTP_BUS_OWNER_BRIDGE);
+	resp->eid_type |=
+		SET_ENDPOINT_ID_TYPE(MCTP_STATIC_EID_MATCHING_PRESENT);
 	// TODO: medium specific information
 
 	// Get Endpoint ID is typically send and reply using physical addressing.
@@ -762,7 +897,6 @@ handle_control_get_endpoint_uuid(struct ctx *ctx, int sd,
 				 const uint8_t *buf, const size_t buf_size)
 {
 	struct mctp_ctrl_cmd_get_uuid *req = NULL;
-	;
 	struct mctp_ctrl_resp_get_uuid respi = { 0 }, *resp = &respi;
 
 	if (buf_size < sizeof(*req)) {
@@ -771,9 +905,7 @@ handle_control_get_endpoint_uuid(struct ctx *ctx, int sd,
 	}
 
 	req = (void *)buf;
-	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst =
-		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, req->ctrl_hdr);
 	memcpy(resp->uuid, ctx->uuid, sizeof(resp->uuid));
 	return reply_message(ctx, sd, resp, sizeof(*resp), addr);
 }
@@ -783,9 +915,8 @@ static int handle_control_get_message_type_support(
 	const uint8_t *buf, const size_t buf_size)
 {
 	struct mctp_ctrl_cmd_get_msg_type_support *req = NULL;
-	;
 	struct mctp_ctrl_resp_get_msg_type_support *resp = NULL;
-	uint8_t resp_buf[sizeof(*resp) + 1];
+	uint8_t resp_buf[sizeof(*resp) + 1] = { 0 };
 	size_t resp_len;
 
 	if (buf_size < sizeof(*req)) {
@@ -795,9 +926,7 @@ static int handle_control_get_message_type_support(
 
 	req = (void *)buf;
 	resp = (void *)resp_buf;
-	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst =
-		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, req->ctrl_hdr);
 
 	// Only control messages supported
 	resp->msg_type_count = 1;
@@ -814,7 +943,7 @@ handle_control_resolve_endpoint_id(struct ctx *ctx, int sd,
 {
 	struct mctp_ctrl_cmd_resolve_endpoint_id *req = NULL;
 	struct mctp_ctrl_resp_resolve_endpoint_id *resp = NULL;
-	uint8_t resp_buf[sizeof(*resp) + MAX_ADDR_LEN];
+	uint8_t resp_buf[sizeof(*resp) + MAX_ADDR_LEN] = { 0 };
 	size_t resp_len;
 	struct peer *peer = NULL;
 
@@ -825,11 +954,7 @@ handle_control_resolve_endpoint_id(struct ctx *ctx, int sd,
 
 	req = (void *)buf;
 	resp = (void *)resp_buf;
-	memset(resp, 0x0, sizeof(*resp));
-	resp->ctrl_hdr.command_code = req->ctrl_hdr.command_code;
-	resp->ctrl_hdr.rq_dgram_inst =
-		(req->ctrl_hdr.rq_dgram_inst & IID_MASK) | RQDI_RESP;
-
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, req->ctrl_hdr);
 	peer = find_peer_by_addr(ctx, req->eid, addr->smctp_base.smctp_network);
 	if (!peer) {
 		resp->completion_code = MCTP_CTRL_CC_ERROR;
@@ -922,9 +1047,7 @@ static int handle_control_unsupported(struct ctx *ctx, int sd,
 	}
 
 	req = (void *)buf;
-	resp->ctrl_hdr.command_code = req->command_code;
-	resp->ctrl_hdr.rq_dgram_inst = (req->rq_dgram_inst & IID_MASK) |
-				       RQDI_RESP;
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, *req);
 	resp->completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
 	return reply_message(ctx, sd, resp, sizeof(*resp), addr);
 }
@@ -1463,8 +1586,10 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 	rc = -1;
 
 	iid = mctp_next_iid(peer->ctx);
-	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
-	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
+				   MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+
 	req.operation =
 		mctp_ctrl_cmd_set_eid_set_eid; // TODO: do we want Force?
 	req.eid = peer->eid;
@@ -1577,6 +1702,20 @@ static int add_peer(struct ctx *ctx, const dest_phys *dest, mctp_eid_t eid,
 
 	*ret_peer = peer;
 	return 0;
+}
+
+static int add_peer_from_addr(struct ctx *ctx,
+			      const struct sockaddr_mctp_ext *addr,
+			      struct peer **ret_peer)
+{
+	struct dest_phys phys;
+
+	phys.ifindex = addr->smctp_ifindex;
+	memcpy(phys.hwaddr, addr->smctp_haddr, addr->smctp_halen);
+	phys.hwaddr_len = addr->smctp_halen;
+
+	return add_peer(ctx, &phys, addr->smctp_base.smctp_addr.s_addr,
+			addr->smctp_base.smctp_network, ret_peer);
 }
 
 static int check_peer_struct(const struct peer *peer, const struct net *n)
@@ -1722,7 +1861,8 @@ static int change_peer_eid(struct peer *peer, mctp_eid_t new_eid)
 	n->peers[new_eid] = n->peers[peer->eid];
 	n->peers[peer->eid] = NULL;
 	peer->eid = new_eid;
-	rc = publish_peer(peer, true);
+	add_peer_route(peer);
+	rc = publish_peer(peer);
 	if (rc)
 		return rc;
 
@@ -1784,8 +1924,8 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 
 		new_eid = static_eid;
 	} else {
-		/* Find an unused EID */
-		for (e = eid_alloc_min; e <= eid_alloc_max; e++) {
+		/* Find an unused dynamic EID */
+		for (e = ctx->dyn_eid_min; e <= ctx->dyn_eid_max; e++) {
 			if (n->peers[e])
 				continue;
 			rc = add_peer(ctx, dest, e, net, &peer);
@@ -1793,7 +1933,7 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 				return rc;
 			break;
 		}
-		if (e > eid_alloc_max) {
+		if (e > ctx->dyn_eid_max) {
 			warnx("Ran out of EIDs for net %d, allocating %s", net,
 			      dest_phys_tostr(dest));
 			sd_bus_error_setf(berr, SD_BUS_ERROR_FAILED,
@@ -1801,6 +1941,11 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 			return -EADDRNOTAVAIL;
 		}
 	}
+
+	/* Add a route to the peer prior to assigning it an EID.
+	 * The peer may initiate communication immediately, so
+	 * it should be routable. */
+	add_peer_route(peer);
 
 	rc = endpoint_send_set_endpoint_id(peer, &new_eid);
 	if (rc == -ECONNREFUSED)
@@ -1901,8 +2046,9 @@ static int query_get_endpoint_id(struct ctx *ctx, const dest_phys *dest,
 
 	iid = mctp_next_iid(ctx);
 
-	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
-	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ENDPOINT_ID;
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
+				   MCTP_CTRL_CMD_GET_ENDPOINT_ID);
+
 	rc = endpoint_query_phys(ctx, dest, MCTP_CTRL_HDR_MSG_TYPE, &req,
 				 sizeof(req), &buf, &buf_size, &addr);
 	if (rc < 0)
@@ -2005,8 +2151,8 @@ static int query_get_peer_msgtypes(struct peer *peer)
 	peer->message_types = NULL;
 	iid = mctp_next_iid(peer->ctx);
 
-	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
-	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT;
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
+				   MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT);
 
 	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
 				 sizeof(req), &buf, &buf_size, &addr);
@@ -2065,8 +2211,9 @@ static int query_get_peer_uuid_by_phys(struct ctx *ctx, const dest_phys *dest,
 	int rc;
 
 	iid = mctp_next_iid(ctx);
-	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
-	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ENDPOINT_UUID;
+
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
+				   MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
 
 	rc = endpoint_query_phys(ctx, dest, MCTP_CTRL_HDR_MSG_TYPE, &req,
 				 sizeof(req), &buf, &buf_size, &addr);
@@ -2104,8 +2251,9 @@ static int query_get_peer_uuid(struct peer *peer)
 	}
 
 	iid = mctp_next_iid(peer->ctx);
-	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
-	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ENDPOINT_UUID;
+
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
+				   MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
 
 	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
 				 sizeof(req), &buf, &buf_size, &addr);
@@ -2559,7 +2707,8 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 	return -EPROTO;
 }
 
-/* Called when a new peer is discovered. Queries properties and publishes */
+/* Called when a new peer is discovered. Queries properties and publishes.
+ * The peer's route has already been set up */
 static int setup_added_peer(struct peer *peer)
 {
 	int rc;
@@ -2575,7 +2724,7 @@ static int setup_added_peer(struct peer *peer)
 	if (rc < 0)
 		goto out;
 
-	rc = publish_peer(peer, true);
+	rc = publish_peer(peer);
 out:
 	if (rc < 0) {
 		remove_peer(peer);
@@ -2614,8 +2763,9 @@ static void add_peer_neigh(struct peer *peer)
 }
 
 /* Adds routes/neigh. This is separate from
-   publish_peer() because we want a two stage setup of querying
-   properties (routed packets) then emitting dbus once finished */
+   publish_peer() because a route should exist prior to Set Endpoint ID,
+   and it will also need to exist while querying
+   properties (using routed packets). */
 static void add_peer_route(struct peer *peer)
 {
 	int rc;
@@ -2637,14 +2787,11 @@ static void add_peer_route(struct peer *peer)
 	}
 }
 
-/* Sets up routes/neigh, creates dbus object and emits added signal */
-static int publish_peer(struct peer *peer, bool add_route)
+/* Creates dbus object and emits added signal.
+ * Route/neigh should already have been added. */
+static int publish_peer(struct peer *peer)
 {
 	int rc = 0;
-
-	if (add_route && peer->state == REMOTE) {
-		add_peer_route(peer);
-	}
 
 	if (peer->published)
 		return 0;
@@ -3008,7 +3155,7 @@ static int method_net_learn_endpoint(sd_bus_message *call, void *data,
 
 	query_peer_properties(peer);
 
-	publish_peer(peer, false);
+	publish_peer(peer);
 
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
@@ -3704,14 +3851,25 @@ static int del_interface(struct link *link)
 	if (ctx->verbose) {
 		fprintf(stderr, "Deleting interface #%d\n", ifindex);
 	}
-	for (size_t i = 0; i < ctx->num_peers; ) {
+	for (size_t i = 0; i < ctx->num_peers;) {
 		struct peer *p = ctx->peers[i];
+
 		if (p->state == REMOTE && p->phys.ifindex == ifindex) {
-			// Linux removes routes to deleted links, so no need to request removal.
+			int rc;
+
+			// Linux removes routes to deleted links, so no need
+			// to request removal.
 			p->have_neigh = false;
 			p->have_route = false;
-			remove_peer(p);
+			rc = remove_peer(p);
+			if (rc) {
+				bug_warn("Error removing peer on interface "
+					 "deletion, inconsistent state");
+				break;
+			}
 		} else {
+			// Removal will shift indices down, only increment
+			// while skipping.
 			i++;
 		}
 	}
@@ -3862,7 +4020,8 @@ static int change_net_interface(struct ctx *ctx, int ifindex, uint32_t old_net)
 		new_n->peers[peer->eid] = old_n->peers[peer->eid];
 		old_n->peers[peer->eid] = NULL;
 		peer->net = new_net;
-		rc = publish_peer(peer, true);
+		add_peer_route(peer);
+		rc = publish_peer(peer);
 		if (rc) {
 			warnx("Error publishing new peer eid %d, net %d after change: %s",
 			      peer->eid, peer->net, strerror(-rc));
@@ -3917,7 +4076,7 @@ static int add_local_eid(struct ctx *ctx, uint32_t net, int eid)
 		warnx("Out of memory");
 	}
 
-	rc = publish_peer(peer, true);
+	rc = publish_peer(peer);
 	if (rc) {
 		warnx("Error publishing local eid %d net %d", eid, net);
 	}
@@ -4237,9 +4396,73 @@ static int parse_config_mctp(struct ctx *ctx, toml_table_t *mctp_tab)
 	return 0;
 }
 
+static int parse_config_dyn_eid_range(struct ctx *ctx, toml_array_t *arr)
+{
+	int sz = toml_array_nelem(arr);
+	toml_datum_t min_val, max_val;
+
+	if (sz < 2) {
+		warnx("dynamic_eid_range has invalid format - needs two elements");
+		return -1;
+	}
+	if (sz > 2) {
+		warnx("dynamic_eid_range: ignoring extra (> 2) elements");
+	}
+
+	min_val = toml_int_at(arr, 0);
+	max_val = toml_int_at(arr, 1);
+
+	if (!min_val.ok || !max_val.ok) {
+		warnx("dynamic_eid_range: invalid range data");
+		return -1;
+	}
+
+	if (min_val.u.i < eid_alloc_min || min_val.u.i > eid_alloc_max) {
+		warnx("dynamic_eid_range: start address is invalid");
+		return -1;
+	}
+
+	if (max_val.u.i < eid_alloc_min || max_val.u.i > eid_alloc_max ||
+	    max_val.u.i < min_val.u.i) {
+		warnx("dynamic_eid_range: end address is invalid");
+		return -1;
+	}
+
+	ctx->dyn_eid_max = max_val.u.i;
+	ctx->dyn_eid_min = min_val.u.i;
+	return 0;
+}
+
+static int parse_config_bus_owner(struct ctx *ctx, toml_table_t *bus_owner)
+{
+	toml_array_t *array;
+	toml_datum_t val;
+	int rc;
+
+	val = toml_int_in(bus_owner, "max_pool_size");
+	if (val.ok) {
+		int64_t i = val.u.i;
+		if (i <= 0 || i > (ctx->dyn_eid_max - ctx->dyn_eid_min)) {
+			warnx("invalid max_pool_size value (must be 1-%d)",
+			      ctx->dyn_eid_max - ctx->dyn_eid_min);
+			return -1;
+		}
+		ctx->max_pool_size = i;
+	}
+
+	array = toml_array_in(bus_owner, "dynamic_eid_range");
+	if (array) {
+		rc = parse_config_dyn_eid_range(ctx, array);
+		if (rc)
+			return rc;
+	}
+
+	return 0;
+}
+
 static int parse_config(struct ctx *ctx)
 {
-	toml_table_t *conf_root, *mctp_tab;
+	toml_table_t *conf_root, *mctp_tab, *bus_owner;
 	bool conf_file_specified;
 	char errbuf[256] = { 0 };
 	const char *filename;
@@ -4284,6 +4507,13 @@ static int parse_config(struct ctx *ctx)
 			goto out_free;
 	}
 
+	bus_owner = toml_table_in(conf_root, "bus-owner");
+	if (bus_owner) {
+		rc = parse_config_bus_owner(ctx, bus_owner);
+		if (rc)
+			goto out_free;
+	}
+
 	rc = 0;
 
 out_free:
@@ -4297,6 +4527,9 @@ static void setup_config_defaults(struct ctx *ctx)
 {
 	ctx->mctp_timeout = 250000; // 250ms
 	ctx->default_role = ENDPOINT_ROLE_BUS_OWNER;
+	ctx->max_pool_size = 15;
+	ctx->dyn_eid_min = eid_alloc_min;
+	ctx->dyn_eid_max = eid_alloc_max;
 }
 
 static void free_config(struct ctx *ctx)

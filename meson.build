@@ -3,7 +3,7 @@
 project(
     'mctp', 'c',
     meson_version: '>= 0.59.0',
-    version: 'v2.1',
+    version: 'v2.2',
     license: 'GPLv2',
     default_options: [
         'warning_level=2',
@@ -137,24 +137,36 @@ if tests
     # to allow pytest to print output directly onto the terminal without
     # redirecting to a file. We can detect this if stdout is an terminal, and
     # disable TAP protocol.
+    test_dir = join_paths(meson.current_source_dir(), 'tests')
+    pytest_conf = join_paths(test_dir, 'pytest.ini')
+
     pytest = find_program('pytest')
-    script = '''export DBUS_STARTER_BUS_TYPE=user; if [ ! -t 1 ]; then PYTEST_FLAGS="--tap"; fi; @0@ $PYTEST_FLAGS $@'''.format(pytest.full_path())
+    script = 'if [ ! -t 1 ]; then PFL="--tap"; fi; DBUS_STARTER_BUS_TYPE=user "@0@" $PFL --config-file "@1@" $@'.format(
+      pytest.full_path(),
+      pytest_conf,
+    )
     sh = find_program('sh')
-    dbus_run_session = find_program('dbus-run-session')
+    test_args = [ '-c', script, '--' ]
 
-    test_conf_data = configuration_data()
-    test_conf_data.set('testpaths',
-      join_paths(meson.current_source_dir(), 'tests')
-    )
-    configure_file(
-        input: 'tests/pytest.ini.in',
-        output: 'pytest.ini',
-        configuration: test_conf_data,
-    )
+    if libsystemd.found()
+        dbus_run_session = find_program('dbus-run-session')
 
-    test('test-mctpd', dbus_run_session,
-        depends: [mctpd_test, mctp_test],
-        args: [ sh.full_path(), '-c', script, '--' ],
+        test('test-mctpd', dbus_run_session,
+            depends: [mctpd_test],
+            args: [sh.full_path()] + test_args + [test_dir / 'test_mctpd.py'],
+            protocol: 'tap',
+        )
+
+        test('test-mctpd-endpoint', dbus_run_session,
+            depends: [mctpd_test],
+            args: [sh.full_path()] + test_args + [test_dir / 'test_mctpd_endpoint.py'],
+            protocol: 'tap',
+        )
+    endif
+
+    test('test-mctp', sh,
+        depends: [mctp_test],
+        args: test_args + [test_dir / 'test_mctp.py'],
         protocol: 'tap',
     )
 

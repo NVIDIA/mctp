@@ -3,8 +3,10 @@
 /* Derived from libmctp's libmctp-cmds.h */
 #pragma once
 
+#include <assert.h>
 #include <stdint.h>
-#include <linux/mctp.h>
+
+#include "mctp.h"
 
 /*
  * Helper structs and functions for MCTP control messages.
@@ -255,17 +257,39 @@ struct mctp_ctrl_resp_resolve_endpoint_id {
 
 #define MCTP_CTRL_CC_GET_MCTP_VER_SUPPORT_UNSUPPORTED_TYPE 0x80
 
-/* MCTP Set Endpoint ID response fields
+/* MCTP Set Endpoint ID request and response fields
  * See DSP0236 v1.3.0 Table 14.
  */
 
+#define MCTP_SET_EID_OPERATION_SHIFT 0x0
+#define MCTP_SET_EID_OPERATION_MASK 0x3
+#define GET_MCTP_SET_EID_OPERATION(field)            \
+	(((field) >> MCTP_SET_EID_OPERATION_SHIFT) & \
+	 MCTP_SET_EID_OPERATION_MASK)
+#define SET_MCTP_SET_EID_OPERATION(status)        \
+	(((status) & MCTP_SET_EID_OPERATION_MASK) \
+	 << MCTP_SET_EID_OPERATION_SHIFT)
+#define MCTP_SET_EID_SET 0x0
+#define MCTP_SET_EID_FORCE 0x1
+#define MCTP_SET_EID_RESET 0x2
+#define MCTP_SET_EID_DISCOVERED 0x3
+
 #define MCTP_EID_ASSIGNMENT_STATUS_SHIFT 0x4
 #define MCTP_EID_ASSIGNMENT_STATUS_MASK 0x3
-#define SET_MCTP_EID_ASSIGNMENT_STATUS(field, status)             \
-	((field) |= (((status) & MCTP_EID_ASSIGNMENT_STATUS_MASK) \
-		     << MCTP_EID_ASSIGNMENT_STATUS_SHIFT))
+#define SET_MCTP_EID_ASSIGNMENT_STATUS(status)        \
+	(((status) & MCTP_EID_ASSIGNMENT_STATUS_MASK) \
+	 << MCTP_EID_ASSIGNMENT_STATUS_SHIFT)
 #define MCTP_SET_EID_ACCEPTED 0x0
 #define MCTP_SET_EID_REJECTED 0x1
+
+#define MCTP_EID_ALLOCATION_STATUS_SHIFT 0x0
+#define MCTP_EID_ALLOCATION_STATUS_MASK 0x3
+#define SET_MCTP_EID_ALLOCATION_STATUS(status)        \
+	(((status) & MCTP_EID_ALLOCATION_STATUS_MASK) \
+	 << MCTP_EID_ALLOCATION_STATUS_SHIFT)
+#define MCTP_SET_EID_POOL_NONE 0x0
+#define MCTP_SET_EID_POOL_REQUIRED 0x1
+#define MCTP_SET_EID_POOL_RECEIVED 0x2
 
 /* MCTP Physical Transport Binding identifiers
  * See DSP0239 v1.7.0 Table 3.
@@ -286,26 +310,26 @@ struct mctp_ctrl_resp_resolve_endpoint_id {
 #define MCTP_ENDPOINT_TYPE_MASK 0x3
 #define MCTP_SIMPLE_ENDPOINT 0
 #define MCTP_BUS_OWNER_BRIDGE 1
-#define SET_ENDPOINT_TYPE(field, type) \
-	((field) |=                    \
-	 (((type) & MCTP_ENDPOINT_TYPE_MASK) << MCTP_ENDPOINT_TYPE_SHIFT))
+#define SET_ENDPOINT_TYPE(type) \
+	(((type) & MCTP_ENDPOINT_TYPE_MASK) << MCTP_ENDPOINT_TYPE_SHIFT)
 
 #define MCTP_ENDPOINT_ID_TYPE_SHIFT 0
 #define MCTP_ENDPOINT_ID_TYPE_MASK 0x3
 #define MCTP_DYNAMIC_EID 0
 #define MCTP_STATIC_EID 1
-#define SET_ENDPOINT_ID_TYPE(field, type)                  \
-	((field) |= (((type) & MCTP_ENDPOINT_ID_TYPE_MASK) \
-		     << MCTP_ENDPOINT_ID_TYPE_SHIFT))
+#define MCTP_STATIC_EID_MATCHING_PRESENT 2
+#define MCTP_STATIC_EID_NOT_MATCHING_PRESENT 3
+#define SET_ENDPOINT_ID_TYPE(type) \
+	(((type) & MCTP_ENDPOINT_ID_TYPE_MASK) << MCTP_ENDPOINT_ID_TYPE_SHIFT)
 
 /* MCTP Routing Table entry types
  * See DSP0236 v1.3.0 Table 27.
  */
 #define MCTP_ROUTING_ENTRY_PORT_SHIFT 0
 #define MCTP_ROUTING_ENTRY_PORT_MASK 0x1F
-#define SET_ROUTING_ENTRY_PORT(field, port)                  \
-	((field) |= (((port) & MCTP_ROUTING_ENTRY_PORT_MASK) \
-		     << MCTP_ROUTING_ENTRY_PORT_SHIFT))
+#define SET_ROUTING_ENTRY_PORT(port)             \
+	(((port) & MCTP_ROUTING_ENTRY_PORT_MASK) \
+	 << MCTP_ROUTING_ENTRY_PORT_SHIFT)
 #define GET_ROUTING_ENTRY_PORT(field)                 \
 	(((field) >> MCTP_ROUTING_ENTRY_PORT_SHIFT) & \
 	 MCTP_ROUTING_ENTRY_PORT_MASK)
@@ -314,9 +338,9 @@ struct mctp_ctrl_resp_resolve_endpoint_id {
 #define MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_MASK 0x1
 #define MCTP_DYNAMIC_ASSIGNMENT 0
 #define MCTP_STATIC_ASSIGNMENT 1
-#define SET_ROUTING_ENTRY_ASSIGNMENT_TYPE(field, type)                  \
-	((field) |= (((type) & MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_MASK) \
-		     << MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_SHIFT))
+#define SET_ROUTING_ENTRY_ASSIGNMENT_TYPE(type)             \
+	(((type) & MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_MASK) \
+	 << MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_SHIFT)
 #define GET_ROUTING_ENTRY_ASSIGNMENT_TYPE(field)                 \
 	(((field) >> MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_SHIFT) & \
 	 MCTP_ROUTING_ENTRY_ASSIGNMENT_TYPE_MASK)
@@ -327,9 +351,28 @@ struct mctp_ctrl_resp_resolve_endpoint_id {
 #define MCTP_ROUTING_ENTRY_BRIDGE_AND_ENDPOINTS 0x01
 #define MCTP_ROUTING_ENTRY_BRIDGE 0x02
 #define MCTP_ROUTING_ENTRY_ENDPOINTS 0x03
-#define SET_ROUTING_ENTRY_TYPE(field, type)                  \
-	((field) |= (((type) & MCTP_ROUTING_ENTRY_TYPE_MASK) \
-		     << MCTP_ROUTING_ENTRY_TYPE_SHIFT))
+#define SET_ROUTING_ENTRY_TYPE(type)             \
+	(((type) & MCTP_ROUTING_ENTRY_TYPE_MASK) \
+	 << MCTP_ROUTING_ENTRY_TYPE_SHIFT)
 #define GET_ROUTING_ENTRY_TYPE(field)                 \
 	(((field) >> MCTP_ROUTING_ENTRY_TYPE_SHIFT) & \
 	 MCTP_ROUTING_ENTRY_TYPE_MASK)
+
+#define RQDI_REQ (1 << 7)
+#define RQDI_RESP 0x0
+#define RQDI_IID_MASK 0x1f
+
+static inline void mctp_ctrl_msg_hdr_init_req(struct mctp_ctrl_msg_hdr *req,
+					      uint8_t iid, uint8_t command_code)
+{
+	assert(iid <= RQDI_IID_MASK);
+	req->command_code = command_code;
+	req->rq_dgram_inst = iid | RQDI_REQ;
+}
+
+static inline void mctp_ctrl_msg_hdr_init_resp(struct mctp_ctrl_msg_hdr *resp,
+					       struct mctp_ctrl_msg_hdr req)
+{
+	resp->command_code = req.command_code;
+	resp->rq_dgram_inst = (req.rq_dgram_inst & RQDI_IID_MASK) | RQDI_RESP;
+}
