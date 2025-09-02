@@ -44,3 +44,10 @@ async def mctpd_mctp_endpoint_common_obj(dbus, path):
             path,
             'xyz.openbmc_project.MCTP.Endpoint'
         )
+
+async def mctpd_service_readiness_obj(dbus, iface):
+    obj = await dbus.get_proxy_object(
+            'au.com.codeconstruct.MCTP1',
+            '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+        )
+    return await obj.get_interface('xyz.openbmc_project.State.ServiceReady')

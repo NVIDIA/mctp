@@ -7,7 +7,8 @@ from mctp_test_utils import (
     mctpd_mctp_iface_obj,
     mctpd_mctp_network_obj,
     mctpd_mctp_endpoint_common_obj,
-    mctpd_mctp_endpoint_control_obj
+    mctpd_mctp_endpoint_control_obj,
+    mctpd_service_readiness_obj
 )
 from mctpenv import Endpoint, MCTPSockAddr, MCTPControlCommand, MctpdWrapper
 
@@ -22,6 +23,12 @@ MCTPD_MCTP_I = 'au.com.codeconstruct.MCTP.BusOwner1'
 MCTPD_ENDPOINT_I = 'au.com.codeconstruct.MCTP.Endpoint1'
 DBUS_OBJECT_MANAGER_I = 'org.freedesktop.DBus.ObjectManager'
 DBUS_PROPERTIES_I = 'org.freedesktop.DBus.Properties'
+
+# Service readiness interface constants
+OPENBMC_SERVICE_READINESS_I = 'xyz.openbmc_project.State.ServiceReady'
+SERVICE_STATE_STARTING = 'xyz.openbmc_project.State.ServiceReady.States.Starting'
+SERVICE_STATE_ENABLED = 'xyz.openbmc_project.State.ServiceReady.States.Enabled'
+SERVICE_TYPE_MCTP = 'xyz.openbmc_project.State.ServiceReady.ServiceTypes.MCTP'
 
 MCTPD_TRECLAIM = 5
 
@@ -1027,3 +1034,229 @@ async def test_config_dyn_eid_range_max(nursery, dbus, sysnet):
 
     res = await mctpd.stop_mctpd()
     assert res == 0
+
+""" Test that the service readiness interface is present and has correct initial state """
+async def test_service_readiness_interface_present(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    
+    # Get the service readiness interface object
+    service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    
+    # Verify ServiceType property is correct and constant
+    service_type = await service_readiness.get_service_type()
+    assert service_type == SERVICE_TYPE_MCTP
+    
+    # Verify initial State property is "Starting"
+    state = await service_readiness.get_state()
+    assert state == SERVICE_STATE_STARTING
+
+
+""" Test that service readiness state changes from Starting to Enabled after endpoint discovery """
+async def test_service_readiness_state_transition(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = mctpd.network.endpoints[0]
+    
+    # Get the interface object for SetupEndpoint call
+    iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Get the service readiness interface object
+    service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    
+    # Verify initial state is Starting
+    initial_state = await service_readiness.get_state()
+    assert initial_state == SERVICE_STATE_STARTING
+    
+    # Set up signal monitoring for state change
+    state_changed = trio.Semaphore(initial_value=0)
+    def on_state_changed(iface, changed, invalidated):
+        if iface == OPENBMC_SERVICE_READINESS_I and 'State' in changed:
+            if changed['State'].value == SERVICE_STATE_ENABLED:
+                state_changed.release()
+    
+    # Get the interface object to monitor properties
+    iface_monitor_obj = await dbus.get_proxy_object(
+        'au.com.codeconstruct.MCTP1',
+        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+    )
+    props = await iface_monitor_obj.get_interface(DBUS_PROPERTIES_I)
+    await props.on_properties_changed(on_state_changed)
+    
+    # Call SetupEndpoint to trigger discovery completion
+    (eid, net, path, new) = await iface_obj.call_setup_endpoint(ep.lladdr)
+    
+    # Wait for the state to change to Enabled
+    with trio.move_on_after(5) as expected:
+        await state_changed.acquire()
+    
+    assert not expected.cancelled_caught, "Service readiness state did not transition to Enabled"
+    
+    # Verify the state is now Enabled
+    final_state = await service_readiness.get_state()
+    assert final_state == SERVICE_STATE_ENABLED
+
+
+""" Test that service readiness state changes for bridge endpoints after routing table processing """
+async def test_service_readiness_bridge_state_transition(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    bridge = mctpd.network.endpoints[0]
+    static_eid = 12
+    start_eid = 13
+    ignore_eids = b''  # Empty array - no EIDs to ignore
+    
+    # Get the interface object for AssignEndpoint call
+    iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Get the service readiness interface object
+    service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    
+    # Verify initial state is Starting
+    initial_state = await service_readiness.get_state()
+    assert initial_state == SERVICE_STATE_STARTING
+    
+    # Set up signal monitoring for state change
+    state_changed = trio.Semaphore(initial_value=0)
+    def on_state_changed(iface, changed, invalidated):
+        if iface == OPENBMC_SERVICE_READINESS_I and 'State' in changed:
+            if changed['State'].value == SERVICE_STATE_ENABLED:
+                state_changed.release()
+    
+    # Get the interface object to monitor properties
+    iface_monitor_obj = await dbus.get_proxy_object(
+        'au.com.codeconstruct.MCTP1',
+        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+    )
+    props = await iface_monitor_obj.get_interface(DBUS_PROPERTIES_I)
+    await props.on_properties_changed(on_state_changed)
+    
+    (eid, _, _, _) = await iface_obj.call_assign_endpoint_static(
+        bridge.lladdr,
+        static_eid,
+        start_eid,
+        ignore_eids
+    )
+
+    # non blocking sleep for Allocate Eid timer expiry
+    await trio.sleep(5)
+    assert eid == static_eid
+    
+    # Wait for the state to change to Enabled (may take longer for bridges)
+    with trio.move_on_after(10) as expected:
+        await state_changed.acquire()
+    
+    assert not expected.cancelled_caught, "Bridge service readiness state did not transition to Enabled"
+    
+    # Verify the state is now Enabled
+    # TODO: The test infra does not have full bridge and routing table support
+    # yet. So this does not quite take the intended path. When we merge the
+    # pool size support, we can actually add a bridged endpoint and test the
+    # routing table flow.
+    final_state = await service_readiness.get_state()
+    assert final_state == SERVICE_STATE_ENABLED
+
+""" Test that service readiness interface is available on all network interfaces """
+async def test_service_readiness_all_interfaces(dbus, mctpd):
+    # Test with the default interface
+    iface = mctpd.system.interfaces[0]
+    service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    
+    # Verify service readiness interface exists
+    assert service_readiness is not None
+    
+    # Test with a newly added interface
+    net = 2
+    start_eid = 10
+    new_iface = mctpd.system.Interface('mctptest', 20, net, bytes([]), 68, 254, True)
+    await mctpd.system.add_interface(new_iface)
+    await mctpd.system.add_address(mctpd.system.Address(new_iface, 90))
+    
+    new_service_readiness = await mctpd_service_readiness_obj(dbus, new_iface)
+    
+    # Verify service readiness interface exists on new interface too
+    assert new_service_readiness is not None
+    
+    # Verify both interfaces start with Starting state
+    state1 = await service_readiness.get_state()
+    state2 = await new_service_readiness.get_state()
+    assert state1 == SERVICE_STATE_STARTING
+    assert state2 == SERVICE_STATE_STARTING
+    
+    # Clean up
+    await mctpd.system.del_interface(new_iface)
+
+
+""" Test that service readiness state persists across interface renames """
+async def test_service_readiness_rename_persistence(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    
+    # Get initial service readiness state
+    service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    initial_state = await service_readiness.get_state()
+    assert initial_state == SERVICE_STATE_STARTING
+    
+    # Rename the interface
+    new_name = "renamedmctp0"
+    iface.name = new_name
+    await mctpd.system.notify_interface(iface)
+    
+    # Get the renamed interface object
+    renamed_service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    
+    # Verify the service readiness interface still exists and has the same state
+    renamed_state = await renamed_service_readiness.get_state()
+    assert renamed_state == SERVICE_STATE_STARTING
+    
+    # Verify ServiceType is still correct
+    service_type = await renamed_service_readiness.get_service_type()
+    assert service_type == SERVICE_TYPE_MCTP
+
+
+""" Test comprehensive service readiness behavior including signal emission """
+async def test_service_readiness_comprehensive(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = mctpd.network.endpoints[0]
+    
+    # Get the service readiness interface object
+    service_readiness = await mctpd_service_readiness_obj(dbus, iface)
+    
+    # Verify initial state
+    initial_state = await service_readiness.get_state()
+    assert initial_state == SERVICE_STATE_STARTING
+    
+    # Verify ServiceType is constant
+    service_type = await service_readiness.get_service_type()
+    assert service_type == SERVICE_TYPE_MCTP
+    
+    # Set up signal monitoring for state changes
+    state_changes = []
+    def on_state_changed(iface, changed, invalidated):
+        if iface == OPENBMC_SERVICE_READINESS_I and 'State' in changed:
+            state_changes.append(changed['State'].value)
+    
+    # Get the interface object to monitor properties
+    iface_monitor_obj = await dbus.get_proxy_object(
+        'au.com.codeconstruct.MCTP1',
+        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+    )
+    props = await iface_monitor_obj.get_interface(DBUS_PROPERTIES_I)
+    await props.on_properties_changed(on_state_changed)
+    
+    # Get the interface object for SetupEndpoint call
+    iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Call SetupEndpoint to trigger discovery completion
+    (eid, net, path, new) = await iface_obj.call_setup_endpoint(ep.lladdr)
+    
+    # Wait a bit for the signal to be processed
+    await trio.sleep(0.5)
+    
+    # Verify that the state change signal was emitted
+    assert len(state_changes) > 0, "No state change signals were emitted"
+    assert SERVICE_STATE_ENABLED in state_changes, f"Expected state change to {SERVICE_STATE_ENABLED}, got {state_changes}"
+    
+    # Verify the final state is Enabled
+    final_state = await service_readiness.get_state()
+    assert final_state == SERVICE_STATE_ENABLED
+    
+    # Verify that the state only changed once (from Starting to Enabled)
+    assert len(state_changes) == 1, f"Expected exactly one state change, got {len(state_changes)}: {state_changes}"
+    assert state_changes[0] == SERVICE_STATE_ENABLED
