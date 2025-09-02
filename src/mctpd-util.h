@@ -60,6 +60,10 @@ const char *get_binding_from_ifname(const char *ifname)
 		return "USB";
 	if (strstr(ifname, "spi"))
 		return "SPI";
+	if (strstr(ifname, "irot"))
+		return "VDM";
+	if (strstr(ifname, "vrot"))
+		return "VDM";
 	return "Unknown";
 }
 

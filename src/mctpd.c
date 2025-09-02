@@ -3299,6 +3299,9 @@ static int bus_endpoint_get_prop(sd_bus *bus, const char *path,
 				peer->routing_table_entry
 					->phys_transport_binding_id);
 		}
+		if (!strcmp(medium_type, "VDM")) {
+			medium_type = "Unspecified";
+		}
 		snprintf(medium_type_str, sizeof(medium_type_str),
 			 "xyz.openbmc_project.MCTP.Endpoint.MediaTypes.%s",
 			 medium_type);
