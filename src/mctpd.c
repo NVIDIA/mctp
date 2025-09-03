@@ -1004,32 +1004,24 @@ static int handle_control_discovery_notify(struct ctx *ctx, int sd,
 		.completion_code = MCTP_CTRL_CC_SUCCESS,
 	};
 
-	if (ctx->verbose) {
-		printf("Received Discovery Notify from %s",
-		       ext_addr_tostr(addr));
+	const char *ifname = mctp_nl_if_byindex(ctx->nl, addr->smctp_ifindex);
+	if (!ifname) {
+		warnx("No ifname found for %s ", ext_addr_tostr(addr));
+		return -1;
 	}
 
-	struct peer *peer =
-		find_peer_by_addr(ctx, addr->smctp_base.smctp_addr.s_addr,
-				  addr->smctp_base.smctp_network);
-	if (!peer) {
-		warnx("Unknown EID %d received Discovery notify",
-		      addr->smctp_base.smctp_addr.s_addr);
-		return -1;
+	if (ctx->verbose) {
+		fprintf(stderr, "Received Discovery Notify from %s, EID %d \n",
+			ext_addr_tostr(addr),
+			addr->smctp_base.smctp_addr.s_addr);
 	}
-	const char *ifname =
-		mctp_nl_if_byindex(peer->ctx->nl, peer->phys.ifindex);
-	if (!ifname) {
-		warnx("No ifname found for eid %d",
-		      addr->smctp_base.smctp_addr.s_addr);
-		return -1;
-	}
+
 	char path[256];
+	memset(path, 0, sizeof(path));
 	snprintf(path, sizeof(path), "%s/%s", MCTP_DBUS_PATH_LINKS, ifname);
 
 	int r = sd_bus_emit_signal(ctx->bus, path, CC_MCTP_DBUS_IFACE_BUSOWNER,
-				   "DiscoveryNotify", "u",
-				   addr->smctp_base.smctp_addr.s_addr);
+				   "DiscoveryNotify", NULL);
 	if (r < 0) {
 		warnx("Failed to emit DiscoveryNotify signal: %s",
 		      strerror(-r));
