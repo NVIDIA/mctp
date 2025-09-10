@@ -5117,32 +5117,18 @@ static int query_routing_table(struct peer *peer)
 			} else {
 				if (existing_peer &&
 				    false == should_ignore_eid(peer, eid)) {
-					// EID is not active but exists locally - mark degraded it
+					// EID is not active but exists locally - remove it
 					if (!existing_peer->degraded) {
-						existing_peer->degraded = true;
-						const char *peer_path =
-							path_from_peer(
-								existing_peer);
-						if (!peer_path) {
-							warnx("%s: no path to peer exists",
-							      __func__);
-							continue;
-						}
-						rc = sd_bus_emit_properties_changed(
-							peer->ctx->bus,
-							peer_path,
-							CC_MCTP_DBUS_IFACE_ENDPOINT,
-							"Connectivity", NULL);
-						if (rc < 0) {
-							warnx("%s: Connectivity change emit failed: %d %s",
-							      __func__, rc,
-							      strerror(-rc));
-							continue;
-						}
 						if (peer->ctx->verbose) {
 							fprintf(stderr,
-								"Marking degraded inactive endpoint %d\n",
+								"inactive endpoint, removing %d\n",
 								eid);
+						}
+						rc = remove_peer(existing_peer);
+						if (rc < 0) {
+							warnx("Failed to remove endpoint %d : %s",
+							      eid,
+							      strerror(rc));
 						}
 					}
 				}
