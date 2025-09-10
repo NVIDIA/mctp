@@ -2848,8 +2848,23 @@ static int publish_peer(struct peer *peer)
 {
 	int rc = 0;
 
-	if (peer->published)
+	if (peer->published) {
+		// If we are trying to publish again, this could be case of endpoint reset
+		// more specifically direct endpoint reset, need to replicate what we did
+		// for bridge to notify other application eg GPU fast reset
+		rc = sd_bus_emit_properties_changed(peer->ctx->bus, peer->path,
+						    CC_MCTP_DBUS_IFACE_ENDPOINT,
+						    "Connectivity", NULL);
+		if (rc < 0) {
+			warnx("%s: Connectivity change emit failed: %d %s",
+			      __func__, rc, strerror(-rc));
+		}
+		if (peer->ctx->verbose) {
+			fprintf(stderr, "Refreshed eid property %d\n",
+				peer->eid);
+		}
 		return 0;
+	}
 
 	rc = asprintf(&peer->path, "%s/networks/%d/endpoints/%d",
 		      MCTP_DBUS_PATH, peer->net, peer->eid);
