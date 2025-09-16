@@ -151,12 +151,6 @@ struct link {
 		SERVICE_STATE_ENABLED,
 	} service_state;
 };
-struct routing_table_t {
-	int id;
-	struct routing_table_t *next_entry;
-	struct get_routing_table_entry routing_entry;
-};
-typedef struct routing_table_t routing_table_t;
 
 struct peer {
 	uint32_t net;
@@ -214,8 +208,7 @@ struct peer {
 	mctp_eid_t *ignore_eids;
 	size_t num_ignore_eids;
 	// Routing Table Data
-	routing_table_t *routing_table_head;
-	routing_table_t *routing_table_tail;
+	struct get_routing_table_entry *routing_table_entry;
 	struct {
 		uint64_t delay;
 		sd_event_source *source;
@@ -1617,7 +1610,6 @@ static int remove_peer(struct peer *peer)
 	struct net *n = NULL;
 	struct peer **tmp;
 	size_t idx;
-	routing_table_t *rt = peer->routing_table_head;
 
 	n = lookup_net(peer->ctx, peer->net);
 	if (!n) {
@@ -1650,13 +1642,7 @@ static int remove_peer(struct peer *peer)
 	free(peer->message_types);
 	free(peer->uuid);
 	free(peer->ignore_eids);
-
-	while (rt) {
-		peer->routing_table_head = peer->routing_table_head->next_entry;
-		rt->next_entry = NULL;
-		free(rt);
-		rt = peer->routing_table_head;
-	}
+	free(peer->routing_table_entry);
 
 	for (idx = 0; idx < ctx->num_peers; idx++) {
 		if (ctx->peers[idx] == peer)
@@ -4555,48 +4541,25 @@ static int endpoint_allocate_eid(struct peer *peer)
 	return 0;
 }
 
-/* check for existing routing entry in local routing table*/
-bool check_local_routing(struct peer *peer,
-			 struct get_routing_table_entry *routing_entry)
-{
-	routing_table_t *rt_entry = peer->routing_table_head;
-	while (rt_entry) {
-		if (routing_entry->starting_eid ==
-		    rt_entry->routing_entry.starting_eid)
-			return true;
-		rt_entry = rt_entry->next_entry;
-	}
-	return false;
-}
-
-static void update_local_routing(struct peer *peer,
+static void update_local_routing(struct get_routing_table_entry **entry_routing,
 				 struct get_routing_table_entry *rt_entry)
 {
-	routing_table_t *entry = malloc(sizeof(routing_table_t));
-	memcpy(&entry->routing_entry, rt_entry,
-	       sizeof(struct get_routing_table_entry));
-	entry->next_entry = NULL;
-
-	if (peer->routing_table_head == NULL) {
-		peer->routing_table_head = entry;
-		peer->routing_table_tail = entry;
-		entry->id = 0;
-	} else {
-		entry->id = peer->routing_table_tail->id + 1;
-		peer->routing_table_tail->next_entry = entry;
-		peer->routing_table_tail = entry;
-	}
+	struct get_routing_table_entry *entry =
+		malloc(sizeof(struct get_routing_table_entry));
+	memcpy(entry, rt_entry, sizeof(struct get_routing_table_entry));
+	*entry_routing = entry;
 }
 
 /* Get Routing Table data and update into local routing table */
-static int endpoint_send_get_routing_table(struct peer *peer,
-					   uint8_t entry_handle,
-					   uint8_t *next_handle,
-					   bool *active_pool_eid)
+static int
+endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
+				uint8_t *next_handle, bool *active_pool_eid,
+				struct get_routing_table_entry **local_routing)
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_routing_table req;
 	struct mctp_ctrl_resp_get_routing_table *resp = NULL;
+	struct ctx *ctx = NULL;
 	uint8_t *buf = NULL;
 	size_t buf_size;
 	uint8_t iid;
@@ -4606,6 +4569,7 @@ static int endpoint_send_get_routing_table(struct peer *peer,
 	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
 	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
 	req.entry_handle = entry_handle;
+	ctx = peer->ctx;
 
 	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
 				 sizeof(req), &buf, &buf_size, &addr);
@@ -4624,7 +4588,7 @@ static int endpoint_send_get_routing_table(struct peer *peer,
 		return -ENOMEM;
 	}
 
-	if (peer->ctx->verbose) {
+	if (ctx->verbose) {
 		fprintf(stderr,
 			"%s: returned routing entries %x, next handle %x\n",
 			__func__, resp->number_of_entries,
@@ -4646,7 +4610,7 @@ static int endpoint_send_get_routing_table(struct peer *peer,
 			}
 			// Check if this EID should be ignored
 			if (should_ignore_eid(peer, entry->starting_eid)) {
-				if (peer->ctx->verbose) {
+				if (ctx->verbose) {
 					fprintf(stderr,
 						"%s: ignoring EID %d as requested\n",
 						__func__, entry->starting_eid);
@@ -4663,11 +4627,10 @@ static int endpoint_send_get_routing_table(struct peer *peer,
 						peer->pool_start] = true;
 			}
 
-			if (check_local_routing(peer, entry))
-				warnx("%s skipping the entry %d, already exists\n",
-				      __func__, entry->starting_eid);
-			else
-				update_local_routing(peer, entry);
+			update_local_routing(
+				&local_routing[entry->starting_eid -
+					       peer->pool_start],
+				entry);
 
 			entry = (struct get_routing_table_entry
 					 *)((char *)(&entry->phys_address_size) +
@@ -4690,14 +4653,19 @@ static int query_routing_table(struct peer *peer)
 	int rc = 0;
 	//track active endpoints from Bridge perspective
 	bool *active_pool_eid = NULL;
+	struct get_routing_table_entry **local_routing = NULL;
 	struct link *link =
 		mctp_nl_get_link_userdata(peer->ctx->nl, peer->phys.ifindex);
 
 	if (peer->pool_size) {
 		active_pool_eid = (bool *)malloc(peer->pool_size);
-		if (active_pool_eid) {
+		local_routing = (struct get_routing_table_entry **)malloc(
+			peer->pool_size *
+			sizeof(struct get_routing_table_entry *));
+		if (active_pool_eid && local_routing) {
 			for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
 				(active_pool_eid)[idx] = false;
+				local_routing[idx] = NULL;
 			}
 		}
 	} else {
@@ -4707,8 +4675,10 @@ static int query_routing_table(struct peer *peer)
 	}
 
 	while (next_handle != 0xFF) {
-		rc = endpoint_send_get_routing_table(
-			peer, entry_handle, &next_handle, active_pool_eid);
+		rc = endpoint_send_get_routing_table(peer, entry_handle,
+						     &next_handle,
+						     active_pool_eid,
+						     local_routing);
 		if (rc < 0) {
 			goto out;
 		}
@@ -4748,6 +4718,10 @@ static int query_routing_table(struct peer *peer)
 							"created new endpoint %d\n",
 							eid);
 					}
+
+					allocated_peer->routing_table_entry =
+						local_routing[index];
+					local_routing[index] = NULL;
 				} else {
 					// EID is active and exists locally - send connectivity change
 					existing_peer->degraded = false;
@@ -4781,6 +4755,7 @@ static int query_routing_table(struct peer *peer)
 							"keeping existing active endpoint %d\n",
 							eid);
 					}
+					//TODO: should we update the rounting entry for this eid as well?
 				}
 			} else {
 				if (existing_peer &&
@@ -4817,7 +4792,11 @@ static int query_routing_table(struct peer *peer)
 			}
 		}
 	}
-
+	// clean all thats left behind as peer might already have routing entry
+	for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
+		free(local_routing[idx]);
+	}
+	free(local_routing);
 	free(active_pool_eid);
 
 	// Set service state to Enabled for bridge endpoints after routing table processing
@@ -4834,6 +4813,10 @@ static int query_routing_table(struct peer *peer)
 
 	return 0;
 out:
+	for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
+		free(local_routing[idx]);
+	}
+	free(local_routing);
 	free(active_pool_eid);
 	warnx(" %s Failed to get routing table data for handle %d\n", __func__,
 	      entry_handle);
