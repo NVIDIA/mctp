@@ -36,6 +36,7 @@
 #include "mctp-netlink.h"
 #include "mctp-control-spec.h"
 #include "mctp-ops.h"
+#include "mctpd-util.h"
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -3038,21 +3039,6 @@ err:
 	return rc;
 }
 
-/* Helper function to determine binding type from interface name */
-static const char *get_binding_from_ifname(const char *ifname)
-{
-	// TODO: Get this from the IFLA attribute instead of the interface name
-	if (!ifname)
-		return "Unknown";
-	if (strstr(ifname, "i2c"))
-		return "SMBus";
-	if (strstr(ifname, "usb"))
-		return "USB";
-	if (strstr(ifname, "spi"))
-		return "SPI";
-	return "Unknown";
-}
-
 /* Helper function to get binding type for a peer */
 static const char *get_peer_binding_type(const struct peer *peer)
 {
@@ -3063,6 +3049,11 @@ static const char *get_peer_binding_type(const struct peer *peer)
 		const char *ifname =
 			mctp_nl_if_byindex(peer->ctx->nl, peer->phys.ifindex);
 		binding_name = get_binding_from_ifname(ifname);
+		if (peer->routing_table_entry) {
+			binding_name = phy_transport_binding_to_string(
+				peer->routing_table_entry
+					->phys_transport_binding_id);
+		}
 	} else if (peer->state == LOCAL) {
 		size_t num_ifs;
 		int *ifs = mctp_nl_if_list(peer->ctx->nl, &num_ifs);
