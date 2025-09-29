@@ -2467,6 +2467,45 @@ err:
 	return rc;
 }
 
+static int method_get_endpoint_id(sd_bus_message *call, void *data,
+				  sd_bus_error *berr)
+{
+	dest_phys desti = { 0 }, *dest = &desti;
+	struct link *link = data;
+	struct ctx *ctx = link->ctx;
+	mctp_eid_t eid;
+	uint8_t eid_type, medium_spec;
+	int rc;
+
+	dest->ifindex = link->ifindex;
+	if (dest->ifindex <= 0)
+		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
+					 "Unknown MCTP interface");
+
+	rc = message_read_hwaddr(call, dest);
+	if (rc < 0)
+		goto err;
+
+	rc = validate_dest_phys(ctx, dest);
+	if (rc < 0)
+		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
+					 "Bad physaddr");
+
+	rc = query_get_endpoint_id(ctx, dest, &eid, &eid_type, &medium_spec);
+	if (rc < 0) {
+		if (ctx->verbose)
+			fprintf(stderr, "%s failed to get endpoint ID: %d\n",
+				__func__, rc);
+		goto err;
+	}
+
+	return sd_bus_reply_method_return(call, "yyy", eid, eid_type, medium_spec);
+
+err:
+	set_berr(ctx, rc, berr);
+	return rc;
+}
+
 static int method_get_routing_table(sd_bus_message *call, void *data,
 				    sd_bus_error *berr)
 {
@@ -3169,6 +3208,16 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 		SD_BUS_PARAM(path)
 		SD_BUS_PARAM(found),
 		method_learn_endpoint,
+		0),
+
+	SD_BUS_METHOD_WITH_NAMES("GetEndpointID",
+		"ay",
+		SD_BUS_PARAM(physaddr),
+		"yyy",
+		SD_BUS_PARAM(eid)
+		SD_BUS_PARAM(eid_type)
+		SD_BUS_PARAM(medium_spec),
+		method_get_endpoint_id,
 		0),
 
 	SD_BUS_METHOD_WITH_ARGS("GetRoutingTable",

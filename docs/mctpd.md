@@ -81,6 +81,7 @@ au.com.codeconstruct.MCTP.Interface1 interface -         -            -
 au.com.codeconstruct.MCTP.BusOwner1  interface -         -            -
 .AssignEndpoint                      method    ay        yisb         -
 .AssignEndpointStatic                method    ayyay      yisb         -
+.GetEndpointID                       method    ay        yyy          -
 .LearnEndpoint                       method    ay        yisb         -
 .SetupEndpoint                       method    ay        yisb         -
 ```
@@ -157,6 +158,31 @@ endpoint.
 Like SetupEndpoint but will not assign EIDs, will only query endpoints for a
 current EID. The `new` return value is set to `false` for an already known
 endpoint, or `true` when an endpoint's EID is newly discovered.
+
+#### `.GetEndpointID`: `ay` → `yyy`
+
+Queries an endpoint's current EID and properties using physical addressing
+without modifying any state. Returns the EID (0 if unassigned), endpoint type
+information, and medium-specific data.
+
+`GetEndpointID <hwaddr>`
+
+Returns
+```
+eid         (byte) - Current EID
+eid_type    (byte) - Endpoint type and EID type information
+medium_spec (byte) - Medium-specific information
+```
+
+An example:
+```shell
+busctl call au.com.codeconstruct.MCTP1 \
+    /au/com/codeconstruct/mctp1/interfaces/mctpi2c6 \
+    au.com.codeconstruct.MCTP.BusOwner1 \
+    GetEndpointID ay 1 0x1d
+```
+
+This would return the current EID and properties of the device at I2C address 0x1d.
 
 ## Network objects: `/au/com/codeconstruct/networks/<net>`
 
