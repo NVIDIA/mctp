@@ -1355,3 +1355,35 @@ async def test_dbus_get_endpoint_id_after_reset(dbus, mctpd):
     assert returned_eid == 0
     assert eid_type == 0
     assert medium_spec == 0
+
+""" Test that the already discovered endpoint emits a property
+change signal when the endpoint is learned """
+async def test_learn_endpoint_emit_prop_signal(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    # Set up endpoint first
+    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    ep_obj = await dbus.get_proxy_object(MCTPD_C, path)
+    ep_props = await ep_obj.get_interface(DBUS_PROPERTIES_I)
+
+    # Wait for connectivity change signal for discovered endpoint
+    learned = trio.Semaphore(initial_value = 0)
+    def ep_connectivity_changed(iface, changed, invalidated):
+        if iface == MCTPD_ENDPOINT_I and \
+                'Connectivity' in changed:
+            if 'Available' == changed['Connectivity'].value:
+                learned.release()
+
+    await ep_props.on_properties_changed(ep_connectivity_changed)
+
+    # Learn the endpoint
+    (_, _, learned_path, _) = await mctp.call_learn_endpoint(ep.lladdr)
+    assert learned_path == path
+    # Wait for the property change signal with timeout
+    with trio.fail_after(5) as timeout:
+        await learned.acquire()
+
+    assert not timeout.cancelled_caught
