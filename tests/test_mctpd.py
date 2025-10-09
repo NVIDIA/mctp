@@ -1261,3 +1261,97 @@ async def test_service_readiness_comprehensive(dbus, mctpd):
     # Verify that the state only changed once (from Starting to Enabled)
     assert len(state_changes) == 1, f"Expected exactly one state change, got {len(state_changes)}: {state_changes}"
     assert state_changes[0] == SERVICE_STATE_ENABLED
+
+""" Test the GetEndpointID D-Bus method - basic functionality """
+async def test_dbus_get_endpoint_id(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Set up the endpoint first using SetupEndpoint
+    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    
+    # Now test GetEndpointID
+    (returned_eid, eid_type, medium_spec) = await mctp.call_get_endpoint_id(ep.lladdr)
+    
+    # Verify the returned EID matches what was assigned
+    assert returned_eid == eid
+    assert returned_eid == ep.eid
+    
+    # Verify eid_type bits
+    # Bits [5:4] should indicate endpoint type (00b = simple endpoint)
+    endpoint_type = (eid_type >> 4) & 0x3
+    assert endpoint_type == 0  # Simple endpoint
+    
+    # Bits [1:0] should indicate EID type (00b = dynamic EID) 
+    eid_id_type = eid_type & 0x3
+    assert eid_id_type == 0  # Dynamic EID
+    
+    # Medium specific should be 0 for default
+    assert medium_spec == 0
+
+""" Test GetEndpointID with unassigned endpoint (EID = 0) """
+async def test_dbus_get_endpoint_id_unassigned(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    # Create endpoint with EID 0 (unassigned)
+    ep = Endpoint(iface, bytes([0x1f]), eid=0)
+    mctpd.network.add_endpoint(ep)
+    
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Query unassigned endpoint
+    (returned_eid, eid_type, medium_spec) = await mctp.call_get_endpoint_id(ep.lladdr)
+    
+    # Should return EID 0 for unassigned
+    assert returned_eid == 0
+    assert eid_type == 0
+    assert medium_spec == 0
+
+""" Test GetEndpointID with non-existent physical address """
+async def test_dbus_get_endpoint_id_nonexistent_physaddr(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Try with non-existent physical address
+    nonexistent_lladdr = bytes([0xff])
+    
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await mctp.call_get_endpoint_id(nonexistent_lladdr)
+    
+    # Should timeout with "MCTP Endpoint did not respond" error
+    assert "MCTP Endpoint did not respond" in str(ex.value)
+
+""" Test GetEndpointID with invalid oversized physical address """
+async def test_dbus_get_endpoint_id_invalid_physaddr(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Try with physical address that exceeds MAX_ADDR_LEN (32 bytes)
+    # This triggers EINVAL in message_read_hwaddr before validation
+    invalid_lladdr = bytes([0x01] * 33)  # 33 bytes, exceeds limit
+    
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await mctp.call_get_endpoint_id(invalid_lladdr)
+    
+    # Should fail with "Request failed" error (EINVAL from message_read_hwaddr)
+    assert "Request failed" in str(ex.value)
+
+""" Test GetEndpointID immediately after endpoint reset """
+async def test_dbus_get_endpoint_id_after_reset(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    
+    # Set up endpoint first
+    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    
+    # Reset the endpoint (this simulates power cycle)
+    ep.reset()
+    ep.eid = 0  # Reset to unassigned
+    
+    # Query should return EID 0 after reset
+    (returned_eid, eid_type, medium_spec) = await mctp.call_get_endpoint_id(ep.lladdr)
+    
+    assert returned_eid == 0
+    assert eid_type == 0
+    assert medium_spec == 0
