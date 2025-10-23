@@ -3248,11 +3248,6 @@ static const char *get_peer_binding_type(const struct peer *peer)
 		const char *ifname =
 			mctp_nl_if_byindex(peer->ctx->nl, peer->phys.ifindex);
 		binding_name = get_binding_from_ifname(ifname);
-		if (peer->routing_table_entry) {
-			binding_name = phy_transport_binding_to_string(
-				peer->routing_table_entry
-					->phys_transport_binding_id);
-		}
 	} else if (peer->state == LOCAL) {
 		size_t num_ifs;
 		int *ifs = mctp_nl_if_list(peer->ctx->nl, &num_ifs);
@@ -3299,6 +3294,11 @@ static int bus_endpoint_get_prop(sd_bus *bus, const char *path,
 	} else if (strcmp(property, "MediumType") == 0) {
 		char medium_type_str[128];
 		const char *medium_type = get_peer_binding_type(peer);
+		if (peer->routing_table_entry) {
+			medium_type = phy_transport_binding_to_string(
+				peer->routing_table_entry
+					->phys_transport_binding_id);
+		}
 		snprintf(medium_type_str, sizeof(medium_type_str),
 			 "xyz.openbmc_project.MCTP.Endpoint.MediaTypes.%s",
 			 medium_type);
