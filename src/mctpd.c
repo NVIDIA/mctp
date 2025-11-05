@@ -3709,13 +3709,6 @@ static int bus_link_set_prop(sd_bus *bus, const char *path,
 		goto out;
 	}
 
-	if (link->role != ENDPOINT_ROLE_UNKNOWN) {
-		sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-				  "Role is already set.");
-		rc = -ENOENT;
-		goto out;
-	}
-
 	rc = sd_bus_message_read(value, "s", &state);
 	if (rc < 0) {
 		sd_bus_error_setf(
