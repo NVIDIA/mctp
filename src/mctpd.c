@@ -736,6 +736,7 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 {
 	struct mctp_ctrl_cmd_set_eid *req = NULL;
 	struct mctp_ctrl_resp_set_eid respi = { 0 }, *resp = &respi;
+	mctp_eid_t local_eid, src_eid;
 	struct link *link_data;
 	struct peer *peer;
 	size_t resp_len;
@@ -751,6 +752,16 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 	if (!link_data) {
 		bug_warn("unconfigured interface %d", addr->smctp_ifindex);
 		return -ENOENT;
+	}
+
+	// create route for incoming packet SRC eid
+	src_eid = addr->smctp_base.smctp_addr.s_addr;
+	rc = mctp_nl_route_add(ctx->nl, src_eid, 0, addr->smctp_ifindex, NULL,
+			       0);
+	if (rc < 0 && rc != -EEXIST) {
+		warnx("failed to setup routes for incoming SRC EID %d [rc %s]",
+		      src_eid, strerror(-rc));
+		return -errno;
 	}
 
 	mctp_ctrl_msg_hdr_init_resp(&respi.ctrl_hdr, req->ctrl_hdr);
@@ -776,7 +787,7 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 
 	switch (GET_MCTP_SET_EID_OPERATION(req->operation)) {
 	case MCTP_SET_EID_SET:
-		// TODO: for bridges, only accept EIDs from originator bus
+		// for bridges, only accept EIDs from originator bus
 		//
 		// We currently only support endpoints, which require separate
 		// EIDs on interfaces (see function comment). For bridges, we
@@ -785,8 +796,26 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 		// - track the first bus assigned the EID.
 		// - policy for propagating EID to other interfaces (see bridge
 		//   EID options in function comment above)
+		// - Respond with device not ready CC if not assigned already
+		// - Repond with already assigned eid with no dynamic pool size
 
-		// fallthrough
+		local_eid = local_addr(ctx, addr->smctp_ifindex);
+		resp->status =
+			SET_MCTP_EID_ASSIGNMENT_STATUS(MCTP_SET_EID_REJECTED) |
+			SET_MCTP_EID_ALLOCATION_STATUS(
+				MCTP_SET_EID_POOL_RECEIVED);
+
+		if (!local_eid) {
+			resp->eid_set = 0;
+			resp->completion_code = MCTP_CTRL_CC_ERROR_NOT_READY;
+			return reply_message_phys(ctx, sd, resp, resp_len, addr);
+		} else {
+			resp->eid_set = local_eid;
+			resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+			resp->eid_pool_size = 0;
+		}
+
+		return reply_message(ctx, sd, resp, resp_len, addr);
 	case MCTP_SET_EID_FORCE:
 
 		fprintf(stderr, "setting EID to %d\n", req->eid);
