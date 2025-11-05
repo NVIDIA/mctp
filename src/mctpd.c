@@ -255,6 +255,15 @@ struct ctx {
 
 	//  maximum pool size for assumed MCTP Bridge
 	uint8_t max_pool_size;
+
+	// Own Bridge EID
+	mctp_eid_t bmc_bridge_eid;
+	// Cached Routing Entires
+	struct {
+		struct routing_info_entry **routing_info_entries;
+		uint8_t *entry_sizes;
+		uint8_t count;
+	} cache_entries;
 };
 
 static int emit_endpoint_added(const struct peer *peer);
@@ -289,6 +298,11 @@ static int add_interface(struct ctx *ctx, int ifindex);
 static int endpoint_allocate_eid(struct peer *peer);
 static int query_routing_table(struct peer *peer);
 static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid);
+static int endpoint_send_routing_info_update(struct peer *peer,
+					     mctp_eid_t first_eid,
+					     uint8_t range, uint8_t entry_type,
+					     uint8_t phy_addr_size,
+					     uint8_t *phy_addr);
 
 static const sd_bus_vtable bus_endpoint_obmc_vtable[];
 static const sd_bus_vtable bus_endpoint_cc_vtable[];
@@ -1085,6 +1099,148 @@ static int handle_control_unsupported(struct ctx *ctx, int sd,
 	return reply_message(ctx, sd, resp, sizeof(*resp), addr);
 }
 
+// Assumption: Incoming Routing Info Update message contains only single entry
+// with single EID from bus owner.
+static int
+handle_control_routing_info_update(struct ctx *ctx, int sd,
+				   const struct sockaddr_mctp_ext *addr,
+				   const uint8_t *buf, const size_t buf_size)
+{
+	struct mctp_ctrl_cmd_routing_info_update *req = NULL;
+	struct mctp_ctrl_resp resp = {};
+	struct peer *local_peer = NULL;
+	mctp_eid_t local_eid = 0;
+	size_t resp_len;
+	int rc = 0;
+
+	if (buf_size < sizeof(struct mctp_ctrl_cmd_routing_info_update)) {
+		warnx("short Routing Information Update message");
+		return -ENOMSG;
+	}
+
+	struct link *link_data;
+	link_data = mctp_nl_get_link_userdata(ctx->nl, addr->smctp_ifindex);
+	if (!link_data) {
+		bug_warn("unconfigured interface %d", addr->smctp_ifindex);
+		return -ENOENT;
+	}
+
+	if (link_data->role == ENDPOINT_ROLE_BUS_OWNER) {
+		warnx("Rejected Routing Info Update because we are the bus owner");
+		resp.completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
+		goto out;
+	}
+
+	req = (void *)buf;
+	mctp_ctrl_msg_hdr_init_resp(&resp.ctrl_hdr, req->ctrl_hdr);
+	resp.completion_code = MCTP_CTRL_CC_SUCCESS;
+
+	local_eid = local_addr(ctx, addr->smctp_ifindex);
+	local_peer = find_peer_by_addr(ctx, local_eid,
+				       addr->smctp_base.smctp_network);
+	if (!local_peer || !local_eid) {
+		warnx("Missing Gateway local eid peer configuration?");
+		resp.completion_code = MCTP_CTRL_CC_ERROR;
+		goto out;
+	}
+
+	// 1. Parse routing entries from the request
+	uint8_t *entry_ptr = req->entries;
+
+	struct routing_info_entry *entry =
+		(struct routing_info_entry *)entry_ptr;
+	uint8_t entry_type = entry->entry_type & 0x0F;
+	uint8_t eid_range = entry->eid_range;
+	mctp_eid_t first_eid = entry->first_eid;
+	size_t phyaddr_size =
+		(buf_size - 3) - (sizeof(struct routing_info_entry) - 1);
+
+	// 2. create local route for first_eid
+	rc = mctp_nl_route_add(ctx->nl, first_eid, 0, addr->smctp_ifindex, NULL,
+			       local_peer->mtu);
+	if (rc < 0 && rc != -EEXIST) {
+		warnx("failed to setup routes for first eid %d from"
+		      "local if eid %d rc %s",
+		      first_eid, local_eid, strerror(-rc));
+		resp.completion_code = MCTP_CTRL_CC_ERROR;
+		goto out;
+	}
+
+	// 3. send same routing data to all bridges
+	struct peer *sendto_peer = NULL;
+
+	for (size_t i = 0; i < ctx->num_peers; i++) {
+		sendto_peer = ctx->peers[i];
+
+		if (sendto_peer->pool_size > 0) {
+			fprintf(stderr,
+				"Sending Routing Info Update for EID %d to bridge EID %d\n",
+				first_eid, sendto_peer->eid);
+
+			/* DSP0236: 12.11 Routing Information Update
+			  The Routing Information Update message is used by
+			  a bus owner to give routing information to a bridge
+			  for the bus on which the message is being received.
+			  Because the physical address format is based on the
+			  bus over which the request is delivered, the bus
+			  owner shall use the medium-specific physical address
+			  format for the addresses sent using this command.
+			 */
+
+			/*
+			  * Note: Currently, all bridges are assumed to operate on USB buses,
+			  * which do not utilize a physical address. If future platforms introduce
+			  * bridges on buses that support medium-specific physical addresses,
+			  * this logic must be updated to use the Bus owner's physical
+			  * address corresponding to the bus on which the bridge is connected.
+			  */
+			rc = endpoint_send_routing_info_update(
+				sendto_peer, first_eid, eid_range, entry_type,
+				0, NULL);
+			if (rc < 0) {
+				warnx("Routing Info update failed for bridge eid %d: rc %s",
+				      sendto_peer->eid, strerror(-rc));
+			}
+		}
+	}
+
+	// 4. Update routing info entry cache
+	struct routing_info_entry *copy_entry =
+		(struct routing_info_entry *)malloc(phyaddr_size + 3);
+	if (!copy_entry) {
+		warnx("Fail to update cache with entry of first eid %d",
+		      first_eid);
+		goto out;
+	}
+	memcpy(copy_entry, entry, (phyaddr_size + 3));
+
+	struct routing_info_entry **tmp =
+		realloc(ctx->cache_entries.routing_info_entries,
+			(ctx->cache_entries.count +
+			 1) * sizeof(*ctx->cache_entries.routing_info_entries));
+
+	uint8_t *temp_size = realloc(ctx->cache_entries.entry_sizes,
+				     (ctx->cache_entries.count + 1));
+	if (!tmp || !temp_size) {
+		free(copy_entry);
+		warnx("Fail to update cache with entry of first eid %d",
+		      first_eid);
+		goto out;
+	}
+
+	ctx->cache_entries.routing_info_entries = tmp;
+	ctx->cache_entries.entry_sizes = temp_size;
+	ctx->cache_entries.routing_info_entries[ctx->cache_entries.count] =
+		copy_entry;
+	ctx->cache_entries.entry_sizes[ctx->cache_entries.count] =
+		(phyaddr_size + 3);
+	ctx->cache_entries.count += 1;
+
+out:
+	resp_len = sizeof(resp);
+	return reply_message(ctx, sd, &resp, resp_len, addr);
+}
+
 static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 				 void *userdata)
 {
@@ -1148,6 +1304,10 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 	case MCTP_CTRL_CMD_DISCOVERY_NOTIFY:
 		rc = handle_control_discovery_notify(ctx, sd, &addr, buf,
 						     buf_size);
+		break;
+	case MCTP_CTRL_CMD_ROUTING_INFO_UPDATE:
+		rc = handle_control_routing_info_update(ctx, sd, &addr, buf,
+							buf_size);
 		break;
 	default:
 		if (ctx->verbose) {
@@ -3754,6 +3914,9 @@ static int bus_link_set_prop(sd_bus *bus, const char *path,
 		goto out;
 	}
 	link->role = role.role;
+	if (link->role == ENDPOINT_ROLE_ENDPOINT && (!ctx->bmc_bridge_eid)) {
+		ctx->bmc_bridge_eid = local_addr(ctx, link->ifindex);
+	}
 
 out:
 	set_berr(ctx, rc, berr);
@@ -4989,6 +5152,7 @@ out:
 	free(buf);
 	return rc;
 }
+
 static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void *data)
 {
 	struct peer *peer = data;
@@ -5010,6 +5174,34 @@ static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void *data)
 	// Clean up the timer reference
 	sd_event_source_unref(peer->bridge_settle_timer);
 	peer->bridge_settle_timer = NULL;
+	// BMC as bridge :Check existing any eid cached routing data send it as Routing Info Update
+	uint8_t bridge_bmc_eid = peer->ctx->bmc_bridge_eid;
+	// BMC as bridge not enabled.
+	if (!bridge_bmc_eid)
+		return 0;
+
+	for (uint8_t i = 0; i < peer->ctx->cache_entries.count; i++) {
+		struct routing_info_entry *entry =
+			(struct routing_info_entry *)peer->ctx->cache_entries
+				.routing_info_entries[i];
+		uint8_t entry_type = entry->entry_type & 0x0F;
+		uint8_t eid_range = entry->eid_range;
+		mctp_eid_t first_eid = entry->first_eid;
+		uint8_t *phy_addr = entry->phys_address;
+		size_t phyaddr_size =
+			(peer->ctx->cache_entries.entry_sizes[i] - 3);
+
+		fprintf(stderr,
+			"Sending Routing Info update [EID %d] to bridge EID %d \n",
+			first_eid, peer->eid);
+		rc = endpoint_send_routing_info_update(
+			peer, first_eid, eid_range, entry_type, phyaddr_size,
+			(!phyaddr_size) ? NULL : phy_addr);
+		if (rc < 0) {
+			warnx("Routing Info update [%i] failed to bridge eid %d: entry [EID %d]: [rc %s]",
+			      i, peer->eid, first_eid, strerror(-rc));
+		}
+	}
 
 	return 0;
 }
@@ -5384,6 +5576,64 @@ static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid)
 			return true;
 	}
 	return false;
+}
+
+static int endpoint_send_routing_info_update(struct peer *peer,
+					     mctp_eid_t first_eid,
+					     uint8_t range, uint8_t entry_type,
+					     uint8_t phy_addr_size,
+					     uint8_t *phy_addr)
+{
+	size_t entry_size =
+		sizeof(struct routing_info_entry) - 1 + phy_addr_size;
+	struct routing_info_entry *e =
+		(struct routing_info_entry *)malloc(entry_size);
+	struct mctp_ctrl_resp *resp = NULL;
+	struct mctp_ctrl_cmd_routing_info_update *req = NULL;
+	struct sockaddr_mctp_ext addr;
+	uint8_t *buf = NULL;
+	size_t buf_size;
+	uint8_t iid;
+	int rc;
+	size_t req_len;
+
+	iid = mctp_next_iid(peer->ctx);
+
+	e->entry_type = 0;
+	e->eid_range = range;
+	e->first_eid = first_eid;
+
+	if (phy_addr_size > 0 && phy_addr)
+		memcpy(e->phys_address, phy_addr, phy_addr_size);
+
+	req_len = sizeof(struct mctp_ctrl_cmd_routing_info_update) - 1 +
+		  entry_size;
+	req = (struct mctp_ctrl_cmd_routing_info_update *)malloc(req_len);
+	mctp_ctrl_msg_hdr_init_req(&req->ctrl_hdr, iid,
+				   MCTP_CTRL_CMD_ROUTING_INFO_UPDATE);
+	req->number_of_entries = 1;
+
+	memcpy(req->entries, e, entry_size);
+
+	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, req, req_len,
+				 &buf, &buf_size, &addr);
+	if (rc < 0)
+		goto out;
+
+	resp = (void *)buf;
+	if (!resp) {
+		warnx("%s Invalid response Buffer\n", __func__);
+		return -ENOMEM;
+	}
+
+	if (resp->completion_code != MCTP_CTRL_CC_SUCCESS) {
+		warnx("Failed to upate routing entry [Comp Code :: %x]",
+		      resp->completion_code);
+	}
+
+out:
+	free(buf);
+	return rc;
 }
 
 int main(int argc, char **argv)

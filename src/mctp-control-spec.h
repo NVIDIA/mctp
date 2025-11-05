@@ -208,6 +208,19 @@ struct mctp_ctrl_resp_resolve_endpoint_id {
 	// ... uint8_t physical_address[N]
 } __attribute__((__packed__));
 
+struct mctp_ctrl_cmd_routing_info_update {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	uint8_t number_of_entries;
+	uint8_t entries[1];
+} __attribute__((__packed__));
+
+struct routing_info_entry {
+	uint8_t entry_type;
+	uint8_t eid_range;
+	uint8_t first_eid;
+	uint8_t phys_address[1];
+} __attribute__((__packed__));
+
 #define MCTP_CTRL_HDR_MSG_TYPE 0
 #define MCTP_CTRL_HDR_FLAG_REQUEST (1 << 7)
 #define MCTP_CTRL_HDR_FLAG_DGRAM (1 << 6)
