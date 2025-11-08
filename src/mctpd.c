@@ -270,7 +270,7 @@ static int remove_peer(struct peer *peer);
 static int query_peer_properties(struct peer *peer);
 static int setup_added_peer(struct peer *peer);
 static void add_peer_route(struct peer *peer);
-static int publish_peer(struct peer *peer);
+static int publish_peer(struct peer *peer, bool add_route);
 static int unpublish_peer(struct peer *peer);
 static int peer_route_update(struct peer *peer, uint16_t type);
 static int peer_neigh_update(struct peer *peer, uint16_t type);
@@ -1860,8 +1860,7 @@ static int change_peer_eid(struct peer *peer, mctp_eid_t new_eid)
 	n->peers[new_eid] = n->peers[peer->eid];
 	n->peers[peer->eid] = NULL;
 	peer->eid = new_eid;
-	add_peer_route(peer);
-	rc = publish_peer(peer);
+	rc = publish_peer(peer, true);
 	if (rc)
 		return rc;
 
@@ -1940,11 +1939,6 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 			return -EADDRNOTAVAIL;
 		}
 	}
-
-	/* Add a route to the peer prior to assigning it an EID.
-	 * The peer may initiate communication immediately, so
-	 * it should be routable. */
-	add_peer_route(peer);
 
 	rc = endpoint_send_set_endpoint_id(peer, &new_eid);
 	if (rc == -ECONNREFUSED)
@@ -2762,8 +2756,7 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 	return -EPROTO;
 }
 
-/* Called when a new peer is discovered. Queries properties and publishes.
- * The peer's route has already been set up */
+/* Called when a new peer is discovered. Queries properties and publishes */
 static int setup_added_peer(struct peer *peer)
 {
 	int rc;
@@ -2779,7 +2772,7 @@ static int setup_added_peer(struct peer *peer)
 	if (rc < 0)
 		goto out;
 
-	rc = publish_peer(peer);
+	rc = publish_peer(peer, true);
 out:
 	if (rc < 0) {
 		remove_peer(peer);
@@ -2818,9 +2811,8 @@ static void add_peer_neigh(struct peer *peer)
 }
 
 /* Adds routes/neigh. This is separate from
-   publish_peer() because a route should exist prior to Set Endpoint ID,
-   and it will also need to exist while querying
-   properties (using routed packets). */
+   publish_peer() because we want a two stage setup of querying
+   properties (routed packets) then emitting dbus once finished */
 static void add_peer_route(struct peer *peer)
 {
 	int rc;
@@ -2842,11 +2834,14 @@ static void add_peer_route(struct peer *peer)
 	}
 }
 
-/* Creates dbus object and emits added signal.
- * Route/neigh should already have been added. */
-static int publish_peer(struct peer *peer)
+/* Sets up routes/neigh, creates dbus object and emits added signal */
+static int publish_peer(struct peer *peer, bool add_route)
 {
 	int rc = 0;
+
+	if (add_route && peer->state == REMOTE) {
+		add_peer_route(peer);
+	}
 
 	if (peer->published) {
 		// If we are trying to publish again, this could be case of endpoint reset
@@ -3227,7 +3222,7 @@ static int method_net_learn_endpoint(sd_bus_message *call, void *data,
 
 	query_peer_properties(peer);
 
-	publish_peer(peer);
+	publish_peer(peer, false);
 
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
@@ -4182,8 +4177,7 @@ static int change_net_interface(struct ctx *ctx, int ifindex, uint32_t old_net)
 		new_n->peers[peer->eid] = old_n->peers[peer->eid];
 		old_n->peers[peer->eid] = NULL;
 		peer->net = new_net;
-		add_peer_route(peer);
-		rc = publish_peer(peer);
+		rc = publish_peer(peer, true);
 		if (rc) {
 			warnx("Error publishing new peer eid %d, net %d after change: %s",
 			      peer->eid, peer->net, strerror(-rc));
@@ -4238,7 +4232,7 @@ static int add_local_eid(struct ctx *ctx, uint32_t net, int eid)
 		warnx("Out of memory");
 	}
 
-	rc = publish_peer(peer);
+	rc = publish_peer(peer, true);
 	if (rc) {
 		warnx("Error publishing local eid %d net %d", eid, net);
 	}
