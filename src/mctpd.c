@@ -258,6 +258,8 @@ struct ctx {
 
 	// Own Bridge EID
 	mctp_eid_t bmc_bridge_eid;
+	mctp_eid_t *bmc_ignore_eids;
+	uint8_t bmc_ignore_eids_count;
 	// Cached Routing Entires
 	struct {
 		struct routing_info_entry **routing_info_entries;
@@ -829,6 +831,16 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 			resp->eid_pool_size = 0;
 		}
 
+		// 5. Update bmc_ignore_eids list
+		uint8_t *temp_ignore_eids = realloc(ctx->bmc_ignore_eids, ctx->bmc_ignore_eids_count + 1);
+		if (!temp_ignore_eids) {
+			warnx("Fail to update ignore eids list with entry of src eid %d",
+				src_eid);
+			return -ENOMEM;
+		}
+		ctx->bmc_ignore_eids = temp_ignore_eids;
+		ctx->bmc_ignore_eids[ctx->bmc_ignore_eids_count] = src_eid;
+		ctx->bmc_ignore_eids_count += 1;
 		return reply_message(ctx, sd, resp, resp_len, addr);
 	case MCTP_SET_EID_FORCE:
 
@@ -1235,6 +1247,17 @@ handle_control_routing_info_update(struct ctx *ctx, int sd,
 	ctx->cache_entries.entry_sizes[ctx->cache_entries.count] =
 		(phyaddr_size + 3);
 	ctx->cache_entries.count += 1;
+
+	// 5. Update bmc_ignore_eids list
+	uint8_t *temp_ignore_eids = realloc(ctx->bmc_ignore_eids, ctx->bmc_ignore_eids_count + 1);
+	if (!temp_ignore_eids) {
+		warnx("Fail to update ignore eids list with entry of first eid %d",
+		      first_eid);
+		goto out;
+	}
+	ctx->bmc_ignore_eids = temp_ignore_eids;
+	ctx->bmc_ignore_eids[ctx->bmc_ignore_eids_count] = first_eid;
+	ctx->bmc_ignore_eids_count += 1;
 
 out:
 	resp_len = sizeof(resp);
@@ -5082,6 +5105,8 @@ static void setup_config_defaults(struct ctx *ctx)
 	ctx->max_pool_size = 15;
 	ctx->dyn_eid_min = eid_alloc_min;
 	ctx->dyn_eid_max = eid_alloc_max;
+	ctx->bmc_ignore_eids = NULL;
+	ctx->bmc_ignore_eids_count = 0;
 }
 
 static void free_config(struct ctx *ctx)
@@ -5574,6 +5599,14 @@ static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid)
 	for (size_t i = 0; i < peer->num_ignore_eids; i++) {
 		if (peer->ignore_eids[i] == eid)
 			return true;
+	}
+
+	// Check if BMC as Bridge is enabled
+	if (peer->ctx->bmc_bridge_eid) {
+		for (size_t i = 0; i < peer->ctx->bmc_ignore_eids_count; i++) {
+			if (peer->ctx->bmc_ignore_eids[i] == eid)
+				return true;
+		}
 	}
 	return false;
 }
