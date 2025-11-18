@@ -67,4 +67,49 @@ const char *get_binding_from_ifname(const char *ifname)
 	return "Unknown";
 }
 
+ #ifndef MCTP_OPT_ENABLE_ERRQUEUE
+ #define MCTP_OPT_ENABLE_ERRQUEUE 2
+ #endif
+ 
+ #ifndef MCTP_RECVERR
+ #define MCTP_RECVERR 1
+ #endif
+ 
+ #ifndef MCTP_ERROR_PAYLOAD_SIZE
+ #define MCTP_ERROR_PAYLOAD_SIZE 64
+ #endif
+ 
+ #define MCTP_DIR_TX 0
+ #define MCTP_DIR_RX 1
+ 
+ /* MCTP Binding Types (must match kernel values in linux/mctp.h) */
+enum mctp_phys_binding {
+	MCTP_PHYS_BINDING_UNSPEC	= 0x00,
+	MCTP_PHYS_BINDING_SMBUS		= 0x01,
+	MCTP_PHYS_BINDING_PCIE_VDM	= 0x02,
+	MCTP_PHYS_BINDING_USB		= 0x03,
+	MCTP_PHYS_BINDING_KCS		= 0x04,
+	MCTP_PHYS_BINDING_SERIAL	= 0x05,
+	MCTP_PHYS_BINDING_I3C		= 0x06,
+	MCTP_PHYS_BINDING_MMBI		= 0x07,
+	MCTP_PHYS_BINDING_PCC		= 0x08,
+	MCTP_PHYS_BINDING_UCIE		= 0x09,
+	MCTP_PHYS_BINDING_VENDOR	= 0xFF,
+};
+ 
+ struct mctp_error {
+	 uint32_t error_code;
+	 uint8_t direction;
+	 uint8_t binding;
+	 uint16_t reserved1;      /* Padding for alignment */
+	 uint8_t src_eid;
+	 uint8_t dest_eid;
+	 uint8_t tag;
+	 uint8_t msg_type;
+	 uint64_t timestamp_ns;
+	 uint16_t payload_len;
+	 uint16_t reserved2;      /* Padding for alignment */
+	 uint8_t payload[MCTP_ERROR_PAYLOAD_SIZE];
+ } __attribute__((packed));
+
 #endif
