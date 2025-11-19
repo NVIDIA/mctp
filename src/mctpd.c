@@ -365,6 +365,7 @@ static struct peer *find_peer_by_addr(struct ctx *ctx, mctp_eid_t eid,
 	return NULL;
 }
 
+
 static int find_local_eids_by_net(struct net *net, size_t *local_eid_cnt,
 				  mctp_eid_t *ret_eids)
 {
@@ -2309,9 +2310,12 @@ static int query_get_peer_uuid(struct peer *peer)
 
 	resp = (void *)buf;
 
-	rc = peer_set_uuid(peer, resp->uuid);
-	if (rc < 0)
-		goto out;
+	/* Only set UUID if we don't have one already stored */
+	if (!peer->uuid) {
+		rc = peer_set_uuid(peer, resp->uuid);
+		if (rc < 0)
+			goto out;
+	}
 	rc = 0;
 
 out:
@@ -2669,6 +2673,56 @@ static int method_get_endpoint_id(sd_bus_message *call, void *data,
 	}
 
 	return sd_bus_reply_method_return(call, "yyy", eid, eid_type, medium_spec);
+
+err:
+	set_berr(ctx, rc, berr);
+	return rc;
+}
+
+static int method_endpoint_ping(sd_bus_message *call, void *data,
+				sd_bus_error *berr)
+{
+	struct link *link = data;
+	struct ctx *ctx = link->ctx;
+	mctp_eid_t eid;
+	struct peer *peer;
+	uint8_t uuid[16] = { 0 };
+	int rc;
+
+	rc = sd_bus_message_read_basic(call, 'y', &eid);
+	if (rc < 0) {
+		sd_bus_error_set_errno(berr, -rc);
+		return rc;
+	}
+
+	if (eid < 8 || eid == 0xff) {
+		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
+					 "Invalid EID %d", eid);
+	}
+
+	/* Find the peer by EID in this link's network */
+	uint32_t net = mctp_nl_net_byindex(ctx->nl, link->ifindex);
+	peer = find_peer_by_addr(ctx, eid, net);
+	if (!peer) {
+		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
+					 "Unknown EID %d", eid);
+	}
+
+	/* Always query the device for its UUID to check if it's alive */
+	rc = query_get_peer_uuid(peer);
+	if (rc < 0) {
+		if (ctx->verbose)
+			fprintf(stderr, "%s failed to get endpoint UUID for EID %d: %d\n",
+				__func__, eid, rc);
+		goto err;
+	}
+
+	/* Return the UUID from peer structure */
+	if (peer->uuid) {
+		memcpy(uuid, peer->uuid, 16);
+	}
+
+	return sd_bus_reply_method_return(call, "ay", 16, uuid);
 
 err:
 	set_berr(ctx, rc, berr);
@@ -3399,14 +3453,12 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 		method_learn_endpoint,
 		0),
 
-	SD_BUS_METHOD_WITH_NAMES("GetEndpointID",
+	SD_BUS_METHOD_WITH_NAMES("EndpointPing",
+		"y",
+		SD_BUS_PARAM(eid),
 		"ay",
-		SD_BUS_PARAM(physaddr),
-		"yyy",
-		SD_BUS_PARAM(eid)
-		SD_BUS_PARAM(eid_type)
-		SD_BUS_PARAM(medium_spec),
-		method_get_endpoint_id,
+		SD_BUS_PARAM(uuid),
+		method_endpoint_ping,
 		0),
 
 	SD_BUS_METHOD_WITH_ARGS("GetRoutingTable",
