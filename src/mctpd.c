@@ -5063,6 +5063,9 @@ static int query_routing_table(struct peer *peer)
 						continue;
 					}
 
+					allocated_peer->routing_table_entry =
+						local_routing[index];
+					local_routing[index] = NULL;
 					rc = setup_added_peer(allocated_peer);
 					if (rc < 0) {
 						warnx("%s failed to setup peer for active eid %d: %d %s",
@@ -5076,10 +5079,6 @@ static int query_routing_table(struct peer *peer)
 							"created new endpoint %d\n",
 							eid);
 					}
-
-					allocated_peer->routing_table_entry =
-						local_routing[index];
-					local_routing[index] = NULL;
 				} else {
 					// EID is active and exists locally - send connectivity change
 					existing_peer->degraded = false;
