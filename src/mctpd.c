@@ -207,8 +207,6 @@ struct peer {
 	size_t num_ignore_eids;
 	// Routing Table Data
 	struct get_routing_table_entry *routing_table_entry;
-	// Timer for bridge EID population
-	sd_event_source *bridge_settle_timer;
 	struct {
 		uint64_t delay;
 		sd_event_source *source;
@@ -1773,18 +1771,6 @@ static int remove_peer(struct peer *peer)
 			      rc);
 		}
 		sd_event_source_unref(peer->recovery.source);
-	}
-
-	if (peer->bridge_settle_timer) {
-		int rc;
-		rc = sd_event_source_set_enabled(peer->bridge_settle_timer,
-						 SD_EVENT_OFF);
-		if (rc < 0) {
-			warnx("Failed to stop bridge settle timer while removing peer: %d",
-			      rc);
-		}
-		sd_event_source_unref(peer->bridge_settle_timer);
-		peer->bridge_settle_timer = NULL;
 	}
 
 	n->peers[peer->eid] = NULL;
@@ -4788,20 +4774,11 @@ static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void *data)
 
 	fprintf(stderr, "Bridge Time expired\n");
 	/* call to populate RoutingTable information*/
-	if (!peer) {
-		bug_warn("Invalid timer expiry");
-		return 0;
-	}
-
 	fprintf(stderr, "Call into GetRouting Table for EID %d\n", peer->eid);
 	rc = query_routing_table(peer);
 	if (rc < 0) {
 		warnx("Failed to get Routing Table information\n");
 	}
-
-	// Clean up the timer reference
-	sd_event_source_unref(peer->bridge_settle_timer);
-	peer->bridge_settle_timer = NULL;
 
 	return 0;
 }
@@ -4875,10 +4852,9 @@ static int endpoint_allocate_eid(struct peer *peer)
 			return -1;
 		}
 		timer_usec = now_usec + BRIDGE_SETTLE_DELAY_SEC * 1000000ULL;
-		rc = sd_event_add_time(peer->ctx->event,
-				       &peer->bridge_settle_timer,
-				       CLOCK_MONOTONIC, timer_usec, 0,
-				       cb_populate_pool_eids, peer);
+		rc = sd_event_add_time(peer->ctx->event, NULL, CLOCK_MONOTONIC,
+				       timer_usec, 0, cb_populate_pool_eids,
+				       peer);
 
 		sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_bridge, peer->path,
 			CC_MCTP_DBUS_IFACE_BRIDGE, bus_endpoint_bridge,
@@ -4954,12 +4930,8 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 		struct get_routing_table_entry *entry =
 			(struct get_routing_table_entry *)resp->routing_entries;
 		for (uint8_t idx = 0; idx < resp->number_of_entries; idx++) {
-			if ((entry->starting_eid == peer->eid) ||
-			    (entry->starting_eid < peer->pool_start)) {
-				// Skip bridge's own eid or any eid < pool start
-				if (peer->ctx->verbose)
-					fprintf(stderr, "skipping eid %d\n",
-						entry->starting_eid);
+			if (entry->starting_eid == peer->eid) {
+				// Skip bridge's own eid
 				entry = (struct get_routing_table_entry
 						 *)((char *)(&entry->phys_address_size) +
 						    entry->phys_address_size +
