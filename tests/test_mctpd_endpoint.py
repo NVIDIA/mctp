@@ -54,8 +54,8 @@ async def test_accept_set_eid(dbus, mctpd):
     rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02))
     assert rsp.hex(' ') == '00 02 00 00 02 00'
 
-    # set EID = 42
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x00, 0x42])))
+    # set EID = 42 (using FORCE operation 0x01)
+    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x01, 0x42])))
     assert rsp.hex(' ') == '00 01 00 00 42 00'
 
     # get EID, expect receive 42 back
@@ -76,18 +76,18 @@ async def test_accept_multiple_set_eids_for_single_interface(dbus, mctpd):
     rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02))
     assert rsp.hex(' ') == '00 02 00 00 02 00'
 
-    # set EID = 42
+    # set EID = 42 (using FORCE operation 0x01)
     first_eid = 42
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x00, first_eid])))
+    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x01, first_eid])))
     assert rsp.hex(' ') == f'00 01 00 00 {first_eid:02x} 00'
 
     # get EID, expect receive 42 back
     rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02))
     assert rsp.hex(' ') == f'00 02 00 {first_eid:02x} 02 00'
 
-    # set EID = 66
+    # set EID = 66 (using FORCE operation 0x01)
     second_eid = 66
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x00, second_eid])))
+    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x01, second_eid])))
     assert rsp.hex(' ') == f'00 01 00 00 {second_eid:02x} 00'
 
     # get EID, expect receive 66 back
