@@ -601,18 +601,15 @@ static int read_message(struct ctx *ctx, int sd, uint8_t **ret_buf,
 		goto out;
 	}
 
-	if (ctx->verbose) {
-		warnx("read_message got from %s len %zu",
-		      ext_addr_tostr(ret_addr), buf_size);
-	}
-
 	*ret_buf = buf;
 	*ret_buf_size = buf_size;
 	rc = 0;
 out:
 	if (rc < 0) {
 		if (ctx->verbose) {
-			warnx("read_message returned error: %s", strerror(-rc));
+			warnx("read_message returned error: %s from %s len %zu",
+			      strerror(-rc), ext_addr_tostr(ret_addr),
+			      buf_size);
 		}
 		free(buf);
 	}
@@ -1368,12 +1365,25 @@ static const char *peer_cmd_prefix(const char *peer, uint8_t cmd)
 	return pfx_str;
 }
 
+/* Common method to print response data
+ * Avoid journal flooding by using only on failure path
+ */
+static int mctp_ctrl_print_response(uint8_t *resp_buf, size_t rsp_size,
+				    struct sockaddr_mctp_ext *resp_addr)
+{
+	fprintf(stderr, "Response received from socket %s len %zu\nbuffer: ",
+		ext_addr_tostr(resp_addr), rsp_size);
+	mctp_hexdump(resp_buf, rsp_size, "");
+	return 0;
+}
+
 /* Common checks for responses: that we have enough data for a response,
  * the expected IID and opcode, and that the response indicated success.
  */
 static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 				       size_t exp_size, const char *peer,
-				       uint8_t iid, uint8_t cmd)
+				       uint8_t iid, uint8_t cmd,
+				       struct sockaddr_mctp_ext *resp_addr)
 {
 	struct mctp_ctrl_resp *rsp;
 
@@ -1396,18 +1406,21 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		warnx("%s: Wrong IID (0x%02x, expected 0x%02x)",
 		      peer_cmd_prefix(peer, cmd),
 		      rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK, iid);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ENOMSG;
 	}
 
 	if (rsp->ctrl_hdr.command_code != cmd) {
 		warnx("%s: Wrong opcode (0x%02x) in response",
 		      peer_cmd_prefix(peer, cmd), rsp->ctrl_hdr.command_code);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ENOMSG;
 	}
 
 	if (rsp->completion_code) {
 		warnx("%s: Command failed, completion code 0x%02x",
 		      peer_cmd_prefix(peer, cmd), rsp->completion_code);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ECONNREFUSED;
 	}
 
@@ -1415,6 +1428,7 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 	if (rsp_size < exp_size) {
 		warnx("%s: Wrong reply length (%zu bytes)",
 		      peer_cmd_prefix(peer, cmd), rsp_size);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ENOMSG;
 	}
 
@@ -1607,7 +1621,7 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+					 MCTP_CTRL_CMD_SET_ENDPOINT_ID, &addr);
 	if (rc)
 		goto out;
 
@@ -2080,7 +2094,7 @@ static int query_get_endpoint_id(struct ctx *ctx, const dest_phys *dest,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_ID);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_ID, &addr);
 	if (rc)
 		goto out;
 
@@ -2183,9 +2197,10 @@ static int query_get_peer_msgtypes(struct peer *peer)
 	if (rc < 0)
 		goto out;
 
-	rc = mctp_ctrl_validate_response(
-		buf, buf_size, sizeof(*resp), peer_tostr_short(peer), iid,
-		MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT);
+	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
+					 peer_tostr_short(peer), iid,
+					 MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT,
+					 &addr);
 	if (rc)
 		goto out;
 
@@ -2246,7 +2261,8 @@ static int query_get_peer_uuid_by_phys(struct ctx *ctx, const dest_phys *dest,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
+					 &addr);
 	if (rc)
 		goto out;
 
@@ -2286,7 +2302,8 @@ static int query_get_peer_uuid(struct peer *peer)
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
+					 &addr);
 	if (rc)
 		goto out;
 
@@ -4747,7 +4764,8 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
-					 MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS);
+					 MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS,
+					 &addr);
 
 	if (rc)
 		goto out;
@@ -4932,7 +4950,7 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 
 	rc = mctp_ctrl_validate_response(
 		buf, buf_size, sizeof(*resp), peer_tostr_short(peer), iid,
-		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES);
+		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr);
 	if (rc)
 		goto out;
 
