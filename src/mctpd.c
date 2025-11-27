@@ -829,6 +829,56 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 			resp->eid_set = local_eid;
 			resp->completion_code = MCTP_CTRL_CC_SUCCESS;
 			resp->eid_pool_size = 0;
+			uint8_t phyaddr_size = 0;
+
+			/*
+			Create a routing entry for BusOwner EID and
+			send out Routing Info Update message to all downstream
+			bridges. Failure in doing so will not be considered
+			as critical error since EID assignement has already been accepted
+			*/ 
+			struct routing_info_entry *copy_entry =
+			(struct routing_info_entry *)malloc(phyaddr_size + 3);
+			if (!copy_entry) {
+				warnx("Fail to allocate memory for entry of first eid %d", src_eid);
+				return reply_message(ctx, sd, resp, resp_len, addr);
+			}
+			copy_entry->entry_type = 0;
+			copy_entry->eid_range = 1;
+			copy_entry->first_eid = src_eid;
+
+			struct routing_info_entry **tmp =
+			realloc(ctx->cache_entries.routing_info_entries, (ctx->cache_entries.count + 1) * sizeof(*ctx->cache_entries.routing_info_entries));
+
+			uint8_t *temp_size = realloc(ctx->cache_entries.entry_sizes, (ctx->cache_entries.count + 1));
+			if (!tmp || !temp_size) {
+				free(copy_entry);
+				warnx("Fail to re-allocate memory for cache entries");
+				return reply_message(ctx, sd, resp, resp_len, addr);
+			}
+
+			ctx->cache_entries.routing_info_entries = tmp;
+			ctx->cache_entries.entry_sizes = temp_size;
+			ctx->cache_entries.routing_info_entries[ctx->cache_entries.count] = copy_entry;
+			ctx->cache_entries.entry_sizes[ctx->cache_entries.count] = (phyaddr_size + 3);
+			ctx->cache_entries.count += 1;
+
+			struct peer *sendto_peer = NULL;
+			for (size_t i = 0; i < ctx->num_peers; i++) {
+				sendto_peer = ctx->peers[i];
+				// Only send to bridges (peers with pool_size > 0)
+				if (sendto_peer->pool_size > 0) {
+					fprintf(stderr, "Sending Routing Info Update for EID %d to bridge EID %d\n",
+						copy_entry->first_eid,
+						sendto_peer->eid);
+					rc = endpoint_send_routing_info_update(
+						sendto_peer, copy_entry->first_eid, copy_entry->eid_range, copy_entry->entry_type, 0,NULL);
+					if (rc < 0) {
+						warnx("Routing Info update failed for bridge eid %d: rc %s",
+							  sendto_peer->eid, strerror(-rc));
+					}
+				}
+			}
 		}
 
 		// 5. Update bmc_ignore_eids list
