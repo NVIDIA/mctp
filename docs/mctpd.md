@@ -159,31 +159,6 @@ Like SetupEndpoint but will not assign EIDs, will only query endpoints for a
 current EID. The `new` return value is set to `false` for an already known
 endpoint, or `true` when an endpoint's EID is newly discovered.
 
-#### `.GetEndpointID`: `ay` → `yyy`
-
-Queries an endpoint's current EID and properties using physical addressing
-without modifying any state. Returns the EID (0 if unassigned), endpoint type
-information, and medium-specific data.
-
-`GetEndpointID <hwaddr>`
-
-Returns
-```
-eid         (byte) - Current EID
-eid_type    (byte) - Endpoint type and EID type information
-medium_spec (byte) - Medium-specific information
-```
-
-An example:
-```shell
-busctl call au.com.codeconstruct.MCTP1 \
-    /au/com/codeconstruct/mctp1/interfaces/mctpi2c6 \
-    au.com.codeconstruct.MCTP.BusOwner1 \
-    GetEndpointID ay 1 0x1d
-```
-
-This would return the current EID and properties of the device at I2C address 0x1d.
-
 ## Network objects: `/au/com/codeconstruct/networks/<net>`
 
 These objects represent MCTP networks which have been added use `mctp link`
@@ -200,6 +175,7 @@ interface:
 NAME                                TYPE      SIGNATURE RESULT/VALUE FLAGS
 au.com.codeconstruct.MCTP.Network1  interface -         -            -
 .LearnEndpoint                      method    y         sb           -
+.EndpointPing                       method    y         -            -
 .LocalEIDs                          property  ay        1 8          const
 ```
 
@@ -215,6 +191,22 @@ path, and a boolean indicating whether the endpoint was newly discovered.
 
 The D-Bus interface includes the `LocalEIDs` property which reports BMC local EIDs
 in the network.
+
+### `.EndpointPing`: `y`
+
+Pings an endpoint by EID to check for responsiveness.
+
+`EndpointPing <eid>`
+
+Returns nothing on success, error if unreachable.
+
+An example:
+```shell
+busctl call au.com.codeconstruct.MCTP1 \
+    /au/com/codeconstruct/mctp1/networks/1 \
+    au.com.codeconstruct.MCTP.Network1 \
+    EndpointPing y 10
+```
 
 ## Endpoint objects: `/au/com/codeconstruct/networks/<net>/endpoints/<eid>`
 

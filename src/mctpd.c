@@ -276,7 +276,7 @@ static int publish_peer(struct peer *peer, bool add_route);
 static int unpublish_peer(struct peer *peer);
 static int peer_route_update(struct peer *peer, uint16_t type);
 static int peer_neigh_update(struct peer *peer, uint16_t type);
-
+static int remove_bridged_peers(struct peer *bridge);
 static int add_interface_local(struct ctx *ctx, int ifindex);
 static int del_interface(struct link *link);
 static int rename_interface(struct ctx *ctx, struct link *link, int ifindex);
@@ -1184,33 +1184,9 @@ out:
 	return rc;
 }
 
-static const char *mctp_msg_type_name(uint8_t msg_type)
-{
-	switch (msg_type) {
-	case 0x00:
-		return "Control";
-	case 0x01:
-		return "PLDM";
-	case 0x04:
-		return "NVMe-MI";
-	default:
-		return "Unknown";
-	}
-}
-
 static void log_mctp_error(struct ctx *ctx, const struct mctp_error *err, const char *ifname)
 {
-	const char *err_msg = strerror(err->error_code);
-	const char *binding = ifname ? get_binding_from_ifname(ifname) : "Unknown";
-	const char *direction = err->direction == MCTP_DIR_TX ? "TX" : "RX";
-	const char *msg_type_name = mctp_msg_type_name(err->msg_type);
 	uint8_t command_code = 0;
-
-	if (ctx->verbose) {
-		warnx("MCTP Transport Error: %s (%u) on %s binding, %s EID 0x%02x->0x%02x, MsgType=%s(0x%02x)",
-		      err_msg, err->error_code, binding, direction,
-		      err->src_eid, err->dest_eid, msg_type_name, err->msg_type);
-	}
 	
 	/* Extract command code for control messages */
 	if (err->msg_type == MCTP_CTRL_HDR_MSG_TYPE && err->payload_len >= 2) {
@@ -1426,13 +1402,11 @@ static const char *peer_cmd_prefix(const char *peer, uint8_t cmd)
  * Avoid journal flooding by using only on failure path
  */
 static int mctp_ctrl_print_response(uint8_t *resp_buf, size_t rsp_size,
-				    struct sockaddr_mctp_ext *resp_addr, bool verbose)
+				    struct sockaddr_mctp_ext *resp_addr)
 {
-	if (verbose) {
-		fprintf(stderr, "Response received from socket %s len %zu\nbuffer: ",
-			ext_addr_tostr(resp_addr), rsp_size);
-		mctp_hexdump(resp_buf, rsp_size, "");
-	}
+	fprintf(stderr, "Response received from socket %s len %zu\nbuffer: ",
+		ext_addr_tostr(resp_addr), rsp_size);
+	mctp_hexdump(resp_buf, rsp_size, "");
 	return 0;
 }
 
@@ -1442,23 +1416,19 @@ static int mctp_ctrl_print_response(uint8_t *resp_buf, size_t rsp_size,
 static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 				       size_t exp_size, const char *peer,
 				       uint8_t iid, uint8_t cmd,
-				       struct sockaddr_mctp_ext *resp_addr, bool verbose)
+				       struct sockaddr_mctp_ext *resp_addr)
 {
 	struct mctp_ctrl_resp *rsp;
 
 	if (exp_size <= sizeof(*rsp)) {
-		if (verbose) {
-			warnx("invalid expected response size!");
-		}
+		warnx("invalid expected response size!");
 		return -EINVAL;
 	}
 
 	/* Error responses only need to include the completion code */
 	if (rsp_size < MCTP_CTRL_ERROR_RESP_LEN) {
-		if (verbose) {
-			warnx("%s: Wrong reply length (%zu bytes)",
-			      peer_cmd_prefix(peer, cmd), rsp_size);
-		}
+		warnx("%s: Wrong reply length (%zu bytes)",
+		      peer_cmd_prefix(peer, cmd), rsp_size);
 		return -ENOMSG;
 	}
 
@@ -1466,45 +1436,38 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 	rsp = (void *)buf;
 
 	if ((rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK) != iid) {
-		if (verbose) {
-			warnx("%s: Wrong IID (0x%02x, expected 0x%02x)",
-			      peer_cmd_prefix(peer, cmd),
-			      rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK, iid);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr, verbose);
-		}
+		warnx("%s: Wrong IID (0x%02x, expected 0x%02x)",
+		      peer_cmd_prefix(peer, cmd),
+		      rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK, iid);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ENOMSG;
 	}
 
 	if (rsp->ctrl_hdr.command_code != cmd) {
-		if (verbose) {
-			warnx("%s: Wrong opcode (0x%02x) in response",
-			      peer_cmd_prefix(peer, cmd), rsp->ctrl_hdr.command_code);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr, verbose);
-		}
+		warnx("%s: Wrong opcode (0x%02x) in response",
+		      peer_cmd_prefix(peer, cmd), rsp->ctrl_hdr.command_code);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ENOMSG;
 	}
 
 	if (rsp->completion_code) {
-		if (verbose) {
-			warnx("%s: Command failed, completion code 0x%02x",
-			      peer_cmd_prefix(peer, cmd), rsp->completion_code);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr, verbose);
-		}
+		warnx("%s: Command failed, completion code 0x%02x",
+		      peer_cmd_prefix(peer, cmd), rsp->completion_code);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ECONNREFUSED;
 	}
 
 	/* Non-error responses must be full sized */
 	if (rsp_size < exp_size) {
-		if (verbose) {
-			warnx("%s: Wrong reply length (%zu bytes)",
-			      peer_cmd_prefix(peer, cmd), rsp_size);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr, verbose);
-		}
+		warnx("%s: Wrong reply length (%zu bytes)",
+		      peer_cmd_prefix(peer, cmd), rsp_size);
+		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
 		return -ENOMSG;
 	}
 
 	return 0;
 }
+
 
 static void report_transaction_error(struct ctx *ctx, int error_code,
 				     uint8_t direction,
@@ -1768,7 +1731,7 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_SET_ENDPOINT_ID, &addr, peer->ctx->verbose);
+					 MCTP_CTRL_CMD_SET_ENDPOINT_ID, &addr);
 	if (rc)
 		goto out;
 
@@ -1886,6 +1849,36 @@ static int add_peer_from_addr(struct ctx *ctx,
 			addr->smctp_base.smctp_network, ret_peer);
 }
 
+/* Stops downstream endpoint polling and removes
+ * peer structure when bridge endpoint is being removed.
+ */
+ static int remove_bridged_peers(struct peer *bridge)
+ {
+	 mctp_eid_t ep, pool_start, pool_end;
+	 struct peer *peer = NULL;
+	 struct net *n = NULL;
+	 int rc = 0;
+ 
+	 pool_end = bridge->pool_start + bridge->pool_size - 1;
+	 n = lookup_net(bridge->ctx, bridge->net);
+	 pool_start = bridge->pool_start;
+	 for (ep = pool_start; ep <= pool_end; ep++) {
+
+		 peer = n->peers[ep];
+		 if (!peer)
+			 continue;
+ 
+		 rc = remove_peer(peer);
+		 if (rc < 0) {
+			 warnx("Failed to remove peer %d from bridge eid %d pool [%d - %d]: %s",
+				   ep, bridge->eid, pool_start, pool_end,
+				   strerror(-rc));
+		 }
+	 }
+ 
+	 return 0;
+ }
+
 static int check_peer_struct(const struct peer *peer, const struct net *n)
 {
 	if (n->net != peer->net) {
@@ -1934,6 +1927,10 @@ static int remove_peer(struct peer *peer)
 			      rc);
 		}
 		sd_event_source_unref(peer->recovery.source);
+	}
+
+	if (peer->pool_size) {
+		remove_bridged_peers(peer);
 	}
 
 	if (peer->bridge_settle_timer) {
@@ -2219,7 +2216,7 @@ static void set_berr(struct ctx *ctx, int errcode, sd_bus_error *berr)
 
 static int query_get_endpoint_id(struct ctx *ctx, const dest_phys *dest,
 				 mctp_eid_t *ret_eid, uint8_t *ret_ep_type,
-				 uint8_t *ret_media_spec)
+				 uint8_t *ret_media_spec, struct peer *peer)
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_eid req = { 0 };
@@ -2234,14 +2231,19 @@ static int query_get_endpoint_id(struct ctx *ctx, const dest_phys *dest,
 	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
 				   MCTP_CTRL_CMD_GET_ENDPOINT_ID);
 
-	rc = endpoint_query_phys(ctx, dest, MCTP_CTRL_HDR_MSG_TYPE, &req,
-				 sizeof(req), &buf, &buf_size, &addr);
+	if (peer)
+		rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
+					 sizeof(req), &buf, &buf_size, &addr);
+	else
+		rc = endpoint_query_phys(ctx, dest, MCTP_CTRL_HDR_MSG_TYPE,
+					 &req, sizeof(req), &buf, &buf_size,
+					 &addr);
 	if (rc < 0)
 		goto out;
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_ID, &addr, ctx->verbose);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_ID, &addr);
 	if (rc)
 		goto out;
 
@@ -2270,7 +2272,7 @@ static int get_endpoint_peer(struct ctx *ctx, sd_bus_error *berr,
 	int rc;
 
 	*ret_peer = NULL;
-	rc = query_get_endpoint_id(ctx, dest, &eid, &ep_type, &medium_spec);
+	rc = query_get_endpoint_id(ctx, dest, &eid, &ep_type, &medium_spec, /*peer=*/NULL);
 	if (rc)
 		return rc;
 
@@ -2347,7 +2349,7 @@ static int query_get_peer_msgtypes(struct peer *peer)
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
 					 MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT,
-					 &addr, peer->ctx->verbose);
+					 &addr);
 	if (rc)
 		goto out;
 
@@ -2384,7 +2386,7 @@ static int peer_set_uuid(struct peer *peer, const uint8_t uuid[16])
 	memcpy(peer->uuid, uuid, 16);
 	return 0;
 }
-
+/*
 static int query_get_peer_uuid_by_phys(struct ctx *ctx, const dest_phys *dest,
 				       uint8_t uuid[16])
 {
@@ -2409,7 +2411,7 @@ static int query_get_peer_uuid_by_phys(struct ctx *ctx, const dest_phys *dest,
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
 					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
-					 &addr, ctx->verbose);
+					 &addr);
 	if (rc)
 		goto out;
 
@@ -2420,8 +2422,9 @@ out:
 	free(buf);
 	return rc;
 }
+*/
 
-static int query_get_peer_uuid(struct peer *peer)
+static int query_get_peer_uuid(struct peer *peer, uint8_t uuid_out[16])
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_uuid req;
@@ -2450,15 +2453,12 @@ static int query_get_peer_uuid(struct peer *peer)
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
 					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
-					 &addr, peer->ctx->verbose);
+					 &addr);
 	if (rc)
 		goto out;
 
 	resp = (void *)buf;
-
-	rc = peer_set_uuid(peer, resp->uuid);
-	if (rc < 0)
-		goto out;
+	memcpy(uuid_out, resp->uuid, 16);
 	rc = 0;
 
 out:
@@ -2783,45 +2783,6 @@ err:
 	return rc;
 }
 
-static int method_get_endpoint_id(sd_bus_message *call, void *data,
-				  sd_bus_error *berr)
-{
-	dest_phys desti = { 0 }, *dest = &desti;
-	struct link *link = data;
-	struct ctx *ctx = link->ctx;
-	mctp_eid_t eid;
-	uint8_t eid_type, medium_spec;
-	int rc;
-
-	dest->ifindex = link->ifindex;
-	if (dest->ifindex <= 0)
-		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-					 "Unknown MCTP interface");
-
-	rc = message_read_hwaddr(call, dest);
-	if (rc < 0)
-		goto err;
-
-	rc = validate_dest_phys(ctx, dest);
-	if (rc < 0)
-		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-					 "Bad physaddr");
-
-	rc = query_get_endpoint_id(ctx, dest, &eid, &eid_type, &medium_spec);
-	if (rc < 0) {
-		if (ctx->verbose)
-			fprintf(stderr, "%s failed to get endpoint ID: %d\n",
-				__func__, rc);
-		goto err;
-	}
-
-	return sd_bus_reply_method_return(call, "yyy", eid, eid_type, medium_spec);
-
-err:
-	set_berr(ctx, rc, berr);
-	return rc;
-}
-
 static int method_endpoint_ping(sd_bus_message *call, void *data,
 				sd_bus_error *berr)
 {
@@ -2851,7 +2812,7 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	}
 
 	/* Always query the device for its UUID to check if it's alive */
-	rc = query_get_peer_uuid(peer);
+	rc = query_get_peer_uuid(peer, uuid);
 	if (rc < 0) {
 		if (ctx->verbose)
 			fprintf(stderr, "%s failed to get endpoint UUID for EID %d: %d\n",
@@ -2859,12 +2820,13 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 		goto err;
 	}
 
-	/* Return the UUID from peer structure */
-	if (peer->uuid) {
-		memcpy(uuid, peer->uuid, 16);
+	/* Update peer UUID */
+	rc = peer_set_uuid(peer, uuid);
+	if (rc < 0) {
+		goto err;
 	}
 
-	return sd_bus_reply_method_return(call, "ay", 16, uuid);
+	return sd_bus_reply_method_return(call, NULL);
 
 err:
 	set_berr(ctx, rc, berr);
@@ -2929,12 +2891,15 @@ static int query_peer_properties(struct peer *peer)
 		rc = 0;
 	}
 
-	rc = query_get_peer_uuid(peer);
+	uint8_t uuid[16] = { 0 };
+	rc = query_get_peer_uuid(peer, uuid);
 	if (rc < 0) {
 		if (peer->ctx->verbose)
 			warnx("Error getting UUID for %s. Ignoring error %d %s",
 			      peer_tostr(peer), rc, strerror(-rc));
 		rc = 0;
+	} else {
+		peer_set_uuid(peer, uuid);
 	}
 
 	// TODO: emit property changed? Though currently they are all const.
@@ -3235,9 +3200,15 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 	 */
 	rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
 				   &peer->recovery.endpoint_type,
-				   &peer->recovery.medium_spec);
+				   &peer->recovery.medium_spec, peer);
 	if (rc < 0) {
-		goto reschedule;
+		warnx("EID-based query failed for EID %d, trying physical address query", peer->eid);
+		rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
+					   &peer->recovery.endpoint_type,
+					   &peer->recovery.medium_spec, /*peer=*/NULL);
+		if (rc < 0) {
+			goto reschedule;
+		}
 	}
 
 	/*
@@ -3259,7 +3230,9 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 		uint8_t uuid[16] = { 0 };
 		mctp_eid_t new_eid;
 
-		rc = query_get_peer_uuid_by_phys(ctx, &peer->phys, uuid);
+		/* Query UUID by EID instead of physical address to avoid bridge UUID responses */
+		rc = query_get_peer_uuid(peer, uuid);
+		
 		if (!rc && peer->uuid) {
 			static_assert(sizeof(uuid) == sizeof(nil_uuid),
 				      "Unsynchronized UUID sizes");
@@ -3953,8 +3926,8 @@ static const sd_bus_vtable bus_network_vtable[] = {
 	SD_BUS_METHOD_WITH_NAMES("EndpointPing",
 		"y",
 		SD_BUS_PARAM(eid),
-		"ay",
-		SD_BUS_PARAM(uuid),
+		"",
+		,
 		method_endpoint_ping,
 		0),
 	SD_BUS_PROPERTY("LocalEIDs",
@@ -4960,7 +4933,7 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
 					 MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS,
-					 &addr, peer->ctx->verbose);
+					 &addr);
 
 	if (rc)
 		goto out;
@@ -5145,7 +5118,7 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 
 	rc = mctp_ctrl_validate_response(
 		buf, buf_size, sizeof(*resp), peer_tostr_short(peer), iid,
-		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr, ctx->verbose);
+		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr);
 	if (rc)
 		goto out;
 
