@@ -1330,7 +1330,6 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 
 	/* Handle error queue events first */
 	if (revents & EPOLLERR) {
-		read_mctp_error_queue(ctx, sd, ctx->verbose);
 		/* If only error event, return early */
 		if (!(revents & EPOLLIN))
 			return 0;
@@ -1531,7 +1530,7 @@ static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
 	bool found_error = false;
 	int cmsg_count = 0;
 
-	ret = recvmsg(fd, &msg, MSG_ERRQUEUE);
+	ret = recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
 	if (ret < 0) {
 		int saved_errno = errno;
 		if (saved_errno != EAGAIN && saved_errno != EWOULDBLOCK) {
@@ -1541,9 +1540,7 @@ static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
 			warnx("recvmsg(MSG_ERRQUEUE) failed on fd %d: %s (%d)",
 			      fd, strerror(saved_errno), saved_errno);
 		} else {
-			fprintf(stderr, ">>> No errors in queue (errno=%d: %s)\n",
-				saved_errno, strerror(saved_errno));
-			fflush(stderr);
+			/* No errors to process, which is expected in non-blocking mode */
 		}
 		return -1;
 	}
@@ -1554,8 +1551,26 @@ static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
 		
 		if (cmsg->cmsg_level == SOL_MCTP &&
 		    cmsg->cmsg_type == MCTP_RECVERR) {
+			const char *ifname = NULL;
+			if (err_data.dest_eid != 0) {
+				/* Try to find peer by destination EID */
+				struct peer *peer = find_peer_by_addr(ctx, err_data.dest_eid, 1);
+				if (peer && peer->state == REMOTE && peer->phys.ifindex > 0) {
+					ifname = mctp_nl_if_byindex(ctx->nl, peer->phys.ifindex);
+					if (ifname) {
+						const char *binding_str = get_binding_from_ifname(ifname);
+						
+						if (strncmp(binding_str, "SMBus", 5) == 0)
+							err_data.binding = MCTP_PHYS_BINDING_SMBUS;
+						else if (strncmp(binding_str, "USB", 3) == 0)
+							err_data.binding = MCTP_PHYS_BINDING_USB;
+						else if (strncmp(binding_str, "I3C", 3) == 0)
+							err_data.binding = MCTP_PHYS_BINDING_I3C;
+					}
+				}
+			}
 			
-			log_mctp_error(ctx, &err_data, NULL);
+			log_mctp_error(ctx, &err_data, ifname);
 			found_error = true;
 		}
 	}
@@ -1841,15 +1856,12 @@ static void report_transaction_error(struct ctx *ctx, int error_code,
 	local_eid = local_addr(ctx, req_addr->smctp_ifindex);
 	remote_eid = req_addr->smctp_base.smctp_addr.s_addr;
 	
-	/* For RX errors, the message direction is FROM remote TO local.
-	 * For TX errors, the message direction is FROM local TO remote. */
-	if (direction == MCTP_DIR_RX) {
-		tmperr.src_eid = remote_eid;
-		tmperr.dest_eid = local_eid;
-	} else {
-		tmperr.src_eid = local_eid;
-		tmperr.dest_eid = remote_eid;
-	}
+	/* For error reporting, dest_eid should always be the device that failed.
+	 * For RX errors: we sent to remote, waiting for response (remote failed).
+	 * For TX errors: we tried to send to remote (remote failed).
+	 * In both cases, the remote device is the one with the problem. */
+	tmperr.src_eid = local_eid;
+	tmperr.dest_eid = remote_eid;
 	
 	tmperr.tag = req_addr->smctp_base.smctp_tag;
 	tmperr.msg_type = req_addr->smctp_base.smctp_type;
@@ -1873,16 +1885,14 @@ static void report_transaction_error(struct ctx *ctx, int error_code,
 
 		if (ifname) {
 			const char *binding_str = get_binding_from_ifname(ifname);
-			if (strcmp(binding_str, "SMBus") == 0)
+			if (strncmp(binding_str, "SMBus", 5) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_SMBUS;
-			else if (strcmp(binding_str, "USB") == 0)
+			else if (strncmp(binding_str, "USB", 3) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_USB;
-			else if (strcmp(binding_str, "I3C") == 0)
+			else if (strncmp(binding_str, "I3C", 3) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_I3C;
-			else if (strcmp(binding_str, "SPI") == 0)
+			else if (strncmp(binding_str, "SPI", 3) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_UNSPEC;
-			else if (strcmp(binding_str, "VDM") == 0)
-				tmperr.binding = MCTP_PHYS_BINDING_PCIE_VDM;
 		}
 	}
 
@@ -1963,8 +1973,6 @@ static int endpoint_query_addr(struct ctx *ctx,
 		}
 		/* Synthesize a TX error and emit the TransportError signal */
 		report_transaction_error(ctx, -rc, MCTP_DIR_TX, req_addr, req, req_len);
-		/* Check error queue for transport-level failures */
-		read_mctp_error_queue(ctx, sd, ctx->verbose);
 		goto out;
 	}
 	if ((size_t)rc != req_len) {
@@ -1982,8 +1990,6 @@ static int endpoint_query_addr(struct ctx *ctx,
 			}
 			/* Synthesize a timeout error and emit the TransportError signal */
 			report_transaction_error(ctx, ETIMEDOUT, MCTP_DIR_RX, req_addr, req, req_len);
-			/* Check error queue for transport-level failures */
-			read_mctp_error_queue(ctx, sd, ctx->verbose);
 		}
 		goto out;
 	}
@@ -1999,7 +2005,6 @@ static int endpoint_query_addr(struct ctx *ctx,
 
 	rc = read_message(ctx, sd, &buf, &buf_size, resp_addr);
 	if (rc < 0) {
-		read_mctp_error_queue(ctx, sd, ctx->verbose);
 		goto out;
 	}
 
@@ -2016,7 +2021,6 @@ static int endpoint_query_addr(struct ctx *ctx,
 out:
 	/* Check for any lingering transport errors before closing */
 	if (sd >= 0) {
-		read_mctp_error_queue(ctx, sd, ctx->verbose);
 		close(sd);
 	}
 	if (rc) {
@@ -2557,7 +2561,7 @@ static void set_berr(struct ctx *ctx, int errcode, sd_bus_error *berr)
 	} else
 		switch (errcode) {
 		case -ETIMEDOUT:
-			sd_bus_error_setf(berr, SD_BUS_ERROR_FAILED,
+			sd_bus_error_setf(berr, SD_BUS_ERROR_TIMEOUT,
 					  "MCTP Endpoint did not respond");
 			break;
 		case -ECONNREFUSED:
@@ -3586,14 +3590,8 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 				   &peer->recovery.endpoint_type,
 				   &peer->recovery.medium_spec, peer);
 	if (rc < 0) {
-		warnx("EID-based query failed for EID %d, trying physical address query", peer->eid);
-		rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
-					   &peer->recovery.endpoint_type,
-					   &peer->recovery.medium_spec, /*peer=*/NULL);
-		if (rc < 0) {
 			goto reschedule;
 		}
-	}
 
 	/*
 	 * If we've got a response there are two scenarios:

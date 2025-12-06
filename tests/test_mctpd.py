@@ -301,16 +301,9 @@ async def test_recover_endpoint_exchange(dbus, mctpd):
 
     await mctp_objmgr.on_interfaces_added(ep_added)
 
-    # Remove the current device and immediately add a new one at the same physical address
-    # This simulates a device exchange. The new device has EID 0 (not reachable via old EID).
-    # mctpd will try EID-based query (fails), then fall back to physical address query (succeeds),
-    # detect UUID mismatch, and create a new endpoint.
+    # Remove the current device
     del mctpd.network.endpoints[0]
-    new_dev = Endpoint(dev.iface, dev.lladdr, types = dev.types)
-    mctpd.network.add_endpoint(new_dev)
 
-    # Trigger recovery - mctpd will use fallback physical address query,
-    # find different UUID, and create a new endpoint
     ep_ep = await ep.get_interface(MCTPD_ENDPOINT_I)
     await ep_ep.call_recover()
 

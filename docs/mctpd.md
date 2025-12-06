@@ -159,6 +159,30 @@ Like SetupEndpoint but will not assign EIDs, will only query endpoints for a
 current EID. The `new` return value is set to `false` for an already known
 endpoint, or `true` when an endpoint's EID is newly discovered.
 
+### Signals
+
+#### `TransportError`: `uyyyyyyys`
+
+This signal is emitted when a transport-level error occurs during MCTP message
+transmission or reception. It provides detailed information about the error to
+help with debugging and monitoring of MCTP communication issues.
+
+Signal parameters:
+```
+error_code   (uint32) - Transport error code
+direction    (byte)   - Direction of message (0=RX, 1=TX)
+binding      (byte)   - MCTP binding type
+src_eid      (byte)   - Source endpoint ID
+dest_eid     (byte)   - Destination endpoint ID
+tag          (byte)   - MCTP message tag
+msg_type     (byte)   - MCTP message type
+command_code (byte)   - Command code from message payload
+interface    (string) - Interface name where error occurred
+```
+
+This signal allows applications to monitor and log transport errors for
+diagnostic purposes.
+
 ## Network objects: `/au/com/codeconstruct/networks/<net>`
 
 These objects represent MCTP networks which have been added use `mctp link`
