@@ -342,6 +342,7 @@ mctp_eid_t local_addr(const struct ctx *ctx, int ifindex)
 }
 
 static void *dfree(void *ptr);
+static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose);
 
 static struct net *lookup_net(struct ctx *ctx, uint32_t net)
 {
@@ -500,7 +501,7 @@ out:
 static int cb_exit_loop_io(sd_event_source *s, int fd, uint32_t revents,
 			   void *userdata)
 {
-	sd_event_exit(sd_event_source_get_event(s), 0);
+	sd_event_exit(sd_event_source_get_event(s), revents);
 	return 0;
 }
 
@@ -511,8 +512,11 @@ static int cb_exit_loop_timeout(sd_event_source *s, uint64_t usec,
 	return 0;
 }
 
-/* Events are EPOLLIN, EPOLLOUT etc.
-   Returns 0 on ready, negative on error. -ETIMEDOUT on timeout */
+/* Wait for events on fd with timeout.
+ * Events are EPOLLIN, EPOLLOUT, EPOLLERR etc.
+ * Returns: positive value with event flags (EPOLLIN, EPOLLERR, etc.) on success
+ *          negative error code on timeout (-ETIMEDOUT) or other error
+ */
 static int wait_fd_timeout(int fd, short events, uint64_t timeout_usec)
 {
 	int rc;
@@ -1324,6 +1328,18 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 	struct mctp_ctrl_msg_hdr *ctrl_msg = NULL;
 	int rc;
 
+	/* Handle error queue events first */
+	if (revents & EPOLLERR) {
+		read_mctp_error_queue(ctx, sd, ctx->verbose);
+		/* If only error event, return early */
+		if (!(revents & EPOLLIN))
+			return 0;
+	}
+
+	/* Handle normal incoming messages */
+	if (!(revents & EPOLLIN))
+		return 0;
+
 	rc = read_message(ctx, sd, &buf, &buf_size, &addr);
 	if (rc < 0)
 		goto out;
@@ -1436,9 +1452,27 @@ static int listen_control_msg(struct ctx *ctx, uint32_t net)
 		goto out;
 	}
 
-	rc = sd_event_add_io(ctx->event, NULL, sd, EPOLLIN,
+	/* Enable error queue for transport error reporting */
+	val = 1;
+	rc = mctp_ops.mctp.setsockopt(sd, SOL_MCTP, MCTP_OPT_ENABLE_ERRQUEUE,
+				      &val, sizeof(val));
+	if (rc < 0) {
+		/* Not fatal if kernel doesn't support it */
+		if (ctx->verbose)
+			warnx("MCTP error queue not supported by kernel");
+	} else {
+		if (ctx->verbose)
+			fprintf(stderr, "MCTP error queue enabled on control socket fd %d, network %u\n", sd, net);
+	}
+
+	/* Register for both normal messages and error queue events */
+	rc = sd_event_add_io(ctx->event, NULL, sd, EPOLLIN | EPOLLERR,
 			     cb_listen_control_msg, ctx);
-	return rc;
+	if (rc < 0)
+		goto out;
+
+	return 0;
+
 out:
 	if (rc < 0) {
 		close(sd);
@@ -1454,7 +1488,6 @@ static void log_mctp_error(struct ctx *ctx, const struct mctp_error *err, const 
 	if (err->msg_type == MCTP_CTRL_HDR_MSG_TYPE && err->payload_len >= 2) {
 		command_code = err->payload[1];
 	}
-	
 	
 	/* Emit TransportError D-Bus signal if we have a bus connection */
 	if (ctx && ctx->bus) {
@@ -1478,6 +1511,69 @@ static void log_mctp_error(struct ctx *ctx, const struct mctp_error *err, const 
 		}
 	}
 }
+
+static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
+{
+	char control_buf[512];
+	struct mctp_error err_data;  /* Buffer to receive error data from kernel */
+	struct iovec iov = {
+		.iov_base = &err_data,    /* Point to our buffer */
+		.iov_len = sizeof(err_data)
+	};
+	struct msghdr msg = {
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = control_buf,
+		.msg_controllen = sizeof(control_buf),
+	};
+	struct cmsghdr *cmsg;
+	int ret;
+	bool found_error = false;
+	int cmsg_count = 0;
+
+	ret = recvmsg(fd, &msg, MSG_ERRQUEUE);
+	if (ret < 0) {
+		int saved_errno = errno;
+		if (saved_errno != EAGAIN && saved_errno != EWOULDBLOCK) {
+			fprintf(stderr, ">>> recvmsg(MSG_ERRQUEUE) FAILED: errno=%d (%s)\n",
+				saved_errno, strerror(saved_errno));
+			fflush(stderr);
+			warnx("recvmsg(MSG_ERRQUEUE) failed on fd %d: %s (%d)",
+			      fd, strerror(saved_errno), saved_errno);
+		} else {
+			fprintf(stderr, ">>> No errors in queue (errno=%d: %s)\n",
+				saved_errno, strerror(saved_errno));
+			fflush(stderr);
+		}
+		return -1;
+	}
+
+	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL;
+	     cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+		cmsg_count++;
+		
+		if (cmsg->cmsg_level == SOL_MCTP &&
+		    cmsg->cmsg_type == MCTP_RECVERR) {
+			
+			log_mctp_error(ctx, &err_data, NULL);
+			found_error = true;
+		}
+	}
+
+	if (cmsg_count == 0) {
+		fprintf(stderr, ">>> No control messages found in msg\n");
+	}
+
+	if (!found_error) {
+		fprintf(stderr, 
+			">>> recvmsg succeeded but no MCTP_RECVERR found (processed %d cmsgs)\n",
+			cmsg_count);
+		return -1;
+	}
+
+	return 0;
+}
+
 
 static int cb_listen_monitor(sd_event_source *s, int sd, uint32_t revents,
 			     void *userdata)
@@ -1838,6 +1934,14 @@ static int endpoint_query_addr(struct ctx *ctx,
 		goto out;
 	}
 
+	val = 1;
+	rc = mctp_ops.mctp.setsockopt(sd, SOL_MCTP, MCTP_OPT_ENABLE_ERRQUEUE,
+				      &val, sizeof(val));
+	if (rc < 0) {
+		if (ctx->verbose)
+			warnx("MCTP error queue not supported by kernel (fd %d)", sd);
+	}
+
 	if (ext_addr) {
 		req_addr_len = sizeof(struct sockaddr_mctp_ext);
 	} else {
@@ -1859,6 +1963,8 @@ static int endpoint_query_addr(struct ctx *ctx,
 		}
 		/* Synthesize a TX error and emit the TransportError signal */
 		report_transaction_error(ctx, -rc, MCTP_DIR_TX, req_addr, req, req_len);
+		/* Check error queue for transport-level failures */
+		read_mctp_error_queue(ctx, sd, ctx->verbose);
 		goto out;
 	}
 	if ((size_t)rc != req_len) {
@@ -1867,7 +1973,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 		goto out;
 	}
 
-	rc = wait_fd_timeout(sd, EPOLLIN, ctx->mctp_timeout);
+	rc = wait_fd_timeout(sd, EPOLLIN | EPOLLERR, ctx->mctp_timeout);
 	if (rc < 0) {
 		if (rc == -ETIMEDOUT) {
 			if (ctx->verbose) {
@@ -1876,12 +1982,24 @@ static int endpoint_query_addr(struct ctx *ctx,
 			}
 			/* Synthesize a timeout error and emit the TransportError signal */
 			report_transaction_error(ctx, ETIMEDOUT, MCTP_DIR_RX, req_addr, req, req_len);
+			/* Check error queue for transport-level failures */
+			read_mctp_error_queue(ctx, sd, ctx->verbose);
 		}
 		goto out;
+	}
+	/* If EPOLLERR was set, check error queue before trying to read */
+	if (rc & EPOLLERR) {
+		read_mctp_error_queue(ctx, sd, ctx->verbose);
+		/* If no EPOLLIN, this was purely an error event */
+		if (!(rc & EPOLLIN)) {
+			rc = -EIO;
+			goto out;
+		}
 	}
 
 	rc = read_message(ctx, sd, &buf, &buf_size, resp_addr);
 	if (rc < 0) {
+		read_mctp_error_queue(ctx, sd, ctx->verbose);
 		goto out;
 	}
 
@@ -1896,7 +2014,11 @@ static int endpoint_query_addr(struct ctx *ctx,
 
 	rc = 0;
 out:
-	close(sd);
+	/* Check for any lingering transport errors before closing */
+	if (sd >= 0) {
+		read_mctp_error_queue(ctx, sd, ctx->verbose);
+		close(sd);
+	}
 	if (rc) {
 		free(buf);
 	} else {
@@ -5725,7 +5847,8 @@ int main(int argc, char **argv)
 	int rc;
 
 	setlinebuf(stdout);
-
+	setlinebuf(stderr);
+	
 	setup_config_defaults(ctx);
 	mctp_ops_init();
 	rc = parse_args(ctx, argc, argv);
