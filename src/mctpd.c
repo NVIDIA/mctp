@@ -178,6 +178,8 @@ struct peer {
 
 	bool have_neigh;
 	bool have_route;
+	// This will be set to true for any direct endpoint (except bridged endpoints)
+	bool is_direct_endpoint;
 
 	// MTU for the route. Set to the interface's minimum MTU initially,
 	// or changed by .SetMTU method
@@ -1560,11 +1562,11 @@ static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
 					if (ifname) {
 						const char *binding_str = get_binding_from_ifname(ifname);
 						
-						if (strncmp(binding_str, "SMBus", 5) == 0)
+						if (strncmp(binding_str, "SMBus", sizeof("SMBus") - 1) == 0)
 							err_data.binding = MCTP_PHYS_BINDING_SMBUS;
-						else if (strncmp(binding_str, "USB", 3) == 0)
+						else if (strncmp(binding_str, "USB", sizeof("USB") - 1) == 0)
 							err_data.binding = MCTP_PHYS_BINDING_USB;
-						else if (strncmp(binding_str, "I3C", 3) == 0)
+						else if (strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0)
 							err_data.binding = MCTP_PHYS_BINDING_I3C;
 					}
 				}
@@ -1885,13 +1887,13 @@ static void report_transaction_error(struct ctx *ctx, int error_code,
 
 		if (ifname) {
 			const char *binding_str = get_binding_from_ifname(ifname);
-			if (strncmp(binding_str, "SMBus", 5) == 0)
+			if (strncmp(binding_str, "SMBus", sizeof("SMBus") - 1) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_SMBUS;
-			else if (strncmp(binding_str, "USB", 3) == 0)
+			else if (strncmp(binding_str, "USB", sizeof("USB") - 1) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_USB;
-			else if (strncmp(binding_str, "I3C", 3) == 0)
+			else if (strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_I3C;
-			else if (strncmp(binding_str, "SPI", 3) == 0)
+			else if (strncmp(binding_str, "SPI", sizeof("SPI") - 1) == 0)
 				tmperr.binding = MCTP_PHYS_BINDING_UNSPEC;
 		}
 	}
@@ -2019,10 +2021,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 
 	rc = 0;
 out:
-	/* Check for any lingering transport errors before closing */
-	if (sd >= 0) {
-		close(sd);
-	}
+	close(sd);
 	if (rc) {
 		free(buf);
 	} else {
@@ -2774,7 +2773,7 @@ static int peer_set_uuid(struct peer *peer, const uint8_t uuid[16])
 	memcpy(peer->uuid, uuid, 16);
 	return 0;
 }
-/*
+
 static int query_get_peer_uuid_by_phys(struct ctx *ctx, const dest_phys *dest,
 				       uint8_t uuid[16])
 {
@@ -2810,7 +2809,6 @@ out:
 	free(buf);
 	return rc;
 }
-*/
 
 static int query_get_peer_uuid(struct peer *peer, uint8_t uuid_out[16])
 {
@@ -2941,6 +2939,7 @@ static int method_setup_endpoint(sd_bus_message *call, void *data,
 		goto err;
 
 	peer_path = path_from_peer(peer);
+	peer->is_direct_endpoint = true;
 	if (!peer_path)
 		goto err;
 	if (ctx->verbose)
@@ -2993,6 +2992,7 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 	if (rc < 0)
 		goto err;
 
+	peer->is_direct_endpoint = true;
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3102,6 +3102,7 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 		peer->num_ignore_eids = 0;
 	}
 
+	peer->is_direct_endpoint = true;
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3162,6 +3163,7 @@ static int method_learn_endpoint(sd_bus_message *call, void *data,
 		return sd_bus_reply_method_return(call, "yisb", 0, 0, "", 0);
 
 	peer_path = path_from_peer(peer);
+	peer->is_direct_endpoint = true;
 	if (!peer_path)
 		goto err;
 	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
@@ -3586,12 +3588,22 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 	 * response reporting the current EID. This is the test recommended by 8.17.6
 	 * of DSP0236 v1.3.1.
 	 */
-	rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
-				   &peer->recovery.endpoint_type,
-				   &peer->recovery.medium_spec, peer);
+	if (peer->is_direct_endpoint) {
+		rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
+			&peer->recovery.endpoint_type,
+			&peer->recovery.medium_spec, /*peer=*/NULL);
+	} else {
+		/* Assumption: for endpoints behind the bridge, it's expected that bridge is
+		 * going to reassign same EID to the endpoint if not then we can never truly
+		 * access that endpoint again if eid is lost*/
+		rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
+					&peer->recovery.endpoint_type,
+					&peer->recovery.medium_spec, peer);
+	}
+
 	if (rc < 0) {
-			goto reschedule;
-		}
+		goto reschedule;
+	}
 
 	/*
 	 * If we've got a response there are two scenarios:
@@ -3605,16 +3617,14 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 	 * expected EID to the device. If the UUID does not match we allocate a new
 	 * EID for the exchanged device, given it is responsive.
 	 */
-	if (peer->recovery.eid != peer->eid) {
+	if (peer->recovery.eid != peer->eid && peer->is_direct_endpoint) {
 		static const uint8_t nil_uuid[16] = { 0 };
 		bool uuid_matches_peer = false;
 		bool uuid_matches_nil = false;
 		uint8_t uuid[16] = { 0 };
 		mctp_eid_t new_eid;
 
-		/* Query UUID by EID instead of physical address to avoid bridge UUID responses */
-		rc = query_get_peer_uuid(peer, uuid);
-		
+		rc = query_get_peer_uuid_by_phys(ctx, &peer->phys, uuid);
 		if (!rc && peer->uuid) {
 			static_assert(sizeof(uuid) == sizeof(nil_uuid),
 				      "Unsynchronized UUID sizes");
@@ -3651,6 +3661,57 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 			if (rc < 0) {
 				goto reclaim;
 			}
+		}
+	}
+
+	 if (peer->recovery.eid == peer->eid && !peer->is_direct_endpoint) {
+		/* If the EID is the same as the expected EID and the endpoint is not direct,
+		 * there could be case that behind the bridge another device is plugged in
+		 * and bridge assigns the reclaimed EID to that device of now a different UUID*/
+
+		static const uint8_t nil_uuid[16] = { 0 };
+		bool uuid_matches_peer = false;
+		bool uuid_matches_nil = false;
+		uint8_t uuid[16] = { 0 };
+		struct peer *new_peer = NULL;
+
+		/* Query UUID by EID instead of physical address to avoid bridge UUID responses */
+		rc = query_get_peer_uuid(peer, uuid);
+		if (rc) {
+			remove_peer(peer);
+			return rc;
+		}
+		if (!rc && peer->uuid) {
+			static_assert(sizeof(uuid) == sizeof(nil_uuid),
+				      "Unsynchronized UUID sizes");
+			uuid_matches_peer =
+				memcmp(uuid, peer->uuid, sizeof(uuid)) == 0;
+			uuid_matches_nil =
+				memcmp(uuid, nil_uuid, sizeof(uuid)) == 0;
+		}
+		if (!uuid_matches_peer ||
+		    (uuid_matches_nil && !MCTPD_RECOVER_NIL_UUID)) {
+
+			assert(sd_event_source_get_enabled(
+			peer->recovery.source, NULL) == 0);
+			/* update new peer to send out remove signal and add new peer */
+			struct peer *new_peer = NULL;
+			dest_phys phys = peer->phys;
+			mctp_eid_t new_eid = peer->eid;
+			uint32_t new_net = peer->net;
+			remove_peer(peer);
+
+			rc = add_peer(ctx, &phys, new_eid, new_net, &new_peer);
+			if (rc) {
+				warnx("can't add peer: %s", strerror(-rc));
+				return rc;
+			}
+			rc = setup_added_peer(new_peer);
+			if (rc) {
+				warnx("can't setup added peer: %s", strerror(-rc));
+				return rc;
+			}
+			return 0;
 		}
 	}
 
