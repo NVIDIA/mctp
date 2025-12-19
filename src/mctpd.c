@@ -1988,11 +1988,6 @@ static int endpoint_query_addr(struct ctx *ctx,
 	rc = wait_fd_timeout(sd, EPOLLIN | EPOLLERR, ctx->mctp_timeout);
 	if (rc < 0) {
 		if (rc == -ETIMEDOUT) {
-			if (ctx->verbose) {
-				warnx("%s: receive timed out from %s", __func__,
-				      ext_addr_tostr(req_addr));
-			}
-			/* Synthesize a timeout error and emit the TransportError signal */
 			report_transaction_error(ctx, ETIMEDOUT, MCTP_DIR_RX, req_addr, req, req_len);
 		}
 		goto out;
@@ -2591,16 +2586,6 @@ static void set_berr(struct ctx *ctx, int errcode, sd_bus_error *berr)
 						  "Request failed");
 			break;
 		}
-
-	if (ctx->verbose && sd_bus_error_is_set(berr)) {
-		if (existing) {
-			warnx("Returning existing dbus error '%s'. ignored errcode=%d (%s)",
-			      berr->message, errcode, strerror(-errcode));
-		} else {
-			warnx("Returning dbus error '%s', errcode=%d (%s)",
-			      berr->message, errcode, strerror(-errcode));
-		}
-	}
 }
 
 static int query_get_endpoint_id(struct ctx *ctx, const dest_phys *dest,
