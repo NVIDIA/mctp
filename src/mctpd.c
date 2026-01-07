@@ -2405,6 +2405,8 @@ static void free_peers(struct ctx *ctx)
 		free(peer->message_types);
 		free(peer->uuid);
 		free(peer->path);
+		free(peer->ignore_eids);
+		free(peer->routing_table_entry);
 		sd_bus_slot_unref(peer->slot_obmc_endpoint);
 		sd_bus_slot_unref(peer->slot_cc_endpoint);
 		sd_bus_slot_unref(peer->slot_bridge);
@@ -5591,9 +5593,17 @@ static int endpoint_allocate_eid(struct peer *peer)
 static void update_local_routing(struct get_routing_table_entry **entry_routing,
 				 struct get_routing_table_entry *rt_entry)
 {
-	struct get_routing_table_entry *entry =
-		malloc(sizeof(struct get_routing_table_entry));
-	memcpy(entry, rt_entry, sizeof(struct get_routing_table_entry));
+	size_t entry_size = sizeof(struct get_routing_table_entry) +
+			    rt_entry->phys_address_size;
+
+	struct get_routing_table_entry *entry = malloc(entry_size);
+	if (!entry) {
+		warnx("update_local_routing: malloc failed for size %zu", entry_size);
+		*entry_routing = NULL;
+		return;
+	}
+
+	memcpy(entry, rt_entry, entry_size);
 	*entry_routing = entry;
 }
 
