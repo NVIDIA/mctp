@@ -5677,8 +5677,10 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 			(struct get_routing_table_entry *)resp->routing_entries;
 		for (uint8_t idx = 0; idx < resp->number_of_entries; idx++) {
 			if ((entry->starting_eid == peer->eid) ||
-			    (entry->starting_eid < peer->pool_start)) {
-				// Skip bridge's own eid or any eid < pool start
+			    (entry->starting_eid < peer->pool_start) ||
+			    (entry->starting_eid >=
+			     (peer->pool_start + peer->pool_size))) {
+				// Skip bridge's own eid or any eid outside of the pool
 				if (peer->ctx->verbose)
 					fprintf(stderr, "skipping eid %d\n",
 						entry->starting_eid);
