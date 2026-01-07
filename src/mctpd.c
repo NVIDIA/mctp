@@ -3330,6 +3330,25 @@ static int query_peer_properties(struct peer *peer)
 		peer_set_uuid(peer, uuid);
 	}
 
+	mctp_eid_t eid;
+	uint8_t ep_type, medium_spec;
+	rc = query_get_endpoint_id(peer->ctx, &peer->phys, &eid, &ep_type,
+				   &medium_spec, peer);
+	if (rc < 0) {
+		if (peer->ctx->verbose)
+			warnx("Error getting endpoint ID for %s. Ignoring error %d %s",
+			      peer_tostr(peer), rc, strerror(-rc));
+		rc = 0;
+	} else {
+		if (peer->eid == eid) {
+			peer->endpoint_type = ep_type;
+			peer->medium_spec = medium_spec;
+		} else {
+			warnx("GET_ENDPOINT_ID: Endpoint ID mismatch for %s: %d != %d",
+			      peer_tostr(peer), peer->eid, eid);
+		}
+	}
+
 out:
 	// TODO: emit property changed? Though currently they are all const.
 	return rc;
