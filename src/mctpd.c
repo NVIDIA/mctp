@@ -1322,6 +1322,137 @@ out:
 	return reply_message(ctx, sd, &resp, resp_len, addr);
 }
 
+/* Handle Get Routing Table Entries command
+ * Assumes that each GRTE message contains 1 entry only.
+ */
+static int handle_control_get_routing_table_entries(
+	struct ctx *ctx, int sd, const struct sockaddr_mctp_ext *addr,
+	const uint8_t *buf, const size_t buf_size)
+{
+	struct mctp_ctrl_cmd_get_routing_table *req = NULL;
+	struct mctp_ctrl_resp_get_routing_table *resp = NULL;
+	uint8_t respbuf[sizeof(*resp) + sizeof(struct get_routing_table_entry) +
+			MAX_ADDR_LEN] = { 0 };
+	size_t resp_len;
+
+	if (buf_size < sizeof(struct mctp_ctrl_cmd_get_routing_table)) {
+		warnx("short Get Routing Table Entries message");
+		return -ENOMSG;
+	}
+
+	req = (void *)buf;
+	uint8_t entry = req->entry_handle;
+
+	resp = (void *)respbuf;
+	mctp_ctrl_msg_hdr_init_resp(&resp->ctrl_hdr, req->ctrl_hdr);
+	if (entry == 0xFF || entry >= ctx->num_peers) {
+		resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+		resp->next_entry_handle = 0x00;
+		resp->number_of_entries = 0;
+		resp_len = sizeof(*resp) - 1;
+		return reply_message(ctx, sd, resp, resp_len, addr);
+	}
+
+	struct peer *target_peer = NULL;
+	size_t target_peer_idx = 0;
+	uint8_t remote_count = 0;
+
+	for (size_t i = 0; i < ctx->num_peers; i++) {
+		struct peer *peer = ctx->peers[i];
+		if (peer->state != REMOTE)
+			continue;
+
+		if (remote_count == entry) {
+			target_peer = peer;
+			target_peer_idx = i;
+			break;
+		}
+		remote_count++;
+	}
+
+	if (target_peer == NULL) {
+		resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+		resp->next_entry_handle = 0xFF;
+		resp->number_of_entries = 0;
+		resp_len = sizeof(*resp) -
+			   sizeof(struct get_routing_table_entry) - 1;
+		return reply_message(ctx, sd, resp, resp_len, addr);
+	}
+
+	struct get_routing_table_entry *rt_entry =
+		(void *)(resp->routing_entries);
+	if (target_peer->routing_table_entry) {
+		/* Target peer is a downstream endpoint behind a bridge - copy its routing entry */
+		struct get_routing_table_entry *src =
+			target_peer->routing_table_entry;
+		uint8_t phys_addr_size = src->phys_address_size;
+
+		if (phys_addr_size > MAX_ADDR_LEN)
+			phys_addr_size = MAX_ADDR_LEN;
+
+		memcpy(rt_entry, src, sizeof(*rt_entry));
+		rt_entry->phys_address_size = phys_addr_size;
+
+		if (phys_addr_size > 0) {
+			uint8_t *src_phys_addr =
+				(uint8_t *)(&src->phys_address_size + 1);
+			uint8_t *dst_phys_addr =
+				(uint8_t *)(&rt_entry->phys_address_size + 1);
+			memcpy(dst_phys_addr, src_phys_addr, phys_addr_size);
+		}
+	} else {
+		/* Direct peer*/
+		const char *ifname =
+			mctp_nl_if_byindex(ctx->nl, target_peer->phys.ifindex);
+		const char *binding_str = get_binding_from_ifname(ifname);
+		rt_entry->eid_range_size = 1;
+		rt_entry->starting_eid = target_peer->eid;
+		rt_entry->entry_type =
+			SET_ROUTING_ENTRY_PORT(get_port_from_ifname(ifname)) |
+			SET_ROUTING_ENTRY_ASSIGNMENT_TYPE(
+				MCTP_STATIC_ASSIGNMENT) |
+			SET_ROUTING_ENTRY_TYPE(
+				GET_ENDPOINT_TYPE(target_peer->endpoint_type) ==
+						MCTP_BUS_OWNER_BRIDGE ?
+					MCTP_ROUTING_ENTRY_BRIDGE :
+					MCTP_ROUTING_ENTRY_ENDPOINT);
+		rt_entry->phys_transport_binding_id =
+			get_binding_id_from_string(binding_str);
+		rt_entry->phys_media_type_id =
+			get_media_type_id_from_string(binding_str);
+		// keep phys_address size as 1 for USB and SPI as well similar to earlier implementation in FPGA.
+		rt_entry->phys_address_size =
+			(strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0) ?
+				6 :
+				1;
+		if (rt_entry->phys_address_size > 0) {
+			uint8_t *src_phys_addr = target_peer->phys.hwaddr;
+			uint8_t *dst_phys_addr =
+				(uint8_t *)(&rt_entry->phys_address_size + 1);
+			memcpy(dst_phys_addr, src_phys_addr,
+			       rt_entry->phys_address_size);
+		}
+	}
+
+	resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+	resp->number_of_entries = 1;
+
+	/* Check if there's another REMOTE peer after this one */
+	bool has_more_remote = false;
+	for (size_t i = target_peer_idx + 1; i < ctx->num_peers; i++) {
+		if (ctx->peers[i]->state == REMOTE) {
+			has_more_remote = true;
+			break;
+		}
+	}
+
+	resp->next_entry_handle = has_more_remote ? (entry + 1) : 0xFF;
+
+	resp_len = sizeof(*resp) + sizeof(struct get_routing_table_entry) +
+		   rt_entry->phys_address_size - 1;
+	return reply_message(ctx, sd, resp, resp_len, addr);
+}
+
 static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 				 void *userdata)
 {
@@ -1400,6 +1531,10 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 	case MCTP_CTRL_CMD_ROUTING_INFO_UPDATE:
 		rc = handle_control_routing_info_update(ctx, sd, &addr, buf,
 							buf_size);
+		break;
+	case MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES:
+		rc = handle_control_get_routing_table_entries(ctx, sd, &addr,
+							      buf, buf_size);
 		break;
 	default:
 		if (ctx->verbose) {
