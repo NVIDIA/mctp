@@ -208,6 +208,7 @@ struct peer {
 	uint8_t pool_start;
 	mctp_eid_t *ignore_eids;
 	size_t num_ignore_eids;
+	mctp_eid_t *static_pool_eids;
 	// Routing Table Data
 	struct get_routing_table_entry *routing_table_entry;
 	// Timer for bridge EID population
@@ -874,8 +875,8 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 			struct peer *sendto_peer = NULL;
 			for (size_t i = 0; i < ctx->num_peers; i++) {
 				sendto_peer = ctx->peers[i];
-				// Only send to bridges (peers with pool_size > 0)
-				if (sendto_peer->pool_size > 0) {
+				// Only send to bridges (peers with endpoint_type as BRIDGE)
+				if (GET_ENDPOINT_TYPE(sendto_peer->endpoint_type) == MCTP_BUS_OWNER_BRIDGE) {
 					fprintf(stderr, "Sending Routing Info Update for EID %d to bridge EID %d\n",
 						copy_entry->first_eid,
 						sendto_peer->eid);
@@ -1242,7 +1243,7 @@ handle_control_routing_info_update(struct ctx *ctx, int sd,
 	for (size_t i = 0; i < ctx->num_peers; i++) {
 		sendto_peer = ctx->peers[i];
 
-		if (sendto_peer->pool_size > 0) {
+		if (GET_ENDPOINT_TYPE(sendto_peer->endpoint_type) == MCTP_BUS_OWNER_BRIDGE) {
 			fprintf(stderr,
 				"Sending Routing Info Update for EID %d to bridge EID %d\n",
 				first_eid, sendto_peer->eid);
@@ -2497,6 +2498,7 @@ static int remove_peer(struct peer *peer)
 	free(peer->uuid);
 	free(peer->ignore_eids);
 	free(peer->routing_table_entry);
+	free(peer->static_pool_eids);
 
 	for (idx = 0; idx < ctx->num_peers; idx++) {
 		if (ctx->peers[idx] == peer)
@@ -2542,6 +2544,7 @@ static void free_peers(struct ctx *ctx)
 		free(peer->path);
 		free(peer->ignore_eids);
 		free(peer->routing_table_entry);
+		free(peer->static_pool_eids);
 		sd_bus_slot_unref(peer->slot_obmc_endpoint);
 		sd_bus_slot_unref(peer->slot_cc_endpoint);
 		sd_bus_slot_unref(peer->slot_bridge);
@@ -3158,6 +3161,31 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 		/* new start eid will be assigned before MCTP Allocate eid control command */
 		peer->pool_start = peer->eid + 1;
 		rc = endpoint_allocate_eid(peer);
+	} else if (peer->pool_size == 0 &&
+		   GET_ENDPOINT_TYPE(peer->endpoint_type) ==
+			   MCTP_BUS_OWNER_BRIDGE) {
+		// TODO: Do we need bridge timer here?
+		peer->pool_size = 0;
+		peer->pool_start = 0;
+		peer->static_pool_eids =
+			malloc((eid_alloc_max + 1) * sizeof(mctp_eid_t));
+		memset(peer->static_pool_eids, 0,
+		       (eid_alloc_max + 1) * sizeof(mctp_eid_t));
+		sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_bridge,
+					 peer->path, CC_MCTP_DBUS_IFACE_BRIDGE,
+					 bus_endpoint_bridge, peer);
+
+		rc = sd_bus_emit_interfaces_added(peer->ctx->bus, peer->path,
+						  CC_MCTP_DBUS_IFACE_BRIDGE,
+						  NULL);
+		if (rc < 0) {
+			warnx("Failed to emit add %s signal for endpoint %d : %s",
+			      CC_MCTP_DBUS_IFACE_BRIDGE, peer->eid,
+			      strerror(-rc));
+		}
+		rc = query_routing_table(peer);
+		if (rc < 0)
+			goto err;
 	}
 
 	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
@@ -3267,6 +3295,30 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	if (peer->pool_size > 0) {
 		peer->pool_start = start_eid;
 		rc = endpoint_allocate_eid(peer);
+	} else if (GET_ENDPOINT_TYPE(peer->endpoint_type) ==
+		   MCTP_BUS_OWNER_BRIDGE) {
+		// TODO: Do we need bridge timer here?
+		peer->pool_size = 0;
+		peer->pool_start = 0;
+		peer->static_pool_eids =
+			malloc((eid_alloc_max + 1) * sizeof(mctp_eid_t));
+		memset(peer->static_pool_eids, 0,
+		       (eid_alloc_max + 1) * sizeof(mctp_eid_t));
+		sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_bridge,
+					 peer->path, CC_MCTP_DBUS_IFACE_BRIDGE,
+					 bus_endpoint_bridge, peer);
+
+		rc = sd_bus_emit_interfaces_added(peer->ctx->bus, peer->path,
+						  CC_MCTP_DBUS_IFACE_BRIDGE,
+						  NULL);
+		if (rc < 0) {
+			warnx("Failed to emit add %s signal for endpoint %d : %s",
+			      CC_MCTP_DBUS_IFACE_BRIDGE, peer->eid,
+			      strerror(-rc));
+		}
+		rc = query_routing_table(peer);
+		if (rc < 0)
+			goto err;
 	}
 
 	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
@@ -3413,7 +3465,8 @@ static int method_get_routing_table(sd_bus_message *call, void *data,
 		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
 					 "Unknown EID");
 	} else {
-		if (peer->pool_size == 0 || peer->pool_start == 0) {
+		if (GET_ENDPOINT_TYPE(peer->endpoint_type) !=
+		    MCTP_BUS_OWNER_BRIDGE) {
 			return sd_bus_error_setf(berr,
 						 SD_BUS_ERROR_INVALID_ARGS,
 						 "Endpoint is not a Bridge");
@@ -4226,7 +4279,10 @@ static int bus_bridge_get_prop(sd_bus *bus, const char *path,
 	if (strcmp(property, "PoolStart") == 0) {
 		rc = sd_bus_message_append(reply, "y", peer->pool_start);
 	} else if (strcmp(property, "PoolEnd") == 0) {
-		uint8_t pool_end = peer->pool_start + peer->pool_size - 1;
+		uint8_t pool_end = 0;
+		if (peer->pool_size != 0) {
+			pool_end = peer->pool_start + peer->pool_size - 1;
+		}
 		rc = sd_bus_message_append(reply, "y", pool_end);
 	} else {
 		warnx("Unknown bridge property '%s' for %s iface %s", property,
@@ -5873,6 +5929,16 @@ static int query_routing_table(struct peer *peer)
 	struct get_routing_table_entry **local_routing = NULL;
 	struct link *link =
 		mctp_nl_get_link_userdata(peer->ctx->nl, peer->phys.ifindex);
+	bool is_static_pool_bridge = false;
+
+	if (peer->pool_size == 0 &&
+	    GET_ENDPOINT_TYPE(peer->endpoint_type) == MCTP_BUS_OWNER_BRIDGE) {
+		// We don't know eid pool space for the Bridge (Static EID pool), need to rely on routing table data
+		// temporary set pool size to eid_alloc_max and start to eid_alloc_min
+		peer->pool_size = eid_alloc_max;
+		peer->pool_start = eid_alloc_min;
+		is_static_pool_bridge = true;
+	}
 
 	if (peer->pool_size) {
 		active_pool_eid = (bool *)malloc(peer->pool_size);
@@ -5938,6 +6004,10 @@ static int query_routing_table(struct peer *peer)
 							"created new endpoint %d\n",
 							eid);
 					}
+					if (is_static_pool_bridge) {
+						peer->static_pool_eids[eid] =
+							eid;
+					}
 				} else {
 					// EID is active and exists locally - send connectivity change
 					existing_peer->degraded = false;
@@ -5974,8 +6044,11 @@ static int query_routing_table(struct peer *peer)
 					//TODO: should we update the rounting entry for this eid as well?
 				}
 			} else {
-				if (existing_peer &&
-				    false == should_ignore_eid(peer, eid)) {
+				if ((existing_peer &&
+				     false == should_ignore_eid(peer, eid) &&
+				     !is_static_pool_bridge) ||
+				    (existing_peer && is_static_pool_bridge &&
+				     peer->static_pool_eids[eid] == eid)) {
 					// EID is not active but exists locally - remove it
 					if (!existing_peer->degraded) {
 						if (peer->ctx->verbose) {
@@ -6013,6 +6086,12 @@ static int query_routing_table(struct peer *peer)
 		}
 	}
 
+	// Restore pool size and start to original values
+	if (peer->pool_size == eid_alloc_max &&
+	    peer->pool_start == eid_alloc_min) {
+		peer->pool_size = 0;
+		peer->pool_start = 0;
+	}
 	return 0;
 out:
 	for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
@@ -6022,6 +6101,12 @@ out:
 	free(active_pool_eid);
 	warnx(" %s Failed to get routing table data for handle %d\n", __func__,
 	      entry_handle);
+	// Restore pool size and start to original values
+	if (peer->pool_size == eid_alloc_max &&
+	    peer->pool_start == eid_alloc_min) {
+		peer->pool_size = 0;
+		peer->pool_start = 0;
+	}
 	return rc;
 }
 
