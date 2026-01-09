@@ -209,6 +209,8 @@ struct peer {
 	mctp_eid_t *ignore_eids;
 	size_t num_ignore_eids;
 	mctp_eid_t *static_pool_eids;
+	uint8_t *ignore_message_types;
+	size_t num_ignore_message_types;
 	// Routing Table Data
 	struct get_routing_table_entry *routing_table_entry;
 	// Timer for bridge EID population
@@ -2905,13 +2907,33 @@ static int query_get_peer_msgtypes(struct peer *peer)
 		goto out;
 	}
 
-	peer->message_types = malloc(resp->msg_type_count);
+	peer->num_message_types =
+		resp->msg_type_count - peer->num_ignore_message_types;
+	peer->message_types = malloc(peer->num_message_types);
 	if (!peer->message_types) {
 		rc = -ENOMEM;
 		goto out;
 	}
-	peer->num_message_types = resp->msg_type_count;
-	memcpy(peer->message_types, (void *)(resp + 1), resp->msg_type_count);
+
+	size_t idx = 0;
+	bool ignore = false;
+	for (size_t resp_i = 0; resp_i < resp->msg_type_count; resp_i++) {
+		ignore = false;
+		for (size_t k = 0; k < peer->num_ignore_message_types; k++) {
+			if (peer->ignore_message_types[k] ==
+			    ((uint8_t *)(resp + 1))[resp_i]) {
+				warnx("%s: ignoring message type %d for eid %d",
+				      __func__, ((uint8_t *)(resp + 1))[resp_i],
+				      peer->eid);
+				ignore = true;
+				break;
+			}
+		}
+		if (!ignore) {
+			peer->message_types[idx++] =
+				((uint8_t *)(resp + 1))[resp_i];
+		}
+	}
 	rc = 0;
 out:
 	free(buf);
@@ -3206,6 +3228,8 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	uint8_t eid, start_eid;
 	const uint8_t *ignore_eids = NULL;
 	size_t ignore_eids_len;
+	const uint8_t *ignore_message_types = NULL;
+	size_t ignore_message_types_len;
 	int rc;
 
 	dest->ifindex = link->ifindex;
@@ -3227,6 +3251,12 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 
 	rc = sd_bus_message_read_array(call, 'y', (const void **)&ignore_eids,
 				       &ignore_eids_len);
+	if (rc < 0)
+		goto err;
+
+	rc = sd_bus_message_read_array(call, 'y',
+				       (const void **)&ignore_message_types,
+				       &ignore_message_types_len);
 	if (rc < 0)
 		goto err;
 
@@ -3280,6 +3310,20 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	} else {
 		peer->ignore_eids = NULL;
 		peer->num_ignore_eids = 0;
+	}
+
+	if (ignore_message_types_len > 0) {
+		peer->ignore_message_types = malloc(ignore_message_types_len);
+		if (!peer->ignore_message_types) {
+			rc = -ENOMEM;
+			goto err;
+		}
+		memcpy(peer->ignore_message_types, ignore_message_types,
+		       ignore_message_types_len);
+		peer->num_ignore_message_types = ignore_message_types_len;
+	} else {
+		peer->ignore_message_types = NULL;
+		peer->num_ignore_message_types = 0;
 	}
 
 	peer->is_direct_endpoint = true;
@@ -4235,11 +4279,12 @@ static const sd_bus_vtable bus_link_owner_vtable[] = {
 		0),
 
 	SD_BUS_METHOD_WITH_NAMES("AssignEndpointStatic",
-		"ayyyay",
+		"ayyyayay",
 		SD_BUS_PARAM(physaddr)
 		SD_BUS_PARAM(eid)
 		SD_BUS_PARAM(start_eid)
-		SD_BUS_PARAM(ignore_eids),
+		SD_BUS_PARAM(ignore_eids)
+		SD_BUS_PARAM(ignore_message_types),
 		"yisb",
 		SD_BUS_PARAM(eid)
 		SD_BUS_PARAM(net)
@@ -5991,6 +6036,20 @@ static int query_routing_table(struct peer *peer)
 					allocated_peer->routing_table_entry =
 						local_routing[index];
 					local_routing[index] = NULL;
+					// Copy ignore message type for Bridge eid to its downstream eid
+					if (peer->num_ignore_message_types >
+					    0) {
+						allocated_peer
+							->num_ignore_message_types =
+							peer->num_ignore_message_types;
+						allocated_peer
+							->ignore_message_types = malloc(
+							peer->num_ignore_message_types);
+						memcpy(allocated_peer
+							       ->ignore_message_types,
+						       peer->ignore_message_types,
+						       peer->num_ignore_message_types);
+					}
 					rc = setup_added_peer(allocated_peer);
 					if (rc < 0) {
 						warnx("%s failed to setup peer for active eid %d: %d %s",
