@@ -15,6 +15,7 @@
 
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -344,7 +345,8 @@ mctp_eid_t local_addr(const struct ctx *ctx, int ifindex)
 }
 
 static void *dfree(void *ptr);
-static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose);
+static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose, 
+				  const struct sockaddr_mctp_ext *req_addr);
 
 static struct net *lookup_net(struct ctx *ctx, uint32_t net)
 {
@@ -1513,7 +1515,25 @@ static void log_mctp_error(struct ctx *ctx, const struct mctp_error *err, const 
 	}
 }
 
-static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
+static const char *resolve_ifname(struct ctx *ctx, int ifindex)
+{
+	const char *ifname = NULL;
+
+	if (ifindex > 0) {
+		ifname = mctp_nl_if_byindex(ctx->nl, ifindex);
+		
+		if (!ifname) {
+			static char fallback[IF_NAMESIZE];
+			if (if_indextoname(ifindex, fallback)) {
+				ifname = fallback;
+			}
+		}
+	}
+	return ifname;
+}
+
+static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose,
+				  const struct sockaddr_mctp_ext *req_addr)
 {
 	char control_buf[512];
 	struct mctp_error err_data;  /* Buffer to receive error data from kernel */
@@ -1554,22 +1574,32 @@ static int read_mctp_error_queue(struct ctx *ctx, int fd, bool verbose)
 		if (cmsg->cmsg_level == SOL_MCTP &&
 		    cmsg->cmsg_type == MCTP_RECVERR) {
 			const char *ifname = NULL;
-			if (err_data.dest_eid != 0) {
-				/* Try to find peer by destination EID */
+			int ifindex = 0;
+			
+			/* Try to get ifindex from request address if provided */
+			if (req_addr && req_addr->smctp_ifindex > 0) {
+				ifindex = req_addr->smctp_ifindex;
+			}
+			/* Otherwise try to find peer by destination EID */
+			else if (err_data.dest_eid != 0) {
 				struct peer *peer = find_peer_by_addr(ctx, err_data.dest_eid, 1);
 				if (peer && peer->state == REMOTE && peer->phys.ifindex > 0) {
-					ifname = mctp_nl_if_byindex(ctx->nl, peer->phys.ifindex);
-					if (ifname) {
-						const char *binding_str = get_binding_from_ifname(ifname);
-						
-						if (strncmp(binding_str, "SMBus", sizeof("SMBus") - 1) == 0)
-							err_data.binding = MCTP_PHYS_BINDING_SMBUS;
-						else if (strncmp(binding_str, "USB", sizeof("USB") - 1) == 0)
-							err_data.binding = MCTP_PHYS_BINDING_USB;
-						else if (strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0)
-							err_data.binding = MCTP_PHYS_BINDING_I3C;
-					}
+					ifindex = peer->phys.ifindex;
 				}
+			}
+			
+			/* Now try to get interface name from ifindex */
+			ifname = resolve_ifname(ctx, ifindex);
+			
+			if (ifname) {
+				const char *binding_str = get_binding_from_ifname(ifname);
+				
+				if (strncmp(binding_str, "SMBus", sizeof("SMBus") - 1) == 0)
+					err_data.binding = MCTP_PHYS_BINDING_SMBUS;
+				else if (strncmp(binding_str, "USB", sizeof("USB") - 1) == 0)
+					err_data.binding = MCTP_PHYS_BINDING_USB;
+				else if (strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0)
+					err_data.binding = MCTP_PHYS_BINDING_I3C;
 			}
 			
 			log_mctp_error(ctx, &err_data, ifname);
@@ -1884,20 +1914,18 @@ static void report_transaction_error(struct ctx *ctx, int error_code,
 		}
 	}
 	
-	if (ifindex > 0) {
-		ifname = mctp_nl_if_byindex(ctx->nl, ifindex);
+	ifname = resolve_ifname(ctx, ifindex);
 
-		if (ifname) {
-			const char *binding_str = get_binding_from_ifname(ifname);
-			if (strncmp(binding_str, "SMBus", sizeof("SMBus") - 1) == 0)
-				tmperr.binding = MCTP_PHYS_BINDING_SMBUS;
-			else if (strncmp(binding_str, "USB", sizeof("USB") - 1) == 0)
-				tmperr.binding = MCTP_PHYS_BINDING_USB;
-			else if (strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0)
-				tmperr.binding = MCTP_PHYS_BINDING_I3C;
-			else if (strncmp(binding_str, "SPI", sizeof("SPI") - 1) == 0)
-				tmperr.binding = MCTP_PHYS_BINDING_UNSPEC;
-		}
+	if (ifname) {
+		const char *binding_str = get_binding_from_ifname(ifname);
+		if (strncmp(binding_str, "SMBus", sizeof("SMBus") - 1) == 0)
+			tmperr.binding = MCTP_PHYS_BINDING_SMBUS;
+		else if (strncmp(binding_str, "USB", sizeof("USB") - 1) == 0)
+			tmperr.binding = MCTP_PHYS_BINDING_USB;
+		else if (strncmp(binding_str, "I3C", sizeof("I3C") - 1) == 0)
+			tmperr.binding = MCTP_PHYS_BINDING_I3C;
+		else if (strncmp(binding_str, "SPI", sizeof("SPI") - 1) == 0)
+			tmperr.binding = MCTP_PHYS_BINDING_UNSPEC;
 	}
 
 	/* Extract command code from request if it's a control message */
@@ -1994,7 +2022,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 	}
 	/* If EPOLLERR was set, check error queue before trying to read */
 	if (rc & EPOLLERR) {
-		read_mctp_error_queue(ctx, sd, ctx->verbose);
+		read_mctp_error_queue(ctx, sd, ctx->verbose, req_addr);
 		/* If no EPOLLIN, this was purely an error event */
 		if (!(rc & EPOLLIN)) {
 			rc = -EIO;
