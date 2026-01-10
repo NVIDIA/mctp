@@ -1829,6 +1829,8 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		warnx("%s: Command failed, completion code 0x%02x",
 		      peer_cmd_prefix(peer, cmd), rsp->completion_code);
 		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		if (rsp->completion_code == MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD)
+			return -ENOTSUP;
 		return -ECONNREFUSED;
 	}
 
@@ -3204,6 +3206,9 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	/* Always query the device for its UUID to check if it's alive */
 	rc = query_get_peer_uuid(peer, uuid);
 	if (rc < 0) {
+		if (rc == -ENOTSUP) {
+			return sd_bus_reply_method_return(call, NULL);
+		}
 		if (ctx->verbose)
 			fprintf(stderr, "%s failed to get endpoint UUID for EID %d: %d\n",
 				__func__, eid, rc);
