@@ -329,12 +329,14 @@ async def test_assign_endpoint_static(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     assert eid == static_eid
@@ -355,12 +357,14 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     assert eid == static_eid
@@ -371,7 +375,8 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
         dev.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     assert eid == static_eid
@@ -395,8 +400,9 @@ async def test_assign_endpoint_static_conflict(dbus, mctpd):
 
     # try to assign dev2 with the dev1's existing EID
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev2.lladdr, eid, 14, ignore_eids)
+        await mctp.call_assign_endpoint_static(dev2.lladdr, eid, 14, ignore_eids, ignore_message_types)
 
     assert str(ex.value) == "Address in use"
 
@@ -409,19 +415,21 @@ async def test_assign_endpoint_static_varies(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     assert eid == static_eid
     assert new
 
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev.lladdr, 13, 14, ignore_eids)
+        await mctp.call_assign_endpoint_static(dev.lladdr, 13, 14, ignore_eids, ignore_message_types)
 
     assert str(ex.value) == "Already assigned a different EID"
 
@@ -816,6 +824,7 @@ async def test_add_interface(dbus, mctpd):
     #dummy eid to start with
     start_eid = 10
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
     # Create a new netdevice
     iface = mctpd.system.Interface('mctpnew', 10, net, bytes([]), 68, 254, True)
     await mctpd.system.add_interface(iface)
@@ -830,7 +839,8 @@ async def test_add_interface(dbus, mctpd):
         bytes([]),
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
     assert eid == static_eid
     assert new
@@ -861,7 +871,8 @@ async def test_add_interface(dbus, mctpd):
         bytes([]),
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
     assert eid == static_eid
     assert new
@@ -911,6 +922,7 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
     start_eid = 13
     pool_size = 2
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
 
     # mimicing MCTP Bridge by adding Bridg's Endpoints to same network and physcial address
     for eid in range(start_eid, start_eid + pool_size):
@@ -927,7 +939,8 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
         bridge.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     # non blocking sleep for Allocate Eid timer expiry
@@ -963,12 +976,14 @@ async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     ignore_eids = bytes([20, 21, 22])  # EIDs to ignore
+    ignore_message_types = b''  # Message types to ignore
 
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
         dev.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     assert eid == static_eid
@@ -1104,6 +1119,7 @@ async def test_service_readiness_bridge_state_transition(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
     
     # Get the interface object for AssignEndpoint call
     iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
@@ -1134,7 +1150,8 @@ async def test_service_readiness_bridge_state_transition(dbus, mctpd):
         bridge.lladdr,
         static_eid,
         start_eid,
-        ignore_eids
+        ignore_eids,
+        ignore_message_types
     )
 
     # non blocking sleep for Allocate Eid timer expiry
