@@ -3195,7 +3195,10 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	struct ctx *ctx = net->ctx;
 	mctp_eid_t eid;
 	struct peer *peer;
-	uint8_t uuid[16] = { 0 };
+	struct mctp_ctrl_cmd_get_uuid req = { 0 };
+	struct sockaddr_mctp_ext addr;
+	uint8_t *buf = NULL;
+	size_t buf_size = 0;
 	int rc;
 
 	rc = sd_bus_message_read_basic(call, 'y', &eid);
@@ -3216,21 +3219,28 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 					 "Unknown EID %d", eid);
 	}
 
-	/* Always query the device for its UUID to check if it's alive */
-	rc = query_get_peer_uuid(peer, uuid);
+	/* Send Get Endpoint UUID to check if it's alive.
+	 * We don't validate the response content, just that we got one. */
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, mctp_next_iid(peer->ctx),
+				   MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+
+	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
+				 sizeof(req), &buf, &buf_size, &addr);
+
+	if (rc == 0 && buf_size == 0)
+		rc = -EPROTO;
+
+	/* Free the response buffer immediately since we aren't validating content,
+	 * other than checking that we received data */
+	free(buf);
+
 	if (rc < 0) {
 		if (rc == -ENOTSUP) {
 			return sd_bus_reply_method_return(call, NULL);
 		}
 		if (ctx->verbose)
-			fprintf(stderr, "%s failed to get endpoint UUID for EID %d: %d\n",
+			fprintf(stderr, "%s failed to ping EID %d: %d\n",
 				__func__, eid, rc);
-		goto err;
-	}
-
-	/* Update peer UUID */
-	rc = peer_set_uuid(peer, uuid);
-	if (rc < 0) {
 		goto err;
 	}
 

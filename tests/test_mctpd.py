@@ -1326,3 +1326,218 @@ async def test_learn_endpoint_emit_prop_signal(dbus, mctpd):
         await learned.acquire()
 
     assert not timeout.cancelled_caught
+
+""" Test EndpointPing with a device that returns a mismatched IID.
+This verifies that we ignore validation errors and treat any response as success.
+"""
+async def test_endpoint_ping_bad_iid(dbus, mctpd):
+    class BadIIDEndpoint(Endpoint):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.inject_error = False
+
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            # Standard response handling, but we corrupt the IID in the response
+            flags, opcode = msg[0:2]
+            
+            # Only intercept Get Endpoint UUID (opcode 0x03) which Ping uses
+            if self.inject_error and opcode == 0x03:
+                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+                
+                # Construct a valid-looking response but with WRONG IID
+                # Request IID is in msg[0] & 0x1f. We'll use (IID + 1) % 32
+                req_iid = flags & 0x1f
+                bad_iid = (req_iid + 1) % 32
+                
+                resp_flags = (flags & ~0x1f) | bad_iid # Keep other flags, set bad IID
+                
+                # Response format: Header(2) + CC(1) + UUID(16)
+                # We can just send a dummy UUID
+                dummy_uuid = bytes([0xAA] * 16)
+                
+                resp = bytes([resp_flags, opcode, 0x00]) + dummy_uuid
+                await sock.send(dst_addr, resp)
+                return
+
+            return await super().handle_mctp_control(sock, src_addr, msg)
+
+    iface = mctpd.system.interfaces[0]
+    
+    # Create our bad endpoint
+    ep = BadIIDEndpoint(iface, bytes([0x1e]))
+    mctpd.network.add_endpoint(ep)
+    
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    # Set up the endpoint first (standard setup)
+    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    # Enable error injection for Ping
+    ep.inject_error = True
+
+    # Get Network interface
+    net = await mctpd_mctp_network_obj(dbus, iface.net)
+
+    # Test EndpointPing
+    # It SHOULD succeed despite the bad IID in the response
+    await net.call_endpoint_ping(eid)
+
+""" Test EndpointPing with a device that returns wrong opcode.
+This verifies that we ignore validation errors and treat any response as success.
+"""
+async def test_endpoint_ping_wrong_opcode(dbus, mctpd):
+    class WrongOpcodeEndpoint(Endpoint):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.inject_error = False
+
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            
+            # Only intercept Get Endpoint UUID (opcode 0x03)
+            if self.inject_error and opcode == 0x03:
+                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+                
+                # Send back a response with WRONG opcode (e.g., 0x05 instead of 0x03)
+                wrong_opcode = 0x05
+                dummy_uuid = bytes([0xBB] * 16)
+                
+                resp = bytes([flags, wrong_opcode, 0x00]) + dummy_uuid
+                await sock.send(dst_addr, resp)
+                return
+
+            return await super().handle_mctp_control(sock, src_addr, msg)
+
+    iface = mctpd.system.interfaces[0]
+    ep = WrongOpcodeEndpoint(iface, bytes([0x1f]))
+    mctpd.network.add_endpoint(ep)
+    
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    # Enable error injection for Ping
+    ep.inject_error = True
+
+    net = await mctpd_mctp_network_obj(dbus, iface.net)
+    
+    # Should succeed despite wrong opcode
+    await net.call_endpoint_ping(eid)
+
+""" Test EndpointPing with a device that returns an error completion code.
+This verifies that we treat error responses as successful pings.
+"""
+async def test_endpoint_ping_error_completion_code(dbus, mctpd):
+    class ErrorCompletionEndpoint(Endpoint):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.inject_error = False
+
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            
+            # Only intercept Get Endpoint UUID (opcode 0x03)
+            if self.inject_error and opcode == 0x03:
+                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+                
+                # Send back error response with completion code 0x05 (unsupported command)
+                # Format: flags, opcode, completion_code
+                resp = bytes([flags, opcode, 0x05])
+                await sock.send(dst_addr, resp)
+                return
+
+            return await super().handle_mctp_control(sock, src_addr, msg)
+
+    iface = mctpd.system.interfaces[0]
+    ep = ErrorCompletionEndpoint(iface, bytes([0x20]))
+    mctpd.network.add_endpoint(ep)
+    
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    # Enable error injection for Ping
+    ep.inject_error = True
+
+    net = await mctpd_mctp_network_obj(dbus, iface.net)
+    
+    # Should succeed despite error completion code
+    await net.call_endpoint_ping(eid)
+
+""" Test EndpointPing with a device that returns truncated/short response.
+This verifies that we treat short responses as successful pings.
+"""
+async def test_endpoint_ping_short_response(dbus, mctpd):
+    class ShortResponseEndpoint(Endpoint):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.inject_error = False
+
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            
+            # Only intercept Get Endpoint UUID (opcode 0x03)
+            if self.inject_error and opcode == 0x03:
+                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+                
+                # Send back a response that's too short (missing UUID data)
+                # Normal response should be: flags + opcode + cc + 16-byte UUID = 19 bytes
+                # We send only 5 bytes
+                resp = bytes([flags, opcode, 0x00, 0xCC, 0xDD])
+                await sock.send(dst_addr, resp)
+                return
+
+            return await super().handle_mctp_control(sock, src_addr, msg)
+
+    iface = mctpd.system.interfaces[0]
+    ep = ShortResponseEndpoint(iface, bytes([0x21]))
+    mctpd.network.add_endpoint(ep)
+    
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    # Enable error injection for Ping
+    ep.inject_error = True
+
+    net = await mctpd_mctp_network_obj(dbus, iface.net)
+    
+    # Should succeed despite short response
+    await net.call_endpoint_ping(eid)
+
+""" Test EndpointPing with a device that returns garbage data.
+This verifies that we treat any response as successful ping.
+"""
+async def test_endpoint_ping_garbage_response(dbus, mctpd):
+    class GarbageResponseEndpoint(Endpoint):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.inject_error = False
+
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            
+            # Only intercept Get Endpoint UUID (opcode 0x03)
+            if self.inject_error and opcode == 0x03:
+                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+                
+                # Send back completely garbage data
+                resp = bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+                await sock.send(dst_addr, resp)
+                return
+
+            return await super().handle_mctp_control(sock, src_addr, msg)
+
+    iface = mctpd.system.interfaces[0]
+    ep = GarbageResponseEndpoint(iface, bytes([0x22]))
+    mctpd.network.add_endpoint(ep)
+    
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    # Enable error injection for Ping
+    ep.inject_error = True
+
+    net = await mctpd_mctp_network_obj(dbus, iface.net)
+    
+    # Should succeed despite garbage response
+    await net.call_endpoint_ping(eid)
+
+
