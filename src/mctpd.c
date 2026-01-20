@@ -3273,12 +3273,19 @@ static int query_peer_properties(struct peer *peer)
 
 	uint8_t uuid[16] = { 0 };
 	rc = query_get_peer_uuid(peer, uuid);
-	if (rc < 0) {
+	if (rc < 0 && rc != -ENOTSUP) {
 		if (peer->ctx->verbose)
 			warnx("Error getting UUID for %s. Ignoring error %d %s",
 			      peer_tostr(peer), rc, strerror(-rc));
 		rc = 0;
 	} else {
+		if (rc == -ENOTSUP) {
+			// If UUID is not supported (ENOTSUP), we want to fake out the UUID
+			// to be such that uuid[15] is the EID. This is a hack to allow
+			// clients to still use the UUID property even if the device
+			// doesn't support it.
+			uuid[15] = peer->eid;
+		}
 		peer_set_uuid(peer, uuid);
 	}
 
