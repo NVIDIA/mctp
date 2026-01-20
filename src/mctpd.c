@@ -3268,7 +3268,7 @@ static int query_peer_properties(struct peer *peer)
 			warnx("Error getting endpoint types for %s. Ignoring error %d %s",
 			      peer_tostr(peer), rc, strerror(-rc));
 		}
-		rc = 0;
+		goto out;
 	}
 
 	uint8_t uuid[16] = { 0 };
@@ -3277,18 +3277,20 @@ static int query_peer_properties(struct peer *peer)
 		if (peer->ctx->verbose)
 			warnx("Error getting UUID for %s. Ignoring error %d %s",
 			      peer_tostr(peer), rc, strerror(-rc));
-		rc = 0;
+		goto out;
 	} else {
 		if (rc == -ENOTSUP) {
 			// If UUID is not supported (ENOTSUP), we want to fake out the UUID
 			// to be such that uuid[15] is the EID. This is a hack to allow
 			// clients to still use the UUID property even if the device
-			// doesn't support it.
+			// doesn't support it (For ex. certain NVMe drives)
 			uuid[15] = peer->eid;
+			rc = 0;
 		}
 		peer_set_uuid(peer, uuid);
 	}
 
+out:
 	// TODO: emit property changed? Though currently they are all const.
 	return rc;
 }
