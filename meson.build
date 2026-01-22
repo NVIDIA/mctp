@@ -146,7 +146,9 @@ if tests
     test_dir = join_paths(meson.current_source_dir(), 'tests')
     pytest_conf = join_paths(test_dir, 'pytest.ini')
 
-    pytest = find_program('pytest')
+    # Try to find pytest in the venv first, then fall back to system pytest
+    venv_pytest = join_paths(meson.current_source_dir(), '.venv', 'bin', 'pytest')
+    pytest = find_program(venv_pytest, 'pytest', required: true)
     script = 'if [ ! -t 1 ]; then PFL="--tap"; fi; DBUS_STARTER_BUS_TYPE=user "@0@" $PFL --config-file "@1@" $@'.format(
       pytest.full_path(),
       pytest_conf,
