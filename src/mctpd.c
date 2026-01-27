@@ -38,6 +38,7 @@
 #include "mctp-control-spec.h"
 #include "mctp-ops.h"
 #include "mctpd-util.h"
+#include "mctp-log.h"
 
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define min(a, b) ((a) < (b) ? (a) : (b))

@@ -13,6 +13,7 @@
 
 #include "mctp.h"
 #include "mctp-ops.h"
+#include "mctp-log.h"
 
 static int mctp_op_mctp_socket(void)
 {

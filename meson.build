@@ -81,10 +81,16 @@ executable('mctp-client',
 )
 
 if libsystemd.found()
+    mctpd_c_args = []
+    if get_option('journal-logging')
+        mctpd_c_args += '-DMCTP_JOURNAL_LOGGING'
+    endif
+
     executable('mctpd',
         sources: [
             'src/mctpd.c',
         ] + netlink_sources + util_sources + ops_sources,
+        c_args: mctpd_c_args,
         dependencies: [libsystemd, toml_dep],
         install: true,
         install_dir: get_option('sbindir'),

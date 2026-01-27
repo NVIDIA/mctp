@@ -18,6 +18,7 @@
 #include "mctp-netlink.h"
 #include "mctp.h"
 #include "mctp-util.h"
+#include "mctp-log.h"
 #include "mctp-ops.h"
 
 struct linkmap_entry {
