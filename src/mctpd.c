@@ -2497,6 +2497,7 @@ static int remove_peer(struct peer *peer)
 
 	n->peers[peer->eid] = NULL;
 	free(peer->message_types);
+	free(peer->ignore_message_types);
 	free(peer->uuid);
 	free(peer->ignore_eids);
 	free(peer->routing_table_entry);
@@ -2542,6 +2543,7 @@ static void free_peers(struct ctx *ctx)
 	for (size_t i = 0; i < ctx->num_peers; i++) {
 		struct peer *peer = ctx->peers[i];
 		free(peer->message_types);
+		free(peer->ignore_message_types);
 		free(peer->uuid);
 		free(peer->path);
 		free(peer->ignore_eids);
@@ -2621,7 +2623,9 @@ static int peer_set_mtu(struct ctx *ctx, struct peer *peer, uint32_t mtu)
 
 static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 			       const dest_phys *dest, struct peer **ret_peer,
-			       mctp_eid_t static_eid)
+			       mctp_eid_t static_eid,
+			       const uint8_t *ignore_message_types,
+			       size_t ignore_message_types_len)
 {
 	mctp_eid_t e, new_eid;
 	struct net *n = NULL;
@@ -2688,6 +2692,20 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 			remove_peer(peer);
 			return rc;
 		}
+	}
+
+	if (ignore_message_types_len > 0) {
+		peer->ignore_message_types = malloc(ignore_message_types_len);
+		if (!peer->ignore_message_types) {
+			rc = -ENOMEM;
+			return rc;
+		}
+		memcpy(peer->ignore_message_types, ignore_message_types,
+		       ignore_message_types_len);
+		peer->num_ignore_message_types = ignore_message_types_len;
+	} else {
+		peer->ignore_message_types = NULL;
+		peer->num_ignore_message_types = 0;
 	}
 
 	rc = setup_added_peer(peer);
@@ -2907,9 +2925,9 @@ static int query_get_peer_msgtypes(struct peer *peer)
 		goto out;
 	}
 
-	peer->num_message_types =
-		resp->msg_type_count - peer->num_ignore_message_types;
-	peer->message_types = malloc(peer->num_message_types);
+	// free previous message types to avoid memory leak
+	free(peer->message_types);
+	peer->message_types = malloc(resp->msg_type_count);
 	if (!peer->message_types) {
 		rc = -ENOMEM;
 		goto out;
@@ -2917,6 +2935,7 @@ static int query_get_peer_msgtypes(struct peer *peer)
 
 	size_t idx = 0;
 	bool ignore = false;
+	uint8_t count_ignore = 0;
 	for (size_t resp_i = 0; resp_i < resp->msg_type_count; resp_i++) {
 		ignore = false;
 		for (size_t k = 0; k < peer->num_ignore_message_types; k++) {
@@ -2926,6 +2945,7 @@ static int query_get_peer_msgtypes(struct peer *peer)
 				      __func__, ((uint8_t *)(resp + 1))[resp_i],
 				      peer->eid);
 				ignore = true;
+				count_ignore++;
 				break;
 			}
 		}
@@ -2934,6 +2954,7 @@ static int query_get_peer_msgtypes(struct peer *peer)
 				((uint8_t *)(resp + 1))[resp_i];
 		}
 	}
+	peer->num_message_types = resp->msg_type_count - count_ignore;
 	rc = 0;
 out:
 	free(buf);
@@ -3111,7 +3132,7 @@ static int method_setup_endpoint(sd_bus_message *call, void *data,
 	}
 
 	/* Set Endpoint ID */
-	rc = endpoint_assign_eid(ctx, berr, dest, &peer, 0);
+	rc = endpoint_assign_eid(ctx, berr, dest, &peer, 0, NULL, 0);
 	if (rc < 0)
 		goto err;
 
@@ -3165,7 +3186,7 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 						  peer->net, peer_path, 0);
 	}
 
-	rc = endpoint_assign_eid(ctx, berr, dest, &peer, 0);
+	rc = endpoint_assign_eid(ctx, berr, dest, &peer, 0, NULL, 0);
 	if (rc < 0)
 		goto err;
 
@@ -3293,7 +3314,9 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 		}
 	}
 
-	rc = endpoint_assign_eid(ctx, berr, dest, &peer, eid);
+	rc = endpoint_assign_eid(ctx, berr, dest, &peer, eid,
+				 ignore_message_types,
+				 ignore_message_types_len);
 	if (rc < 0) {
 		goto err;
 	}
@@ -3310,20 +3333,6 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	} else {
 		peer->ignore_eids = NULL;
 		peer->num_ignore_eids = 0;
-	}
-
-	if (ignore_message_types_len > 0) {
-		peer->ignore_message_types = malloc(ignore_message_types_len);
-		if (!peer->ignore_message_types) {
-			rc = -ENOMEM;
-			goto err;
-		}
-		memcpy(peer->ignore_message_types, ignore_message_types,
-		       ignore_message_types_len);
-		peer->num_ignore_message_types = ignore_message_types_len;
-	} else {
-		peer->ignore_message_types = NULL;
-		peer->num_ignore_message_types = 0;
 	}
 
 	peer->is_direct_endpoint = true;
@@ -3937,7 +3946,8 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 			 * after which we immediately return as there's no old peer state left to
 			 * maintain.
 			 */
-			return endpoint_assign_eid(ctx, NULL, &phys, &peer, 0);
+			return endpoint_assign_eid(ctx, NULL, &phys, &peer, 0,
+						   NULL, 0);
 		}
 
 		/* Confirmation of the same device, apply its already allocated EID */
