@@ -1558,3 +1558,42 @@ async def test_endpoint_ping_garbage_response(dbus, mctpd):
     await net.call_endpoint_ping(eid)
 
 
+""" Test that ignore_message_types parameter correctly filters message types
+from the endpoint's supported message types list """
+async def test_ignore_message_types(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    dev = mctpd.network.endpoints[0]
+    # Configure endpoint to report message types [0, 1, 2, 5, 126]
+    dev.types = [0, 1, 2, 5, 126]
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 12
+    start_eid = 13
+    ignore_eids = b''  # No EIDs to ignore
+    ignore_message_types = bytes([1, 2, 126])  # Ignore message types 1, 2, and 126
+
+    # Assign endpoint with ignore_message_types
+    (eid, net, path, new) = await mctp.call_assign_endpoint_static(
+        dev.lladdr,
+        static_eid,
+        start_eid,
+        ignore_eids,
+        ignore_message_types
+    )
+
+    assert eid == static_eid
+    assert new
+
+    # Get the endpoint object and query its supported message types
+    ep = await mctpd_mctp_endpoint_common_obj(dbus, path)
+    query_types = list(await ep.get_supported_message_types())
+
+    # Expected types after filtering: [0, 5]
+    # (1, 2, and 126 should be ignored)
+    expected_types = [0, 5]
+    query_types.sort()
+    expected_types.sort()
+
+    assert query_types == expected_types, \
+        f"Expected message types {expected_types} but got {query_types}"
+
