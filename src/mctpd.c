@@ -2942,9 +2942,6 @@ static int query_get_peer_msgtypes(struct peer *peer)
 		for (size_t k = 0; k < peer->num_ignore_message_types; k++) {
 			if (peer->ignore_message_types[k] ==
 			    ((uint8_t *)(resp + 1))[resp_i]) {
-				warnx("%s: ignoring message type %d for eid %d",
-				      __func__, ((uint8_t *)(resp + 1))[resp_i],
-				      peer->eid);
 				ignore = true;
 				count_ignore++;
 				break;
@@ -3481,9 +3478,6 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 		if (rc == -ENOTSUP) {
 			return sd_bus_reply_method_return(call, NULL);
 		}
-		if (ctx->verbose)
-			fprintf(stderr, "%s failed to ping EID %d: %d\n",
-				__func__, eid, rc);
 		goto err;
 	}
 
@@ -5752,9 +5746,6 @@ static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void *data)
 		size_t phyaddr_size =
 			(peer->ctx->cache_entries.entry_sizes[i] - 3);
 
-		fprintf(stderr,
-			"Sending Routing Info update [EID %d] to bridge EID %d \n",
-			first_eid, peer->eid);
 		rc = endpoint_send_routing_info_update(
 			peer, first_eid, eid_range, entry_type, phyaddr_size,
 			(!phyaddr_size) ? NULL : phy_addr);

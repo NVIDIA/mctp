@@ -294,16 +294,6 @@ static inline uint8_t compute_port_with_collision_check(const char *ifname,
 {
 	uint8_t port = base + hash_to_port(hash_value, num_slots);
 
-	/* Check for collision with different interface */
-	if (mctp_port_last_user[port][0] != '\0' &&
-	    strncmp(mctp_port_last_user[port], ifname, MCTP_PORT_IFNAME_MAX) !=
-		    0) {
-		fprintf(stderr,
-			"WARNING: %s port collision! '%s' and '%s' "
-			"both map to port 0x%02X\n",
-			type_name, ifname, mctp_port_last_user[port], port);
-	}
-
 	/* Record this interface as port user */
 	strncpy(mctp_port_last_user[port], ifname, MCTP_PORT_IFNAME_MAX - 1);
 	mctp_port_last_user[port][MCTP_PORT_IFNAME_MAX - 1] = '\0';
