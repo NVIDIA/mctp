@@ -69,6 +69,7 @@
 	"xyz.openbmc_project.State.ServiceReady.ServiceTypes.MCTP"
 // an arbitrary constant for use with sd_id128_get_machine_app_specific()
 static const char *mctpd_appid = "67369c05-4b97-4b7e-be72-65cfd8639f10";
+static bool suppress_logs = false;
 
 static const char *conf_file_default = MCTPD_CONF_FILE_DEFAULT;
 
@@ -203,6 +204,8 @@ struct peer {
 
 	// Connectivity state
 	bool degraded;
+	// Set after one ping failure; subsequent ping retries can suppress noise.
+	bool ping_failed_once;
 
 	// Pool size
 	uint8_t pool_size;
@@ -619,7 +622,8 @@ static int read_message(struct ctx *ctx, int sd, uint8_t **ret_buf,
 		goto out;
 	}
 	if ((size_t)len != buf_size) {
-		bug_warn("incorrect recvfrom %zd, expected %zu", len, buf_size);
+		if (!suppress_logs)
+			bug_warn("incorrect recvfrom %zd, expected %zu", len, buf_size);
 		rc = -EPROTO;
 		goto out;
 	}
@@ -634,7 +638,7 @@ static int read_message(struct ctx *ctx, int sd, uint8_t **ret_buf,
 	rc = 0;
 out:
 	if (rc < 0) {
-		if (ctx->verbose) {
+		if (ctx->verbose && !suppress_logs) {
 			warnx("read_message returned error: %s from %s len %zu",
 			      strerror(-rc), ext_addr_tostr(ret_addr),
 			      buf_size);
@@ -1948,9 +1952,11 @@ static const char *peer_cmd_prefix(const char *peer, uint8_t cmd)
 static int mctp_ctrl_print_response(uint8_t *resp_buf, size_t rsp_size,
 				    struct sockaddr_mctp_ext *resp_addr)
 {
-	fprintf(stderr, "Response received from socket %s len %zu\nbuffer: ",
-		ext_addr_tostr(resp_addr), rsp_size);
-	mctp_hexdump(resp_buf, rsp_size, "");
+	if (!suppress_logs) {
+		fprintf(stderr, "Response received from socket %s len %zu\nbuffer: ",
+			ext_addr_tostr(resp_addr), rsp_size);
+		mctp_hexdump(resp_buf, rsp_size, "");
+	}
 	return 0;
 }
 
@@ -1971,8 +1977,10 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 
 	/* Error responses only need to include the completion code */
 	if (rsp_size < MCTP_CTRL_ERROR_RESP_LEN) {
-		warnx("%s: Wrong reply length (%zu bytes)",
-		      peer_cmd_prefix(peer, cmd), rsp_size);
+		if (!suppress_logs) {
+			warnx("%s: Wrong reply length (%zu bytes)",
+			      peer_cmd_prefix(peer, cmd), rsp_size);
+		}
 		return -ENOMSG;
 	}
 
@@ -1980,24 +1988,30 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 	rsp = (void *)buf;
 
 	if ((rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK) != iid) {
-		warnx("%s: Wrong IID (0x%02x, expected 0x%02x)",
-		      peer_cmd_prefix(peer, cmd),
-		      rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK, iid);
-		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		if (!suppress_logs) {
+			warnx("%s: Wrong IID (0x%02x, expected 0x%02x)",
+			      peer_cmd_prefix(peer, cmd),
+			      rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK, iid);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		}
 		return -ENOMSG;
 	}
 
 	if (rsp->ctrl_hdr.command_code != cmd) {
-		warnx("%s: Wrong opcode (0x%02x) in response",
-		      peer_cmd_prefix(peer, cmd), rsp->ctrl_hdr.command_code);
-		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		if (!suppress_logs) {
+			warnx("%s: Wrong opcode (0x%02x) in response",
+			      peer_cmd_prefix(peer, cmd), rsp->ctrl_hdr.command_code);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		}
 		return -ENOMSG;
 	}
 
 	if (rsp->completion_code) {
-		warnx("%s: Command failed, completion code 0x%02x",
-		      peer_cmd_prefix(peer, cmd), rsp->completion_code);
-		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		if (!suppress_logs) {
+			warnx("%s: Command failed, completion code 0x%02x",
+			      peer_cmd_prefix(peer, cmd), rsp->completion_code);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		}
 		if (rsp->completion_code == MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD)
 			return -ENOTSUP;
 		return -ECONNREFUSED;
@@ -2005,9 +2019,11 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 
 	/* Non-error responses must be full sized */
 	if (rsp_size < exp_size) {
-		warnx("%s: Wrong reply length (%zu bytes)",
-		      peer_cmd_prefix(peer, cmd), rsp_size);
-		mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		if (!suppress_logs) {
+			warnx("%s: Wrong reply length (%zu bytes)",
+			      peer_cmd_prefix(peer, cmd), rsp_size);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+		}
 		return -ENOMSG;
 	}
 
@@ -2100,7 +2116,8 @@ static int endpoint_query_addr(struct ctx *ctx,
 
 	sd = mctp_ops.mctp.socket();
 	if (sd < 0) {
-		warn("socket");
+		if (!suppress_logs)
+			warn("socket");
 		rc = -errno;
 		goto out;
 	}
@@ -2138,7 +2155,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 				  (struct sockaddr *)req_addr, req_addr_len);
 	if (rc < 0) {
 		rc = -errno;
-		if (ctx->verbose) {
+		if (ctx->verbose && !suppress_logs) {
 			warnx("%s: sendto(%s) %zu bytes failed. %s", __func__,
 			      ext_addr_tostr(req_addr), req_len, strerror(-rc));
 		}
@@ -2680,6 +2697,9 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 		remove_peer(peer);
 		return rc;
 	}
+
+	// Success! We contacted the device.
+	warnx("Successfully discovered and setup endpoint EID %d", new_eid);
 
 	if (new_eid != peer->eid) {
 		rc = change_peer_eid(peer, new_eid);
@@ -3440,6 +3460,7 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	uint8_t *buf = NULL;
 	size_t buf_size = 0;
 	int rc;
+	bool suppress_for_ping;
 
 	rc = sd_bus_message_read_basic(call, 'y', &eid);
 	if (rc < 0) {
@@ -3464,8 +3485,14 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, mctp_next_iid(peer->ctx),
 				   MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
 
+	/* Keep first ping failure visible, suppress only repeated retry noise. */
+	suppress_for_ping = peer->ping_failed_once;
+	if (suppress_for_ping)
+		suppress_logs = true;
 	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
 				 sizeof(req), &buf, &buf_size, &addr);
+	if (suppress_for_ping)
+		suppress_logs = false;
 
 	if (rc == 0 && buf_size == 0)
 		rc = -EPROTO;
@@ -3476,11 +3503,14 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 
 	if (rc < 0) {
 		if (rc == -ENOTSUP) {
+			peer->ping_failed_once = false;
 			return sd_bus_reply_method_return(call, NULL);
 		}
+		peer->ping_failed_once = true;
 		goto err;
 	}
 
+	peer->ping_failed_once = false;
 	return sd_bus_reply_method_return(call, NULL);
 
 err:
@@ -3617,8 +3647,7 @@ static int peer_neigh_update(struct peer *peer, uint16_t type)
 static int peer_route_update(struct peer *peer, uint16_t type)
 {
 	if (!mctp_nl_if_exists(peer->ctx->nl, peer->phys.ifindex)) {
-		bug_warn("%s: Unknown ifindex %d", __func__,
-			 peer->phys.ifindex);
+		bug_warn("%s: Unknown ifindex %d", __func__, peer->phys.ifindex);
 		return -ENODEV;
 	}
 
