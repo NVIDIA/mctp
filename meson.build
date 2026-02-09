@@ -75,7 +75,7 @@ executable('mctp-bench',
     sources: ['src/mctp-bench.c'] + util_sources,
 )
 
-executable('mctp-client',
+mctp_client = executable('mctp-client',
     sources: ['src/mctp-client.c'] + util_sources,
     install: true
 )
@@ -101,6 +101,43 @@ if libsystemd.found()
             'src/mctpd.c',
         ] + test_ops_sources + netlink_sources + util_sources,
         include_directories:  include_directories('src'),
+        dependencies: [libsystemd, toml_dep],
+    )
+endif
+
+mctpd_util_test = executable('test-mctpd-util',
+    sources: ['tests/test_mctpd_util.c'],
+    include_directories: include_directories('src'),
+)
+
+netlink_unit_test = executable('test-mctp-netlink-unit',
+    sources: ['tests/test_mctp_netlink_unit.c',
+              'tests/mctp-ops-fault.c'] + util_sources,
+    include_directories: include_directories('src'),
+)
+
+mctp_client_unit_test = executable('test-mctp-client-unit',
+    sources: ['tests/test_mctp_client_unit.c'],
+    include_directories: include_directories('src'),
+)
+
+mctp_util_unit_test = executable('test-mctp-util-unit',
+    sources: ['tests/test_mctp_util_unit.c'],
+    include_directories: include_directories('src'),
+)
+
+mctp_ops_unit_test = executable('test-mctp-ops-unit',
+    sources: ['tests/test_mctp_ops_unit.c'],
+    include_directories: include_directories('src'),
+)
+
+if libsystemd.found()
+    mctpd_fault_test = executable('test-mctpd-fault',
+        sources: [
+            'tests/test_mctpd_fault.c',
+            'tests/mctp-ops-fault.c',
+        ] + netlink_sources + util_sources,
+        include_directories: include_directories('src'),
         dependencies: [libsystemd, toml_dep],
     )
 endif
@@ -146,9 +183,9 @@ if tests
     test_dir = join_paths(meson.current_source_dir(), 'tests')
     pytest_conf = join_paths(test_dir, 'pytest.ini')
 
-    # Try to find pytest in the venv first, then fall back to system pytest
+    # Prefer system pytest (e.g. from pip3 install --user) so builds work without a venv
     venv_pytest = join_paths(meson.current_source_dir(), '.venv', 'bin', 'pytest')
-    pytest = find_program(venv_pytest, 'pytest', required: true)
+    pytest = find_program('pytest', venv_pytest, required: true)
     script = 'if [ ! -t 1 ]; then PFL="--tap"; fi; DBUS_STARTER_BUS_TYPE=user "@0@" $PFL --config-file "@1@" $@'.format(
       pytest.full_path(),
       pytest_conf,
@@ -163,12 +200,21 @@ if tests
             depends: [mctpd_test],
             args: [sh.full_path()] + test_args + [test_dir / 'test_mctpd.py'],
             protocol: 'tap',
+            timeout: 60,
         )
 
         test('test-mctpd-endpoint', dbus_run_session,
             depends: [mctpd_test],
             args: [sh.full_path()] + test_args + [test_dir / 'test_mctpd_endpoint.py'],
             protocol: 'tap',
+            timeout: 90,
+        )
+
+        test('test-mctpd-additional-coverage', dbus_run_session,
+            depends: [mctpd_test],
+            args: [sh.full_path()] + test_args + [test_dir / 'test_mctpd_additional_coverage.py'],
+            protocol: 'tap',
+            timeout: 300,
         )
     endif
 
@@ -177,5 +223,18 @@ if tests
         args: test_args + [test_dir / 'test_mctp.py'],
         protocol: 'tap',
     )
+
+    test('test-mctpd-util', mctpd_util_test)
+    test('test-mctp-netlink-unit', netlink_unit_test)
+    test('test-mctp-client-unit', mctp_client_unit_test)
+    test('test-mctp-util-unit', mctp_util_unit_test)
+    test('test-mctp-ops-unit', mctp_ops_unit_test)
+
+    if libsystemd.found()
+        test('test-mctpd-fault', dbus_run_session,
+            depends: [mctpd_fault_test],
+            args: [mctpd_fault_test.full_path()],
+        )
+    endif
 
 endif

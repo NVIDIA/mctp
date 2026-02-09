@@ -101,3 +101,5 @@ async def test_accept_multiple_set_eids_for_single_interface(dbus, mctpd):
 
     # expect new EID on D-Bus
     assert await mctpd_mctp_endpoint_control_obj(dbus, f"/au/com/codeconstruct/mctp1/networks/1/endpoints/{second_eid}")
+
+

@@ -1294,7 +1294,7 @@ async def test_endpoint_ping(dbus, mctpd):
 
     # Test EndpointPing
     # It should succeed and return nothing
-    await net.call_endpoint_ping(eid)
+    assert await net.call_endpoint_ping(eid) is None
 
 """ Test EndpointPing with non-existent EID """
 async def test_endpoint_ping_nonexistent(dbus, mctpd):
@@ -1397,7 +1397,7 @@ async def test_endpoint_ping_bad_iid(dbus, mctpd):
 
     # Test EndpointPing
     # It SHOULD succeed despite the bad IID in the response
-    await net.call_endpoint_ping(eid)
+    assert await net.call_endpoint_ping(eid) is None
 
 """ Test EndpointPing with a device that returns wrong opcode.
 This verifies that we ignore validation errors and treat any response as success.
@@ -1438,7 +1438,7 @@ async def test_endpoint_ping_wrong_opcode(dbus, mctpd):
     net = await mctpd_mctp_network_obj(dbus, iface.net)
     
     # Should succeed despite wrong opcode
-    await net.call_endpoint_ping(eid)
+    assert await net.call_endpoint_ping(eid) is None
 
 """ Test EndpointPing with a device that returns an error completion code.
 This verifies that we treat error responses as successful pings.
@@ -1477,7 +1477,7 @@ async def test_endpoint_ping_error_completion_code(dbus, mctpd):
     net = await mctpd_mctp_network_obj(dbus, iface.net)
     
     # Should succeed despite error completion code
-    await net.call_endpoint_ping(eid)
+    assert await net.call_endpoint_ping(eid) is None
 
 """ Test EndpointPing with a device that returns truncated/short response.
 This verifies that we treat short responses as successful pings.
@@ -1517,7 +1517,7 @@ async def test_endpoint_ping_short_response(dbus, mctpd):
     net = await mctpd_mctp_network_obj(dbus, iface.net)
     
     # Should succeed despite short response
-    await net.call_endpoint_ping(eid)
+    assert await net.call_endpoint_ping(eid) is None
 
 """ Test EndpointPing with a device that returns garbage data.
 This verifies that we treat any response as successful ping.
@@ -1555,7 +1555,7 @@ async def test_endpoint_ping_garbage_response(dbus, mctpd):
     net = await mctpd_mctp_network_obj(dbus, iface.net)
     
     # Should succeed despite garbage response
-    await net.call_endpoint_ping(eid)
+    assert await net.call_endpoint_ping(eid) is None
 
 
 """ Test that ignore_message_types parameter correctly filters message types
