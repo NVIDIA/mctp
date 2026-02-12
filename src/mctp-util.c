@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include "mctp-util.h"
+#include "mctp-log.h"
 
 void mctp_hexdump(const void *b, int len, const char *indent)
 {

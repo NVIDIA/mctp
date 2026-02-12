@@ -4,3 +4,7 @@ option('unsafe-writable-connectivity',
        value: false,
        description: 'Allow writes to the Connectivity member of the au.com.codeconstruct.MCTP.Endpoint1 interface on endpoint objects')
 option('tests', type: 'boolean', value: true)
+option('journal-logging',
+       type: 'boolean',
+       value: true,
+       description: 'Enable direct systemd journal logging for mctpd')
