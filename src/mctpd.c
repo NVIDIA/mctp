@@ -210,6 +210,7 @@ struct peer {
 	// Pool size
 	uint8_t pool_size;
 	uint8_t pool_start;
+	mctp_eid_t pool_owner_eid;
 	mctp_eid_t *ignore_eids;
 	size_t num_ignore_eids;
 	mctp_eid_t *static_pool_eids;
@@ -2422,29 +2423,37 @@ static int add_peer_from_addr(struct ctx *ctx,
  */
  static int remove_bridged_peers(struct peer *bridge)
  {
-	 mctp_eid_t ep, pool_start, pool_end;
-	 struct peer *peer = NULL;
-	 struct net *n = NULL;
-	 int rc = 0;
- 
-	 pool_end = bridge->pool_start + bridge->pool_size - 1;
-	 n = lookup_net(bridge->ctx, bridge->net);
-	 pool_start = bridge->pool_start;
-	 for (ep = pool_start; ep <= pool_end; ep++) {
+	mctp_eid_t ep, pool_start, pool_end;
+	struct peer *peer = NULL;
+	struct net *n = NULL;
+	int rc = 0;
 
-		 peer = n->peers[ep];
-		 if (!peer)
-			 continue;
- 
-		 rc = remove_peer(peer);
-		 if (rc < 0) {
-			 warnx("Failed to remove peer %d from bridge eid %d pool [%d - %d]: %s",
-				   ep, bridge->eid, pool_start, pool_end,
-				   strerror(-rc));
-		 }
-	 }
- 
-	 return 0;
+	if (bridge->pool_size > 0) {
+		pool_end = bridge->pool_start + bridge->pool_size - 1;
+		pool_start = bridge->pool_start;
+	} else {
+		pool_end = eid_alloc_max;
+		pool_start = eid_alloc_min;
+	}
+
+	n = lookup_net(bridge->ctx, bridge->net);
+	for (ep = pool_start; ep <= pool_end; ep++) {
+		peer = n->peers[ep];
+		if (!peer)
+			continue;
+
+		if (peer->pool_owner_eid != bridge->eid)
+			continue;
+
+		rc = remove_peer(peer);
+		if (rc < 0) {
+			warnx("Failed to remove peer %d from bridge eid %d pool [%d - %d]: %s",
+				ep, bridge->eid, pool_start, pool_end,
+				strerror(-rc));
+		}
+	}
+
+	return 0;
  }
 
 static int check_peer_struct(const struct peer *peer, const struct net *n)
@@ -2497,7 +2506,11 @@ static int remove_peer(struct peer *peer)
 		sd_event_source_unref(peer->recovery.source);
 	}
 
-	if (peer->pool_size) {
+	// When removing a direct Bus Owner bridge endpoint, also remove all downstream
+	// endpoints managed by that bridge. This prevents recursive calls and ensures
+	// proper cleanup of the entire bridge hierarchy when the highest bridge is removed.
+	if ((GET_ENDPOINT_TYPE(peer->endpoint_type) == MCTP_BUS_OWNER_BRIDGE) &&
+	    peer->is_direct_endpoint) {
 		remove_bridged_peers(peer);
 	}
 
@@ -5832,8 +5845,8 @@ static int endpoint_allocate_eid(struct peer *peer)
 	} else {
 		if (peer->ctx->verbose)
 			fprintf(stderr,
-				"%s Asking for contiguous EIDs for pool with start eid : %d\n",
-				__func__, peer->pool_start);
+				"%s Asking for contiguous EIDs for pool with start eid %d and size %d\n",
+				__func__, peer->pool_start, peer->pool_size);
 	}
 
 	int rc = endpoint_send_allocate_endpoint_id(peer, peer->pool_start,
@@ -6098,6 +6111,8 @@ static int query_routing_table(struct peer *peer)
 						peer->static_pool_eids[eid] =
 							eid;
 					}
+					allocated_peer->pool_owner_eid =
+						peer->eid;
 				} else {
 					// EID is active and exists locally - send connectivity change
 					existing_peer->degraded = false;
