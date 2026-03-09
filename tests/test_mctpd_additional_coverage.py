@@ -391,26 +391,48 @@ class TestControlPayloadErrorBranches:
 class TestConfigValidBranches:
     """Hit valid-path branches in config parsing (subprocess, no D-Bus)."""
 
+    def _assert_config_accepted(self, config_text):
+        """Valid config: process should parse config without error.
+        It may exit non-zero due to D-Bus failure (no mock), but stderr
+        should NOT contain config-parsing error messages."""
+        result = run_mctpd_with_config(config_text)
+        if result is None:
+            return
+        config_errors = [
+            "can't parse configuration",
+            "invalid message_timeout_ms",
+            "invalid max_pool_size",
+            "dynamic_eid_range has invalid",
+            "dynamic_eid_range: start address",
+            "dynamic_eid_range: end address",
+            "dynamic_eid_range: invalid range",
+            "invalid UUID",
+            "invalid value",
+        ]
+        for err in config_errors:
+            assert err not in result.stderr, (
+                f"Config was rejected: found '{err}' in stderr: {result.stderr[:300]}"
+            )
+
     def test_config_valid_endpoint_mode(self):
-        result = run_mctpd_with_config('[mctp]\nmode = "endpoint"\n')
-        assert result is None or result.returncode is not None
+        self._assert_config_accepted('[mctp]\nmode = "endpoint"\n')
 
     def test_config_valid_bus_owner_mode(self):
-        result = run_mctpd_with_config('[mctp]\nmode = "bus-owner"\n')
-        assert result is None or result.returncode is not None
+        self._assert_config_accepted('[mctp]\nmode = "bus-owner"\n')
 
     def test_config_valid_timeout(self):
-        result = run_mctpd_with_config('[mctp]\nmessage_timeout_ms = 500\n')
-        assert result is None or result.returncode is not None
+        self._assert_config_accepted('[mctp]\nmessage_timeout_ms = 500\n')
 
     def test_config_valid_pool_and_range(self):
-        result = run_mctpd_with_config(
+        self._assert_config_accepted(
             '[bus-owner]\ndynamic_eid_range = [8, 200]\nmax_pool_size = 100\n'
         )
-        assert result is None or result.returncode is not None
 
     def test_config_range_extra_elements(self):
-        assert_config_rejected('[bus-owner]\ndynamic_eid_range = [8, 200, 300]\n')
+        """sz > 2 logs a warning but does NOT reject -- config is accepted."""
+        self._assert_config_accepted(
+            '[bus-owner]\ndynamic_eid_range = [8, 200, 300]\n'
+        )
 
     def test_config_range_single_element(self):
         assert_config_rejected('[bus-owner]\ndynamic_eid_range = [8]\n')
@@ -419,8 +441,65 @@ class TestConfigValidBranches:
         assert_config_rejected('[bus-owner]\ndynamic_eid_range = [1, 200]\n')
 
     def test_config_empty_toml(self):
-        result = run_mctpd_with_config('')
-        assert result is None or result.returncode is not None
+        self._assert_config_accepted('')
+
+    def test_config_range_non_integer_element(self):
+        """Non-integer values in dynamic_eid_range -> !min_val.ok branch."""
+        assert_config_rejected(
+            '[bus-owner]\ndynamic_eid_range = ["a", 200]\n'
+        )
+
+    def test_config_top_level_mode_bus_owner(self):
+        """Top-level mode string -> parse_config val.ok branch."""
+        self._assert_config_accepted('mode = "bus-owner"\n')
+
+    def test_config_top_level_mode_endpoint(self):
+        """Top-level mode=endpoint -> parse_config_mode endpoint branch."""
+        self._assert_config_accepted('mode = "endpoint"\n')
+
+    def test_config_mctp_and_bus_owner_combined(self):
+        """Both [mctp] and [bus-owner] sections -> exercises both parse paths."""
+        self._assert_config_accepted(
+            '[mctp]\nmessage_timeout_ms = 300\n\n'
+            '[bus-owner]\ndynamic_eid_range = [10, 100]\nmax_pool_size = 20\n'
+        )
+
+    def test_config_mode_unknown(self):
+        """Unknown mode value -> rejected by parse_config_mode."""
+        assert_config_rejected('mode = "invalid-mode"\n')
+
+
+class TestLinkRoleSetBranches:
+    """Exercise bus_link_set_prop (10 uncov) via D-Bus Properties.Set."""
+
+    async def test_set_role_endpoint_and_back(self, dbus, mctpd):
+        iface = mctpd.system.interfaces[0]
+        obj = await dbus.get_proxy_object(
+            'au.com.codeconstruct.MCTP1',
+            '/au/com/codeconstruct/mctp1/interfaces/' + iface.name,
+        )
+        props = await obj.get_interface(DBUS_PROPERTIES_I)
+        iface_name = 'au.com.codeconstruct.MCTP.Interface1'
+
+        await props.call_set(iface_name, 'Role', Variant('s', 'Endpoint'))
+        link_ctrl = await mctpd_mctp_iface_control_obj(dbus, iface)
+        role = await link_ctrl.get_role()
+        assert role == 'Endpoint'
+
+        await props.call_set(iface_name, 'Role', Variant('s', 'BusOwner'))
+        role = await link_ctrl.get_role()
+        assert role == 'BusOwner'
+
+    async def test_set_role_invalid_rejected(self, dbus, mctpd):
+        iface = mctpd.system.interfaces[0]
+        obj = await dbus.get_proxy_object(
+            'au.com.codeconstruct.MCTP1',
+            '/au/com/codeconstruct/mctp1/interfaces/' + iface.name,
+        )
+        props = await obj.get_interface(DBUS_PROPERTIES_I)
+        iface_name = 'au.com.codeconstruct.MCTP.Interface1'
+        with pytest.raises(asyncdbus.errors.DBusError):
+            await props.call_set(iface_name, 'Role', Variant('s', 'InvalidRole'))
 
 
 def test_cli_help_and_invalid_option():

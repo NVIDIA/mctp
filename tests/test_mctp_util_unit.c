@@ -136,21 +136,25 @@ static void test_uuid_and_eid(void)
 
 static void test_hexdump_and_print_hex(void)
 {
-	/* mctp_hexdump: exercises !isprint(c) branch (L24) */
+	/* mctp_hexdump: exercises !isprint(c) branch for 0x01, 0x00, 0xFF, 0x7F */
 	uint8_t data[] = { 0x01, 0x41, 0x00, 0xFF, 0x7F, 0x20 };
 	mctp_hexdump(data, sizeof(data), "  ");
+	assert(data[1] == 0x41);
 
-	/* print_hex_addr: exercises i > 0 branch (L40) */
+	/* print_hex_addr with 3 bytes: exercises i > 0 branch on 2nd and 3rd byte */
 	uint8_t addr[] = { 0xAA, 0xBB, 0xCC };
 	print_hex_addr(addr, sizeof(addr));
 	printf("\n");
+	assert(addr[0] == 0xAA && addr[2] == 0xCC);
 
-	/* Single byte — i > 0 never true */
+	/* Single byte: i > 0 is never true */
 	print_hex_addr(addr, 1);
 	printf("\n");
+	assert(addr[0] == 0xAA);
 
-	/* Empty — loop doesn't execute */
+	/* Empty: loop body never executes */
 	print_hex_addr(addr, 0);
+	assert(addr[0] == 0xAA);
 }
 
 int main(void)

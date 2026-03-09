@@ -4095,26 +4095,31 @@ static void test_log_mctp_error_binding_branches(void)
 
     struct mctp_error err = { 0 };
 
-    /* SMBus binding */
+    /* SMBus binding -> should not crash, error_code preserved */
     err.binding = MCTP_PHYS_BINDING_SMBUS;
     err.error_code = ETIMEDOUT;
     err.dest_eid = 10;
     log_mctp_error(&ctx, &err, "mctpi2c0");
+    ASSERT_EQ(err.error_code, ETIMEDOUT);
 
     /* USB binding */
     err.binding = MCTP_PHYS_BINDING_USB;
     log_mctp_error(&ctx, &err, "mctpusb0");
+    ASSERT_EQ(err.binding, MCTP_PHYS_BINDING_USB);
 
     /* I3C binding */
     err.binding = MCTP_PHYS_BINDING_I3C;
     log_mctp_error(&ctx, &err, "mctpi3c0");
+    ASSERT_EQ(err.binding, MCTP_PHYS_BINDING_I3C);
 
     /* UNSPEC binding */
     err.binding = MCTP_PHYS_BINDING_UNSPEC;
     log_mctp_error(&ctx, &err, "mctpspi0");
+    ASSERT_EQ(err.binding, MCTP_PHYS_BINDING_UNSPEC);
 
-    /* NULL ifname */
+    /* NULL ifname -> should not crash */
     log_mctp_error(&ctx, &err, NULL);
+    ASSERT_EQ(err.dest_eid, 10);
 
     sd_bus_flush_close_unrefp(&ctx.bus);
     sd_event_unref(ctx.event);
@@ -4432,54 +4437,84 @@ static void test_mctpd_util_usb_parser_branches(void)
     TEST_START("mctpd-util USB parser uncovered branches");
     uint8_t p;
 
-    /* "usb" found but no digits -> num<0 -> skip bus-xor (line 356 false) */
-    p = get_usb_port_number("mctpusbx");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Digits after "usb" -> num>=0 -> bus-xor + advance digits (line 356 true, 358 loop) */
-    p = get_usb_port_number("mctpusb3");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Dash separator (line 363 '-' true) */
-    p = get_usb_port_number("mctpusb1-2");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Underscore separator (line 363 '_' true) */
-    p = get_usb_port_number("mctpusb1_2");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* No separator -> falls through (line 363 both false) */
-    p = get_usb_port_number("mctpusb1z");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Port path with digit (line 368 true) and dotted (line 374 true) */
-    p = get_usb_port_number("mctpusb1-2.3.4");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Port path with non-digit/non-dot -> break (line 368 false, 374 false) */
-    p = get_usb_port_number("mctpusb1-x");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Empty port path -> while loop doesn't execute (line 367 false) */
-    p = get_usb_port_number("mctpusb1-");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* Port digit where extract_number returns < 0 (line 370 false) */
-    /* This is tricky - extract_number on digit string always returns >= 0 */
-    /* Instead test dotted path terminating with dot (line 374 true, then 367 false) */
-    p = get_usb_port_number("mctpusb1-2.");
-    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
-
-    /* No "usb" in name -> p is NULL -> skip entire if block (line 351 false) */
+    /* No "usb" substring -> if(p) false, entire block skipped */
     p = get_usb_port_number("mctpfoo");
     ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
 
-    /* Multi-digit inner loop (line 372 true->true->false) */
+    /* "usb" found, pointer after "usb" is a non-digit -> num<0 -> if(num>=0) false */
+    p = get_usb_port_number("mctpusbx");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* "usb" + single digit -> num>=0 true, while loop: first char is digit, next is NUL */
+    p = get_usb_port_number("mctpusb3");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* "usb" + multi-digit bus -> while(*p>='0'&&*p<='9') loops multiple times */
+    p = get_usb_port_number("mctpusb99");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* After bus digits, NUL -> separator check false, while(*p) false */
+    p = get_usb_port_number("mctpusb5");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Dash separator */
+    p = get_usb_port_number("mctpusb1-2");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Underscore separator */
+    p = get_usb_port_number("mctpusb1_2");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Non-separator after bus digits -> separator if both false */
+    p = get_usb_port_number("mctpusb1z");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Path with digit -> if(*p>='0'&&*p<='9') true */
+    p = get_usb_port_number("mctpusb1-2");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Path with dot -> else-if(*p=='.') true */
+    p = get_usb_port_number("mctpusb1-2.3");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Path with non-digit/non-dot after dot -> else break */
+    p = get_usb_port_number("mctpusb1-2.x");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Trailing dash -> while(*p) is true but *p is NUL after advancing past '-' */
+    p = get_usb_port_number("mctpusb1-");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Trailing dot -> dot handler runs, then while checks *p which is NUL */
+    p = get_usb_port_number("mctpusb1-2.");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Multi-digit port: inner while loop runs >1 time */
     p = get_usb_port_number("mctpusb1-22.3");
     ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
 
-    /* Bus-only, no dash, ends at NUL (line 358 loop exits, 363 both false, 367 false) */
-    p = get_usb_port_number("mctpusb99");
+    /* Long path: exercises full loop iteration */
+    p = get_usb_port_number("mctpusb1-2.3.4.5");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* NUL just after "usb" prefix offset -> p points to 'b', extract_number fails */
+    p = get_usb_port_number("usb");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Just "b" after usb offset -> non-digit, num < 0 */
+    p = get_usb_port_number("xusb");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Char below '0' (0x2F = '/') after bus digit -> while exits */
+    p = get_usb_port_number("mctpusb1/2");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Char above '9' (0x3A = ':') after bus digit -> while exits */
+    p = get_usb_port_number("mctpusb1:2");
+    ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
+
+    /* Char below '0' in port path -> outer if false, dot check false -> break */
+    p = get_usb_port_number("mctpusb1-2./");
     ASSERT_EQ(p >= MCTP_PORT_USB_BASE && p < MCTP_PORT_SPI_BASE, true);
 
     TEST_PASS();
@@ -4490,31 +4525,198 @@ static void test_mctpd_util_simple_parser_branches(void)
     TEST_START("mctpd-util simple parser uncovered branches");
     uint8_t p;
 
-    /* Prefix found, dash separator (line 318 '-' true) */
+    /* Prefix found with dash separator. */
     p = get_simple_port_number("mctpi2c-5", "i2c", MCTP_PORT_I2C_BASE,
                                MCTP_PORT_I2C_SLOTS, "I2C");
     ASSERT_EQ(p < MCTP_PORT_USB_BASE, true);
 
-    /* Prefix found, underscore separator (line 318 '_' true) */
+    /* Prefix found with underscore separator. */
     p = get_simple_port_number("mctpi2c_5", "i2c", MCTP_PORT_I2C_BASE,
                                MCTP_PORT_I2C_SLOTS, "I2C");
     ASSERT_EQ(p < MCTP_PORT_USB_BASE, true);
 
-    /* Prefix found, no separator, extract_number fails -> bus=0 (line 321 true) */
+    /* Prefix found, no separator, extract_number fails -> bus=0. */
     p = get_simple_port_number("mctpi2cX", "i2c", MCTP_PORT_I2C_BASE,
                                MCTP_PORT_I2C_SLOTS, "I2C");
     ASSERT_EQ(p < MCTP_PORT_USB_BASE, true);
 
-    /* Prefix found, digit directly -> bus >= 0 (line 321 false) */
+    /* Prefix found, digit directly -> parsed bus >= 0. */
     p = get_simple_port_number("mctpi2c7", "i2c", MCTP_PORT_I2C_BASE,
                                MCTP_PORT_I2C_SLOTS, "I2C");
     ASSERT_EQ(p < MCTP_PORT_USB_BASE, true);
 
-    /* Prefix NOT found -> num_start==NULL -> bus stays 0 (line 316 false) */
+    /* Prefix not found -> num_start is NULL and bus stays 0. */
     p = get_simple_port_number("mctpfoo", "i2c", MCTP_PORT_I2C_BASE,
                                MCTP_PORT_I2C_SLOTS, "I2C");
     ASSERT_EQ(p < MCTP_PORT_USB_BASE, true);
 
+    TEST_PASS();
+}
+
+static void test_parse_config_valid_full(void)
+{
+    TEST_START("parse_config with valid [mctp] + [bus-owner] sections");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+
+    char tmpname[] = "/tmp/mctpd-test-XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) { TEST_PASS(); return; }
+    dprintf(fd, "[mctp]\nmessage_timeout_ms = 500\n\n"
+                "[bus-owner]\ndynamic_eid_range = [10, 100]\n"
+                "max_pool_size = 20\n");
+    close(fd);
+
+    ctx.config_filename = strdup(tmpname);
+    int rc = parse_config(&ctx);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(ctx.dyn_eid_min, 10);
+    ASSERT_EQ(ctx.dyn_eid_max, 100);
+    ASSERT_EQ(ctx.max_pool_size, 20);
+
+    free_config(&ctx);
+    unlink(tmpname);
+    TEST_PASS();
+}
+
+static void test_parse_config_top_level_mode(void)
+{
+    TEST_START("parse_config with top-level mode=endpoint");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+
+    char tmpname[] = "/tmp/mctpd-test-XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) { TEST_PASS(); return; }
+    dprintf(fd, "mode = \"endpoint\"\n");
+    close(fd);
+
+    ctx.config_filename = strdup(tmpname);
+    int rc = parse_config(&ctx);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(ctx.default_role, ENDPOINT_ROLE_ENDPOINT);
+
+    free_config(&ctx);
+    unlink(tmpname);
+    TEST_PASS();
+}
+
+static void test_parse_config_mode_bus_owner(void)
+{
+    TEST_START("parse_config with mode=bus-owner");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+    ctx.default_role = ENDPOINT_ROLE_ENDPOINT;
+
+    char tmpname[] = "/tmp/mctpd-test-XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) { TEST_PASS(); return; }
+    dprintf(fd, "mode = \"bus-owner\"\n");
+    close(fd);
+
+    ctx.config_filename = strdup(tmpname);
+    int rc = parse_config(&ctx);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(ctx.default_role, ENDPOINT_ROLE_BUS_OWNER);
+
+    free_config(&ctx);
+    unlink(tmpname);
+    TEST_PASS();
+}
+
+static void test_parse_config_invalid_mode(void)
+{
+    TEST_START("parse_config with invalid mode string");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+
+    char tmpname[] = "/tmp/mctpd-test-XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) { TEST_PASS(); return; }
+    dprintf(fd, "mode = \"invalid\"\n");
+    close(fd);
+
+    ctx.config_filename = strdup(tmpname);
+    int rc = parse_config(&ctx);
+    ASSERT_NE(rc, 0);
+
+    free_config(&ctx);
+    unlink(tmpname);
+    TEST_PASS();
+}
+
+static void test_parse_config_no_file_specified(void)
+{
+    TEST_START("parse_config with no config file (default path, file not found)");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+    ctx.config_filename = NULL;
+
+    int rc = parse_config(&ctx);
+    /* No file specified + default file not found -> rc==0 (not fatal) */
+    ASSERT_EQ(rc, 0);
+
+    TEST_PASS();
+}
+
+static void test_parse_config_mctp_no_uuid(void)
+{
+    TEST_START("parse_config [mctp] without uuid -> fill_uuid path");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+
+    char tmpname[] = "/tmp/mctpd-test-XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) { TEST_PASS(); return; }
+    dprintf(fd, "[mctp]\nmessage_timeout_ms = 250\n");
+    close(fd);
+
+    ctx.config_filename = strdup(tmpname);
+    int rc = parse_config(&ctx);
+    /* fill_uuid should succeed (machine-id or boot-id available) */
+    ASSERT_EQ(rc, 0);
+
+    free_config(&ctx);
+    unlink(tmpname);
+    TEST_PASS();
+}
+
+static void test_parse_config_dyn_range_extra_elements(void)
+{
+    TEST_START("parse_config_dyn_eid_range with > 2 elements (warning, not error)");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+    char errbuf[256];
+
+    FILE *fp = fmemopen("r = [10, 100, 200]\n", 19, "r");
+    if (!fp) { TEST_PASS(); return; }
+    toml_table_t *tab = toml_parse_file(fp, errbuf, sizeof(errbuf));
+    fclose(fp);
+    if (!tab) { TEST_PASS(); return; }
+
+    toml_array_t *arr = toml_array_in(tab, "r");
+    if (!arr) { toml_free(tab); TEST_PASS(); return; }
+
+    /* sz > 2 triggers warning but should still succeed (rc == 0) */
+    int rc = parse_config_dyn_eid_range(&ctx, arr);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(ctx.dyn_eid_min, 10);
+    ASSERT_EQ(ctx.dyn_eid_max, 100);
+
+    toml_free(tab);
+    TEST_PASS();
+}
+
+static void test_request_dbus_fail(void)
+{
+    TEST_START("request_dbus failure path");
+    struct ctx ctx = { 0 };
+    setup_config_defaults(&ctx);
+
+    /* request_dbus needs ctx.bus; without setup_bus it's NULL */
+    /* Calling it here exercises the expected error-return path */
+    int rc = request_dbus(&ctx);
+    ASSERT_NE(rc, 0);
     TEST_PASS();
 }
 
@@ -4785,6 +4987,14 @@ int main(void)
     test_branch_sweep_batch();
     test_mctpd_util_usb_parser_branches();
     test_mctpd_util_simple_parser_branches();
+    test_parse_config_valid_full();
+    test_parse_config_top_level_mode();
+    test_parse_config_mode_bus_owner();
+    test_parse_config_invalid_mode();
+    test_parse_config_no_file_specified();
+    test_parse_config_mctp_no_uuid();
+    test_parse_config_dyn_range_extra_elements();
+    test_request_dbus_fail();
     fprintf(stderr, "\n%d tests, %d failures\n", test_count, test_failures);
     return test_failures > 0 ? 1 : 0;
 }

@@ -2405,7 +2405,7 @@ static void test_last_low_hanging_branches(void)
 {
 	TEST_START("last low hanging branches");
 
-	/* line 246: explicit vo<vn path in fill_eid_changes */
+	/* Explicit vo<vn path in fill_eid_changes. */
 	{
 		struct linkmap_entry oe = { .ifindex = 2, .net = 1 };
 		mctp_eid_t old_eids[] = { 1 };
@@ -2416,7 +2416,7 @@ static void test_last_low_hanging_branches(void)
 		free(changes);
 	}
 
-	/* line 1247 false-path: no realloc needed on second add */
+	/* False path: no realloc needed on second add. */
 	{
 		mctp_nl *nl = mctp_nl_new(false);
 		if (nl) {
@@ -2430,7 +2430,7 @@ static void test_last_low_hanging_branches(void)
 						128, 1) < 0)
 				TEST_FAIL("linkmap_add_entry 62 should succeed");
 
-			/* line 355 false-path: ifname found in changes_dump */
+			/* False path: ifname found in changes_dump. */
 			{
 				mctp_nl_change ch = { 0 };
 				ch.op = MCTP_NL_ADD_LINK;
@@ -2506,7 +2506,7 @@ static void test_display_nlmsg_error_quiet_and_msg_attr(void)
 	memcpy(RTA_DATA(rta), kmsg, sizeof(kmsg));
 	attr_space = RTA_SPACE(sizeof(kmsg));
 
-	/* Exercise quiet_eexist true path (line 518 false condition). */
+	/* Exercise quiet_eexist true path with suppressed EEXIST print. */
 	nl.quiet_eexist = true;
 	mctp_display_nlmsg_error(&nl, &pkt.err,
 				 sizeof(struct nlmsgerr) + attr_space);
@@ -2861,8 +2861,7 @@ static void test_fill_link_changes_deleted_with_eids(void)
 	old_map[0].local_eids = old_eids;
 	old_map[0].num_local = 2;
 
-	/* new is empty -> triggers the !ne || (oe->ifindex < ne->ifindex)
-	   deleted-link branch (L324) */
+	/* new is empty -> triggers deleted-link path */
 	mctp_nl_change *changes = NULL;
 	size_t num = 0;
 	fill_link_changes(old_map, 1, NULL, 0, &changes, &num);
@@ -2880,9 +2879,9 @@ static void test_fill_link_changes_deleted_with_eids(void)
 static void test_recv_all_extra_data_warning(void)
 {
 	TEST_START("mctp_nl_recv_all extra data warning path");
-	/* This tests the rc > readlen warning at L680
+	/* This tests the rc > readlen warning path.
 	   Hard to trigger with current mock since it returns exact sizes.
-	   Instead exercise addrlen != sizeof(addr) at L684. */
+	   Instead exercise addrlen != sizeof(addr). */
 	mctp_nl *nl = mctp_nl_new(false);
 	if (!nl) { TEST_PASS(); return; }
 
@@ -2909,7 +2908,7 @@ static void test_recv_all_extra_data_warning(void)
 static void test_fill_eid_changes_old_less_than_new(void)
 {
 	TEST_START("fill_eid_changes vo < vn (old EID removed)");
-	/* This targets L246: vo < vn branch (deleted EID path) */
+	/* Exercise vo < vn branch (deleted EID path). */
 	struct linkmap_entry oe = { .ifindex = 5, .net = 1 };
 	mctp_eid_t old_eids[] = { 5, 10, 15 };
 	mctp_eid_t new_eids[] = { 10, 15 };
@@ -2926,6 +2925,287 @@ static void test_fill_eid_changes_old_less_than_new(void)
 		TEST_PASS();
 	}
 	free(changes);
+}
+
+static void test_fill_linkmap_zero_peek_first_call(void)
+{
+	TEST_START("fill_linkmap zero peek on first call");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* Queue just a send-ACK response (NLMSG_DONE for the RTM_GETLINK send),
+	   then make the first peek in fill_linkmap's loop return 0 */
+	fault_nl_recvfrom_zero_on_call = 0;
+	fault_nl_recvfrom_zero_once = 1;
+
+	int rc = fill_linkmap(nl);
+	/* rc==0 because zero peek means no links found, not an error */
+	if (rc < 0)
+		TEST_FAIL("fill_linkmap should succeed with zero peek");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_fill_linkmap_send_fail(void)
+{
+	TEST_START("fill_linkmap send failure");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* Make the sendto in fill_linkmap's mctp_nl_send fail */
+	fault_mctp_sendto_errno = EIO;
+	int rc = fill_linkmap(nl);
+	if (rc >= 0)
+		TEST_FAIL("fill_linkmap should fail when send fails");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_fill_linkmap_buffer_reuse(void)
+{
+	TEST_START("fill_linkmap buffer already large enough");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* First call populates linkmap and allocates internal buffer.
+	   We call fill_linkmap twice -- second time the buffer from first
+	   iteration may still be allocated. However fill_linkmap uses a local
+	   buf variable, so this tests parse_getlink_dump returning >0 (continue)
+	   then 0 (break) on the second message in the same call. */
+	uint8_t msgbuf[2048];
+	memset(msgbuf, 0, sizeof(msgbuf));
+
+	/* Build two link messages + DONE in one response */
+	size_t len1 = build_getlink_msg(msgbuf, sizeof(msgbuf), RTM_NEWLINK, 50,
+					true, true, true, true, true, false);
+	size_t off1 = NLMSG_ALIGN(len1);
+
+	/* Second message: NLMSG_DONE to terminate */
+	struct nlmsghdr *done = (struct nlmsghdr *)(msgbuf + off1);
+	done->nlmsg_len = NLMSG_LENGTH(sizeof(int));
+	done->nlmsg_type = NLMSG_DONE;
+	size_t total = off1 + done->nlmsg_len;
+
+	nl_mock_clear_queue();
+	nl_mock_queue_response(msgbuf, total);
+
+	int rc = fill_linkmap(nl);
+	if (rc < 0)
+		TEST_FAIL("fill_linkmap first call should succeed");
+
+	/* Second call: the peek will return the mock's default DONE response,
+	   which makes parse_getlink_dump return 0 and break the loop. */
+	rc = fill_linkmap(nl);
+	if (rc < 0)
+		TEST_FAIL("fill_linkmap second call should succeed");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_mctp_nl_addr_fail_sendto(void)
+{
+	TEST_START("mctp_nl_addr sendto failure");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+	inject_linkmap_entry(nl, 88, "mctpi2c88", 1, true, 68, 1);
+
+	/* Make sendto fail so mctp_nl_send returns error */
+	fault_mctp_sendto_errno = EIO;
+	int rc = mctp_nl_addr(nl, 10, 88, RTM_NEWADDR);
+	if (rc >= 0)
+		TEST_FAIL("mctp_nl_addr should fail when sendto fails");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_fill_local_addrs_realloc_fail(void)
+{
+	TEST_START("fill_local_addrs realloc fail");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+	inject_linkmap_entry(nl, 80, "mctpi2c80", 1, true, 68, 1);
+
+	/* Build response with one valid address */
+	uint8_t msgbuf[512];
+	size_t used = 0;
+	used = append_newaddr_msg(msgbuf, sizeof(msgbuf), used, 80, AF_MCTP,
+				  true, 12, false);
+	struct nlmsghdr *done = (struct nlmsghdr *)(msgbuf + used);
+	done->nlmsg_type = NLMSG_DONE;
+	done->nlmsg_flags = NLM_F_MULTI;
+	done->nlmsg_len = NLMSG_LENGTH(0);
+	used += NLMSG_ALIGN(done->nlmsg_len);
+
+	nl_mock_clear_queue();
+	nl_mock_queue_response(msgbuf, used);
+
+	/* Make realloc fail when fill_local_addrs tries to grow local_eids */
+	nl_fail_next_realloc = 1;
+	int rc = fill_local_addrs(nl);
+	/* Realloc failure causes continue (skips that EID).
+	   The EID should NOT be added to local_eids since realloc failed. */
+	struct linkmap_entry *e = entry_byindex(nl, 80);
+	if (!e)
+		TEST_FAIL("linkmap entry 80 should exist");
+	else if (e->num_local != 0)
+		TEST_FAIL("realloc failed, num_local should be 0 (EID skipped)");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_fill_linkmap_parse_returns_zero(void)
+{
+	TEST_START("fill_linkmap parse_getlink_dump returns 0");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* Queue a response that contains only NLMSG_DONE.
+	   peek returns >0 (message exists), recv gets DONE,
+	   parse_getlink_dump sees NLMSG_DONE and returns 0 -> loop breaks */
+	uint8_t donebuf[64] = { 0 };
+	struct nlmsghdr *d = (struct nlmsghdr *)donebuf;
+	d->nlmsg_type = NLMSG_DONE;
+	d->nlmsg_flags = 0;
+	d->nlmsg_len = NLMSG_LENGTH(sizeof(int));
+
+	nl_mock_clear_queue();
+	nl_mock_queue_response(donebuf, d->nlmsg_len);
+
+	int rc = fill_linkmap(nl);
+	if (rc < 0)
+		TEST_FAIL("fill_linkmap with DONE-only should succeed");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_get_rtnlmsg_attr_short_rta(void)
+{
+	TEST_START("mctp_get_rtnlmsg_attr with rta_len < sizeof(rtattr)");
+	uint8_t buf[32];
+	struct rtattr *rta = (struct rtattr *)buf;
+	memset(buf, 0, sizeof(buf));
+	/* Set rta_len to 0 (less than sizeof(struct rtattr)) -> RTA_OK false on first check */
+	rta->rta_type = 1;
+	rta->rta_len = 0;
+	size_t ret_len = 99;
+	void *p = mctp_get_rtnlmsg_attr(1, rta, sizeof(buf), &ret_len);
+	if (p)
+		TEST_FAIL("should not find attr with rta_len=0");
+	else if (ret_len != 0)
+		TEST_FAIL("ret_len should be 0");
+	else
+		TEST_PASS();
+}
+
+static void test_get_rtnlmsg_attr_rta_len_mismatch(void)
+{
+	TEST_START("mctp_get_rtnlmsg_attr rta_len > len");
+	uint8_t buf[16];
+	struct rtattr *rta = (struct rtattr *)buf;
+	memset(buf, 0, sizeof(buf));
+	/* rta_len says 64 bytes but we only pass 8 bytes of buffer */
+	rta->rta_type = 1;
+	rta->rta_len = 64;
+	void *p = mctp_get_rtnlmsg_attr(1, rta, 8, NULL);
+	if (p)
+		TEST_FAIL("should not find attr with rta_len > len");
+	else
+		TEST_PASS();
+}
+
+static void test_nlmsgs_done_short_msg(void)
+{
+	TEST_START("nlmsgs_are_done with short message (NLMSG_OK false)");
+	uint8_t buf[4] = { 0 };
+	/* Too-short buffer -> NLMSG_OK returns false immediately */
+	bool done = nlmsgs_are_done((struct nlmsghdr *)buf, 4);
+	/* No valid messages -> done stays false (default) */
+	if (done)
+		TEST_FAIL("should be false for short message");
+	else
+		TEST_PASS();
+}
+
+static void test_handle_nlmsg_ack_short_msg(void)
+{
+	TEST_START("handle_nlmsg_ack with response too short for NLMSG_OK");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* Queue a response shorter than sizeof(nlmsghdr) */
+	uint8_t shortbuf[8] = { 0 };
+	struct nlmsghdr *h = (struct nlmsghdr *)shortbuf;
+	h->nlmsg_len = 4; /* too short for NLMSG_OK */
+	h->nlmsg_type = NLMSG_DONE;
+	nl_mock_clear_queue();
+	nl_mock_queue_response(shortbuf, 4);
+
+	int rc = handle_nlmsg_ack(nl);
+	/* NLMSG_OK will be false, loop won't execute -> returns 0 */
+	if (rc != 0)
+		TEST_FAIL("should return 0 for short response");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_parse_getlink_dump_single_done(void)
+{
+	TEST_START("parse_getlink_dump with only NLMSG_DONE (NLMSG_OK loop test)");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* Build a single NLMSG_DONE message */
+	uint8_t buf[32] = { 0 };
+	struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
+	nlh->nlmsg_len = NLMSG_LENGTH(sizeof(int));
+	nlh->nlmsg_type = NLMSG_DONE;
+
+	int rc = parse_getlink_dump(nl, nlh, nlh->nlmsg_len);
+	/* Returns 0 when NLMSG_DONE seen */
+	if (rc != 0)
+		TEST_FAIL("should return 0 for DONE");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
+}
+
+static void test_fill_local_addrs_short_msg(void)
+{
+	TEST_START("fill_local_addrs with very short response");
+	mctp_nl *nl = mctp_nl_new(false);
+	if (!nl) { TEST_PASS(); return; }
+
+	/* Queue a response that's just NLMSG_DONE */
+	uint8_t donebuf[32] = { 0 };
+	struct nlmsghdr *d = (struct nlmsghdr *)donebuf;
+	d->nlmsg_type = NLMSG_DONE;
+	d->nlmsg_flags = NLM_F_MULTI;
+	d->nlmsg_len = NLMSG_LENGTH(0);
+	nl_mock_clear_queue();
+	nl_mock_queue_response(donebuf, d->nlmsg_len);
+
+	int rc = fill_local_addrs(nl);
+	if (rc < 0)
+		TEST_FAIL("should not fail");
+	else
+		TEST_PASS();
+
+	mctp_nl_close(nl);
 }
 
 int main(void)
@@ -3032,6 +3312,18 @@ int main(void)
     test_fill_link_changes_deleted_with_eids();
     test_recv_all_extra_data_warning();
     test_fill_eid_changes_old_less_than_new();
+    test_fill_linkmap_zero_peek_first_call();
+    test_fill_linkmap_send_fail();
+    test_fill_linkmap_buffer_reuse();
+    test_mctp_nl_addr_fail_sendto();
+    test_fill_local_addrs_realloc_fail();
+    test_fill_linkmap_parse_returns_zero();
+    test_get_rtnlmsg_attr_short_rta();
+    test_nlmsgs_done_short_msg();
+    test_handle_nlmsg_ack_short_msg();
+    test_parse_getlink_dump_single_done();
+    test_fill_local_addrs_short_msg();
+    test_get_rtnlmsg_attr_rta_len_mismatch();
 
     fprintf(stderr, "\n%d tests, %d failures\n", test_count, failures);
     return failures > 0 ? 1 : 0;
