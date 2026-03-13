@@ -3834,12 +3834,14 @@ static int peer_neigh_update(struct peer *peer, uint16_t type)
 // type is RTM_NEWROUTE or RTM_DELROUTE
 static int peer_route_update(struct peer *peer, uint16_t type)
 {
-	if (!mctp_nl_if_exists(peer->ctx->nl, peer->phys.ifindex)) {
-		bug_warn("%s: Unknown ifindex %d", __func__, peer->phys.ifindex);
-		return -ENODEV;
-	}
-
+	// temp : avoid abort for test in case routes were not removed
+	// till kernel bug to remove gateway routes is fixed
 	if (type == RTM_NEWROUTE) {
+		if (!mctp_nl_if_exists(peer->ctx->nl, peer->phys.ifindex)) {
+			bug_warn("%s: Unknown ifindex %d", __func__,
+				 peer->phys.ifindex);
+			return -ENODEV;
+		}
 		return mctp_nl_route_add(peer->ctx->nl, peer->eid, 0,
 					 peer->phys.ifindex, NULL, peer->mtu);
 	} else if (type == RTM_DELROUTE) {
@@ -3856,6 +3858,9 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 				      peer->pool_start,
 				      peer->pool_start + peer->pool_size - 1,
 				      strerror(-rc));
+		}
+		if (!mctp_nl_if_exists(peer->ctx->nl, peer->phys.ifindex)) {
+			return -ENODEV;
 		}
 		return mctp_nl_route_del(peer->ctx->nl, peer->eid, 0,
 					 peer->phys.ifindex, NULL);
@@ -5207,8 +5212,9 @@ static int del_interface(struct link *link)
 			// Linux removes routes to deleted links, so no need
 			// to request removal.
 
-			p->have_neigh = false;
-			p->have_route = false;
+			// TODO: bug: gateway routes are not deleted by kernel
+			// p->have_neigh = false;
+			// p->have_route = false;
 			rc = remove_peer(p);
 			if (rc) {
 				bug_warn("Error removing peer on interface "
