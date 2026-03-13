@@ -1907,6 +1907,25 @@ static uint8_t mctp_next_iid(struct ctx *ctx)
 	return iid;
 }
 
+// Checks if given EID belongs to any bridge's pool range
+static bool is_eid_in_bridge_pool(const struct net *n, const struct ctx *ctx,
+				  mctp_eid_t eid, struct peer **pool_owner_peer)
+{
+	for (int i = ctx->dyn_eid_min; i <= eid; i++) {
+		struct peer *peer = n->peers[i];
+		if (peer && peer->pool_size > 0) {
+			if (eid >= peer->pool_start &&
+			    eid < peer->pool_start + peer->pool_size) {
+				if (pool_owner_peer)
+					*pool_owner_peer = peer;
+				return true;
+			}
+			i += peer->pool_size;
+		}
+	}
+	return false;
+}
+
 static const char *command_str(uint8_t cmd)
 {
 	static char unknown_cmd_str[32];
@@ -3501,6 +3520,8 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	struct peer *peer;
 	struct mctp_ctrl_cmd_get_uuid req = { 0 };
 	struct sockaddr_mctp_ext addr;
+	dest_phys dest = { 0 };
+	bool is_dummy = false;
 	uint8_t *buf = NULL;
 	size_t buf_size = 0;
 	int rc;
@@ -3520,8 +3541,13 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	/* Find the peer by EID in this network */
 	peer = find_peer_by_addr(ctx, eid, net->net);
 	if (!peer) {
-		return sd_bus_error_setf(berr, SD_BUS_ERROR_INVALID_ARGS,
-					 "Unknown EID %d", eid);
+		// create dummy peer for querying then later remove it
+		rc = add_peer(ctx, &dest, eid, net->net, &peer);
+		if (rc) {
+			warnx("can't add peer: %s", strerror(-rc));
+			goto err;
+		}
+		is_dummy = true;
 	}
 
 	/* Send Get Endpoint UUID to check if it's alive.
@@ -3548,13 +3574,19 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	if (rc < 0) {
 		if (rc == -ENOTSUP) {
 			peer->ping_failed_once = false;
+			if (is_dummy)
+				remove_peer(peer);
 			return sd_bus_reply_method_return(call, NULL);
 		}
 		peer->ping_failed_once = true;
+		if (is_dummy)
+			remove_peer(peer);
 		goto err;
 	}
 
 	peer->ping_failed_once = false;
+	if (is_dummy)
+		remove_peer(peer);
 	return sd_bus_reply_method_return(call, NULL);
 
 err:
@@ -3603,11 +3635,94 @@ err:
 	set_berr(ctx, rc, berr);
 	return rc;
 }
+static int query_get_peer_routing_data(struct peer *pool_owner_peer,
+				       struct peer *peer)
+{
+	struct mctp_ctrl_resp_get_routing_table *resp = NULL;
+	struct mctp_ctrl_cmd_get_routing_table req;
+	struct sockaddr_mctp_ext addr;
+	struct ctx *ctx = NULL;
+	uint8_t *buf = NULL;
+	size_t buf_size;
+	uint8_t iid;
+	int rc;
+
+	iid = mctp_next_iid(peer->ctx);
+	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
+	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+	req.entry_handle = 0;
+	ctx = peer->ctx;
+
+	while (req.entry_handle != 0xFF) {
+		rc = endpoint_query_peer(pool_owner_peer,
+					 MCTP_CTRL_HDR_MSG_TYPE, &req,
+					 sizeof(req), &buf, &buf_size, &addr);
+		if (rc < 0)
+			goto out;
+
+		rc = mctp_ctrl_validate_response(
+			buf, buf_size, sizeof(*resp),
+			peer_tostr_short(pool_owner_peer), iid,
+			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr);
+		if (rc)
+			goto out;
+
+		resp = (void *)buf;
+		if (!resp) {
+			warnx("%s Invalid response Buffer\n", __func__);
+			return -ENOMEM;
+		}
+
+		if (ctx->verbose) {
+			fprintf(stderr,
+				"%s: returned routing entries %x, next handle %x\n",
+				__func__, resp->number_of_entries,
+				resp->next_entry_handle);
+		}
+
+		if (resp->number_of_entries) {
+			struct get_routing_table_entry *entry =
+				(struct get_routing_table_entry *)
+					resp->routing_entries;
+			for (uint8_t idx = 0; idx < resp->number_of_entries;
+			     idx++) {
+				if (entry->starting_eid == peer->eid) {
+					size_t entry_size =
+						sizeof(struct get_routing_table_entry) +
+						entry->phys_address_size;
+					peer->routing_table_entry =
+						(struct get_routing_table_entry
+							 *)malloc(entry_size);
+					if (!peer->routing_table_entry) {
+						warnx("Failed to allocate memory for local routing");
+						return -ENOMEM;
+					}
+					memset(peer->routing_table_entry, 0,
+					       entry_size);
+					memcpy(peer->routing_table_entry, entry,
+					       entry_size);
+					return 0;
+				}
+				// Advance to next entry: fixed structure size + variable phys_address data
+				entry = (struct get_routing_table_entry
+						 *)((char *)entry +
+						    sizeof(struct get_routing_table_entry) +
+						    entry->phys_address_size);
+			}
+		}
+		req.entry_handle = resp->next_entry_handle;
+	}
+	return 0;
+out:
+	return rc;
+}
 // Query various properties of a peer.
 // To be called when a new peer is discovered/assigned, once an EID is known
 // and routable.
 static int query_peer_properties(struct peer *peer)
 {
+	struct peer *pool_owner_peer = NULL;
+	struct net *n = NULL;
 	int rc;
 
 	rc = query_get_peer_msgtypes(peer);
@@ -3659,6 +3774,35 @@ static int query_peer_properties(struct peer *peer)
 		}
 	}
 
+	n = lookup_net(peer->ctx, peer->net);
+	if (!peer->routing_table_entry &&
+	    is_eid_in_bridge_pool(n, peer->ctx, peer->eid, &pool_owner_peer)) {
+		if (peer->pool_owner_eid != pool_owner_peer->eid) {
+			peer->phys.hwaddr_len =
+				pool_owner_peer->phys.hwaddr_len;
+			peer->phys.ifindex = pool_owner_peer->phys.ifindex;
+			peer->pool_owner_eid = pool_owner_peer->eid;
+			peer->local_eid = pool_owner_peer->local_eid;
+			peer->is_direct_endpoint = false;
+			memcpy(peer->phys.hwaddr, pool_owner_peer->phys.hwaddr,
+			       pool_owner_peer->phys.hwaddr_len);
+			memcpy(peer->ignore_message_types,
+			       pool_owner_peer->ignore_message_types,
+			       pool_owner_peer->num_ignore_message_types);
+		}
+
+		rc = query_get_peer_routing_data(pool_owner_peer, peer);
+		if (rc < 0) {
+			if (peer->ctx->verbose)
+				warnx("Error getting routing data for %s. Ignoring error %d %s",
+				      peer_tostr(peer), rc, strerror(-rc));
+			rc = 0;
+		}
+		if (!peer->routing_table_entry) {
+			warnx("No routing data found for %s", peer_tostr(peer));
+		}
+	}
+
 out:
 	// TODO: emit property changed? Though currently they are all const.
 	return rc;
@@ -3699,6 +3843,20 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 		return mctp_nl_route_add(peer->ctx->nl, peer->eid, 0,
 					 peer->phys.ifindex, NULL, peer->mtu);
 	} else if (type == RTM_DELROUTE) {
+		if (peer->pool_size > 0) {
+			int rc = 0;
+			struct mctp_fq_addr gw_addr = { 0 };
+			gw_addr.net = peer->net;
+			gw_addr.eid = peer->eid;
+			rc = mctp_nl_route_del(peer->ctx->nl, peer->pool_start,
+					       peer->pool_size - 1, 0,
+					       &gw_addr);
+			if (rc < 0)
+				warnx("failed to delete route for peer pool eids %d-%d %s",
+				      peer->pool_start,
+				      peer->pool_start + peer->pool_size - 1,
+				      strerror(-rc));
+		}
 		return mctp_nl_route_del(peer->ctx->nl, peer->eid, 0,
 					 peer->phys.ifindex, NULL);
 	}
@@ -3710,14 +3868,25 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 /* Called when a new peer is discovered. Queries properties and publishes */
 static int setup_added_peer(struct peer *peer)
 {
+	struct net *n = NULL;
 	int rc;
 
+	n = lookup_net(peer->ctx, peer->net);
+	if (!n) {
+		bug_warn("%s Bad net %u", __func__, peer->net);
+		return -EPROTO;
+	}
 	// Set minimum MTU by default for compatibility. Clients can increase
 	// this with .SetMTU as needed
 	peer->mtu = mctp_nl_min_mtu_byindex(peer->ctx->nl, peer->phys.ifindex);
 
-	// add route before querying
-	add_peer_route(peer);
+	// add route before querying for non-bridged endpoints.
+	// bridged endpoints will use the bridge's pool range route.
+	if (!is_eid_in_bridge_pool(n, peer->ctx, peer->eid, NULL)) {
+		warnx("Adding route for non-bridged endpoint %s",
+		      peer_tostr(peer));
+		add_peer_route(peer);
+	}
 
 	rc = query_peer_properties(peer);
 	if (rc < 0)
@@ -3789,8 +3958,13 @@ static void add_peer_route(struct peer *peer)
 static int publish_peer(struct peer *peer, bool add_route)
 {
 	int rc = 0;
+	struct net *n = NULL;
+	n = lookup_net(peer->ctx, peer->net);
 
-	if (add_route && peer->state == REMOTE) {
+	if (add_route && peer->state == REMOTE &&
+	    !is_eid_in_bridge_pool(n, peer->ctx, peer->eid, NULL)) {
+		warnx("Adding route for non-bridged endpoint %s",
+		      peer_tostr(peer));
 		add_peer_route(peer);
 	}
 
@@ -4233,9 +4407,15 @@ static int method_net_learn_endpoint(sd_bus_message *call, void *data,
 		goto err;
 	}
 
-	query_peer_properties(peer);
+	rc = query_peer_properties(peer);
+	if (rc < 0) {
+		goto err;
+	}
 
-	publish_peer(peer, false);
+	rc = publish_peer(peer, false);
+	if (rc < 0) {
+		goto err;
+	}
 
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
@@ -5026,6 +5206,7 @@ static int del_interface(struct link *link)
 
 			// Linux removes routes to deleted links, so no need
 			// to request removal.
+
 			p->have_neigh = false;
 			p->have_route = false;
 			rc = remove_peer(p);
@@ -5872,6 +6053,7 @@ static int endpoint_allocate_eid(struct peer *peer)
 {
 	uint8_t allocated_pool_size = 0;
 	mctp_eid_t allocated_pool_start = 0;
+	int rc = 0;
 
 	/* Find pool sized contiguous unused eids to allocate on the bridge. */
 	peer->pool_start =
@@ -5886,14 +6068,40 @@ static int endpoint_allocate_eid(struct peer *peer)
 				"%s Asking for contiguous EIDs for pool with start eid %d and size %d\n",
 				__func__, peer->pool_start, peer->pool_size);
 	}
+	/* Add gateway route for all bridge's downstream EIDs.
+	* After allocation, the endpoint may initiate communication
+	* immediately, so set up routes for downstream endpoints beforehand.
+	*/
+	struct mctp_fq_addr gw_addr = { 0 };
+	gw_addr.net = peer->net;
+	gw_addr.eid = peer->eid;
+	rc = mctp_nl_route_add(peer->ctx->nl, peer->pool_start,
+			       peer->pool_size - 1, 0, &gw_addr, peer->mtu);
+	if (rc < 0 && rc != -EEXIST) {
+		warnx("Failed to add gateway route for EID %d: %s", gw_addr.eid,
+		      strerror(-rc));
+		return rc;
+	}
 
-	int rc = endpoint_send_allocate_endpoint_id(peer, peer->pool_start,
-						    peer->pool_size, alloc_eid,
-						    &allocated_pool_size,
-						    &allocated_pool_start);
+	rc = endpoint_send_allocate_endpoint_id(peer, peer->pool_start,
+						peer->pool_size, alloc_eid,
+						&allocated_pool_size,
+						&allocated_pool_start);
 	if (rc) {
 		warnx("%s failed to allocate endpoints, returned %s %d\n",
 		      __func__, strerror(-rc), rc);
+		// delete prior set routes for downstream endpoints
+		rc = mctp_nl_route_del(peer->ctx->nl, peer->pool_start,
+				       peer->pool_size - 1, 0, &gw_addr);
+		if (rc < 0)
+			warnx("failed to delete route for peer pool eids %d-%d %s",
+			      peer->pool_start,
+			      peer->pool_start + peer->pool_size - 1,
+			      strerror(-rc));
+		//reset peer pool
+		peer->pool_size = 0;
+		peer->pool_start = 0;
+		return rc;
 	} else {
 		peer->pool_size = allocated_pool_size;
 		peer->pool_start = allocated_pool_start;

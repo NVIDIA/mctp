@@ -1309,8 +1309,8 @@ async def test_endpoint_ping_nonexistent(dbus, mctpd):
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
         await net.call_endpoint_ping(nonexistent_eid)
 
-    # Should fail with "Unknown EID"
-    assert "Unknown EID" in str(ex.value)
+    # Should fail with "MCTP Endpoint did not respond"
+    assert "MCTP Endpoint did not respond" in str(ex.value)
 
 """ Test that the already discovered endpoint emits a property
 change signal when the endpoint is learned """
