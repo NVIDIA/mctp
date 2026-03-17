@@ -1597,3 +1597,35 @@ async def test_ignore_message_types(dbus, mctpd):
     assert query_types == expected_types, \
         f"Expected message types {expected_types} but got {query_types}"
 
+
+""" Test that the LocalEID property is correctly exposed on the endpoint
+D-Bus object after AssignEndpointStatic"""
+async def test_local_eid_exposed_on_endpoint(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    dev = mctpd.network.endpoints[0]
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 12
+    start_eid = 13
+    ignore_eids = b''
+    ignore_message_types = b''
+
+    (eid, net, path, new) = await mctp.call_assign_endpoint_static(
+        dev.lladdr,
+        static_eid,
+        start_eid,
+        ignore_eids,
+        ignore_message_types
+    )
+
+    assert eid == static_eid
+    assert new
+
+    # Get the endpoint object and verify LocalEID property
+    ep = await mctpd_mctp_endpoint_common_obj(dbus, path)
+    local_eid = await ep.get_local_eid()
+
+    # The default system has local EID 8 assigned to the interface
+    assert local_eid == 8, \
+        f"Expected LocalEID 8 but got {local_eid}"
+
