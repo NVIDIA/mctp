@@ -3511,6 +3511,108 @@ err:
 	return rc;
 }
 
+/* Async EndpointPing: state for a ping in flight */
+struct pending_ping {
+	sd_bus_message *call; /* held D-Bus method call for deferred reply */
+	sd_event_source *io_source; /* event source for socket readability */
+	sd_event_source *tm_source; /* event source for timeout */
+	struct peer *peer;
+	struct ctx *ctx;
+	int sock_fd;
+	bool is_dummy; /* true if peer was created just for this ping */
+	mctp_eid_t eid;
+	struct sockaddr_mctp_ext req_addr; /* saved for error reporting */
+};
+
+static void cleanup_pending_ping(struct pending_ping *pp)
+{
+	if (!pp)
+		return;
+
+	if (pp->io_source) {
+		sd_event_source_disable_unref(pp->io_source);
+		pp->io_source = NULL;
+	}
+	if (pp->tm_source) {
+		sd_event_source_disable_unref(pp->tm_source);
+		pp->tm_source = NULL;
+	}
+	if (pp->sock_fd >= 0) {
+		close(pp->sock_fd);
+		pp->sock_fd = -1;
+	}
+	if (pp->is_dummy && pp->peer)
+		remove_peer(pp->peer);
+
+	sd_bus_message_unref(pp->call);
+	free(pp);
+}
+
+static void pending_ping_reply_success(struct pending_ping *pp)
+{
+	if (pp->peer)
+		pp->peer->ping_failed_once = false;
+
+	sd_bus_reply_method_return(pp->call, NULL);
+	cleanup_pending_ping(pp);
+}
+
+static void pending_ping_reply_error(struct pending_ping *pp, int errcode)
+{
+	if (pp->peer)
+		pp->peer->ping_failed_once = true;
+
+	sd_bus_error berr = SD_BUS_ERROR_NULL;
+	set_berr(pp->ctx, errcode, &berr);
+	sd_bus_reply_method_error(pp->call, &berr);
+	sd_bus_error_free(&berr);
+	cleanup_pending_ping(pp);
+}
+
+static int cb_ping_response(sd_event_source *s, int fd, uint32_t revents,
+			    void *data)
+{
+	struct pending_ping *pp = data;
+
+	if (revents & EPOLLERR) {
+		read_mctp_error_queue(pp->ctx, fd, pp->ctx->verbose,
+				      &pp->req_addr);
+		if (!(revents & EPOLLIN)) {
+			pending_ping_reply_error(pp, -EIO);
+			return 0;
+		}
+	}
+
+	if (revents & EPOLLIN) {
+		uint8_t *buf = NULL;
+		size_t buf_size = 0;
+		struct sockaddr_mctp_ext resp_addr = { 0 };
+		int rc;
+
+		rc = read_message(pp->ctx, fd, &buf, &buf_size, &resp_addr);
+		free(buf);
+
+		if (rc < 0 || buf_size == 0) {
+			pending_ping_reply_error(pp, rc < 0 ? rc : -EPROTO);
+			return 0;
+		}
+
+		pending_ping_reply_success(pp);
+	}
+
+	return 0;
+}
+
+static int cb_ping_timeout(sd_event_source *s, uint64_t usec, void *data)
+{
+	struct pending_ping *pp = data;
+
+	report_transaction_error(pp->ctx, ETIMEDOUT, MCTP_DIR_RX, &pp->req_addr,
+				 NULL, 0);
+	pending_ping_reply_error(pp, -ETIMEDOUT);
+	return 0;
+}
+
 static int method_endpoint_ping(sd_bus_message *call, void *data,
 				sd_bus_error *berr)
 {
@@ -3519,13 +3621,11 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	mctp_eid_t eid;
 	struct peer *peer;
 	struct mctp_ctrl_cmd_get_uuid req = { 0 };
-	struct sockaddr_mctp_ext addr;
 	dest_phys dest = { 0 };
 	bool is_dummy = false;
-	uint8_t *buf = NULL;
-	size_t buf_size = 0;
-	int rc;
-	bool suppress_for_ping;
+	int sd = -1, val;
+	ssize_t rc;
+	struct pending_ping *pp = NULL;
 
 	rc = sd_bus_message_read_basic(call, 'y', &eid);
 	if (rc < 0) {
@@ -3541,7 +3641,7 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	/* Find the peer by EID in this network */
 	peer = find_peer_by_addr(ctx, eid, net->net);
 	if (!peer) {
-		// create dummy peer for querying then later remove it
+		/* create dummy peer for querying then later remove it */
 		rc = add_peer(ctx, &dest, eid, net->net, &peer);
 		if (rc) {
 			warnx("can't add peer: %s", strerror(-rc));
@@ -3550,45 +3650,126 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 		is_dummy = true;
 	}
 
-	/* Send Get Endpoint UUID to check if it's alive.
-	 * We don't validate the response content, just that we got one. */
-	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, mctp_next_iid(peer->ctx),
+	if (peer->state != REMOTE) {
+		/* Non-remote peer (e.g. local), treat as not-supported
+		 * and return success immediately */
+		if (is_dummy)
+			remove_peer(peer);
+		return sd_bus_reply_method_return(call, NULL);
+	}
+
+	/* Build GetUUID request */
+	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, mctp_next_iid(ctx),
 				   MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
 
+	/* Open a non-blocking MCTP socket and send the request */
+	sd = mctp_ops.mctp.socket();
+	if (sd < 0) {
+		rc = -errno;
+		goto err_peer;
+	}
+
+	val = 1;
+	rc = mctp_ops.mctp.setsockopt(sd, SOL_MCTP, MCTP_OPT_ADDR_EXT, &val,
+				      sizeof(val));
+	if (rc < 0) {
+		rc = -errno;
+		goto err_close;
+	}
+
+	val = 1;
+	rc = mctp_ops.mctp.setsockopt(sd, SOL_MCTP, MCTP_OPT_ENABLE_ERRQUEUE,
+				      &val, sizeof(val));
+	if (rc < 0) {
+		if (ctx->verbose)
+			warnx("MCTP error queue not supported by kernel (fd %d)",
+			      sd);
+		/* non-fatal, continue */
+	}
+
+	/* Build the destination address */
+	struct sockaddr_mctp_ext addr = { 0 };
+	addr.smctp_base.smctp_family = AF_MCTP;
+	addr.smctp_base.smctp_network = peer->net;
+	addr.smctp_base.smctp_addr.s_addr = peer->eid;
+	addr.smctp_base.smctp_type = MCTP_CTRL_HDR_MSG_TYPE;
+	addr.smctp_base.smctp_tag = MCTP_TAG_OWNER;
+
 	/* Keep first ping failure visible, suppress only repeated retry noise. */
-	suppress_for_ping = peer->ping_failed_once;
+	bool suppress_for_ping = peer->ping_failed_once;
 	if (suppress_for_ping)
 		suppress_logs = true;
-	rc = endpoint_query_peer(peer, MCTP_CTRL_HDR_MSG_TYPE, &req,
-				 sizeof(req), &buf, &buf_size, &addr);
+
+	rc = mctp_ops.mctp.sendto(sd, &req, sizeof(req), 0,
+				  (struct sockaddr *)&addr,
+				  sizeof(struct sockaddr_mctp));
+
+	if (rc < 0) {
+		rc = -errno;
+		if (ctx->verbose && !suppress_for_ping)
+			warnx("EndpointPing: sendto EID %d failed: %s", eid,
+			      strerror(-rc));
+		if (!suppress_for_ping)
+			report_transaction_error(ctx, -rc, MCTP_DIR_TX, &addr,
+						 &req, sizeof(req));
+		if (suppress_for_ping)
+			suppress_logs = false;
+		goto err_close;
+	}
+
 	if (suppress_for_ping)
 		suppress_logs = false;
 
-	if (rc == 0 && buf_size == 0)
-		rc = -EPROTO;
+	/* Allocate async ping state */
+	pp = calloc(1, sizeof(*pp));
+	if (!pp) {
+		rc = -ENOMEM;
+		goto err_close;
+	}
+	pp->call = sd_bus_message_ref(call);
+	pp->peer = peer;
+	pp->ctx = ctx;
+	pp->sock_fd = sd;
+	pp->is_dummy = is_dummy;
+	pp->eid = eid;
+	pp->req_addr = addr;
 
-	/* Free the response buffer immediately since we aren't validating content,
-	 * other than checking that we received data */
-	free(buf);
-
+	/* Add socket to the MAIN event loop — non-blocking wait for response */
+	rc = sd_event_add_io(ctx->event, &pp->io_source, sd, EPOLLIN | EPOLLERR,
+			     cb_ping_response, pp);
 	if (rc < 0) {
-		if (rc == -ENOTSUP) {
-			peer->ping_failed_once = false;
-			if (is_dummy)
-				remove_peer(peer);
-			return sd_bus_reply_method_return(call, NULL);
-		}
-		peer->ping_failed_once = true;
-		if (is_dummy)
-			remove_peer(peer);
-		goto err;
+		warnx("EndpointPing: sd_event_add_io failed: %s",
+		      strerror(-rc));
+		goto err_pp;
 	}
 
-	peer->ping_failed_once = false;
+	/* Add timeout to the MAIN event loop */
+	rc = sd_event_add_time_relative(ctx->event, &pp->tm_source,
+					CLOCK_MONOTONIC, ctx->mctp_timeout, 0,
+					cb_ping_timeout, pp);
+	if (rc < 0) {
+		warnx("EndpointPing: sd_event_add_time_relative failed: %s",
+		      strerror(-rc));
+		goto err_pp;
+	}
+
+	/* Tell sd-bus we will reply later (return positive value) */
+	return 1;
+
+err_pp:
+	/* pp->call is ref'd, cleanup will unref */
+	cleanup_pending_ping(pp);
+	/* cleanup_pending_ping already replied error and cleaned up peer,
+	 * but we haven't replied yet at this point since we failed before
+	 * event sources were active. Reply error manually. */
+	set_berr(ctx, rc, berr);
+	return rc;
+
+err_close:
+	close(sd);
+err_peer:
 	if (is_dummy)
 		remove_peer(peer);
-	return sd_bus_reply_method_return(call, NULL);
-
 err:
 	set_berr(ctx, rc, berr);
 	return rc;
