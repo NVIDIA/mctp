@@ -1,0 +1,16 @@
+# Python dependencies for running Nvidia code coverage (run-nvidia-coverage.sh).
+# Install: pip3 install --user -r scripts/coverage-requirements.txt
+
+# Coverage report generation
+meson
+ninja
+gcovr
+
+# Test framework (needed to generate .gcda coverage data)
+asyncdbus==0.6.1
+pyroute2==0.7.10
+pytest==8.3.2
+pytest-trio==0.8.0
+trio==0.26.2
+pytest-tap==3.5
+anyio==4.6.2.post1
