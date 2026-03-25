@@ -207,6 +207,9 @@ struct peer {
 	// Set after one ping failure; subsequent ping retries can suppress noise.
 	bool ping_failed_once;
 
+	// Local EID
+	mctp_eid_t local_eid;
+
 	// Pool size
 	uint8_t pool_size;
 	uint8_t pool_start;
@@ -482,6 +485,25 @@ static int defer_free_handler(sd_event_source *s, void *userdata)
 {
 	free(userdata);
 	sd_event_source_unref(s);
+	return 0;
+}
+
+static int find_local_eid_by_addr(struct ctx *ctx, struct dest_phys *dest,
+				  uint32_t net, mctp_eid_t *ret_eid)
+{
+	mctp_eid_t local = local_addr(ctx, dest->ifindex);
+	if (local == 0) {
+		warnx("%s: no local address on ifindex %d", __func__,
+		      dest->ifindex);
+		return -EINVAL;
+	}
+
+	struct peer *peer = find_peer_by_addr(ctx, local, net);
+	if (!peer || peer->state != LOCAL) {
+		return -EINVAL;
+	}
+
+	*ret_eid = local;
 	return 0;
 }
 
@@ -3167,8 +3189,15 @@ static int method_setup_endpoint(sd_bus_message *call, void *data,
 	if (rc < 0)
 		goto err;
 
-	peer_path = path_from_peer(peer);
 	peer->is_direct_endpoint = true;
+	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
+	if (rc < 0) {
+		warnx("Failed to find local EID for endpoint %s",
+		      peer_tostr(peer));
+		rc = 0;
+	}
+
+	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
 	if (ctx->verbose)
@@ -3222,6 +3251,13 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 		goto err;
 
 	peer->is_direct_endpoint = true;
+	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
+	if (rc < 0) {
+		warnx("Failed to find local EID for endpoint %s",
+		      peer_tostr(peer));
+		rc = 0;
+	}
+
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3367,6 +3403,13 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	}
 
 	peer->is_direct_endpoint = true;
+	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
+	if (rc < 0) {
+		warnx("Failed to find local EID for endpoint %s",
+		      peer_tostr(peer));
+		rc = 0;
+	}
+
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3452,6 +3495,13 @@ static int method_learn_endpoint(sd_bus_message *call, void *data,
 
 	peer_path = path_from_peer(peer);
 	peer->is_direct_endpoint = true;
+	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
+	if (rc < 0) {
+		warnx("Failed to find local EID for endpoint %s",
+		      peer_tostr(peer));
+		rc = 0;
+	}
+
 	if (!peer_path)
 		goto err;
 	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
@@ -4290,6 +4340,8 @@ static int bus_endpoint_get_prop(sd_bus *bus, const char *path,
 			 "xyz.openbmc_project.MCTP.Binding.BindingTypes.%s",
 			 binding_name);
 		rc = sd_bus_message_append(reply, "s", binding_type_str);
+	} else if (strcmp(property, "LocalEID") == 0) {
+		rc = sd_bus_message_append(reply, "y", peer->local_eid);
 	} else {
 		warnx("Unknown property '%s' for %s iface %s", property, path,
 		      interface);
@@ -4578,6 +4630,11 @@ static const sd_bus_vtable bus_endpoint_obmc_vtable[] = {
 			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_PROPERTY("MediumType",
 			"s",
+			bus_endpoint_get_prop,
+			0,
+			SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_PROPERTY("LocalEID",
+			"y",
 			bus_endpoint_get_prop,
 			0,
 			SD_BUS_VTABLE_PROPERTY_CONST),
@@ -6094,6 +6151,8 @@ static int query_routing_table(struct peer *peer)
 						       peer->ignore_message_types,
 						       peer->num_ignore_message_types);
 					}
+					allocated_peer->local_eid =
+						peer->local_eid;
 					rc = setup_added_peer(allocated_peer);
 					if (rc < 0) {
 						warnx("%s failed to setup peer for active eid %d: %d %s",
