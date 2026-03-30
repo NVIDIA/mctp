@@ -1914,6 +1914,11 @@ static bool is_eid_in_bridge_pool(const struct net *n, const struct ctx *ctx,
 	for (int i = ctx->dyn_eid_min; i <= eid; i++) {
 		struct peer *peer = n->peers[i];
 		if (peer && peer->pool_size > 0) {
+			if (peer->static_pool_eids) {
+				// This is static pool bridge, no point in checking here as any eid
+				// could be part of its pool space [8-254], simply avoid this.
+				continue;
+			}
 			if (eid >= peer->pool_start &&
 			    eid < peer->pool_start + peer->pool_size) {
 				if (pool_owner_peer)
@@ -6527,6 +6532,12 @@ static int query_routing_table(struct peer *peer)
 						       peer->ignore_message_types,
 						       peer->num_ignore_message_types);
 					}
+					if (is_static_pool_bridge) {
+						peer->static_pool_eids[eid] =
+							eid;
+					}
+					allocated_peer->pool_owner_eid =
+						peer->eid;
 					rc = setup_added_peer(allocated_peer);
 					if (rc < 0) {
 						warnx("%s failed to setup peer for active eid %d: %d %s",
@@ -6540,12 +6551,6 @@ static int query_routing_table(struct peer *peer)
 							"created new endpoint %d\n",
 							eid);
 					}
-					if (is_static_pool_bridge) {
-						peer->static_pool_eids[eid] =
-							eid;
-					}
-					allocated_peer->pool_owner_eid =
-						peer->eid;
 				} else {
 					// EID is active and exists locally - send connectivity change
 					existing_peer->degraded = false;
