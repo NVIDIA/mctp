@@ -2422,6 +2422,14 @@ static int add_peer(struct ctx *ctx, const dest_phys *dest, mctp_eid_t eid,
 	// Update network eid map
 	n->peers[eid] = peer;
 
+	if (peer->phys.ifindex > 0 && ctx->nl) {
+		if (find_local_eid_by_addr(ctx, &peer->phys, peer->net,
+					   &peer->local_eid) < 0) {
+			warnx("Failed to find local EID for endpoint %s",
+			      dest_phys_tostr(dest));
+		}
+	}
+
 	*ret_peer = peer;
 	return 0;
 }
@@ -3190,13 +3198,6 @@ static int method_setup_endpoint(sd_bus_message *call, void *data,
 		goto err;
 
 	peer->is_direct_endpoint = true;
-	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
-	if (rc < 0) {
-		warnx("Failed to find local EID for endpoint %s",
-		      peer_tostr(peer));
-		rc = 0;
-	}
-
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3251,13 +3252,6 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 		goto err;
 
 	peer->is_direct_endpoint = true;
-	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
-	if (rc < 0) {
-		warnx("Failed to find local EID for endpoint %s",
-		      peer_tostr(peer));
-		rc = 0;
-	}
-
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3403,13 +3397,6 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	}
 
 	peer->is_direct_endpoint = true;
-	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
-	if (rc < 0) {
-		warnx("Failed to find local EID for endpoint %s",
-		      peer_tostr(peer));
-		rc = 0;
-	}
-
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
@@ -3495,12 +3482,6 @@ static int method_learn_endpoint(sd_bus_message *call, void *data,
 
 	peer_path = path_from_peer(peer);
 	peer->is_direct_endpoint = true;
-	rc = find_local_eid_by_addr(ctx, dest, peer->net, &peer->local_eid);
-	if (rc < 0) {
-		warnx("Failed to find local EID for endpoint %s",
-		      peer_tostr(peer));
-		rc = 0;
-	}
 
 	if (!peer_path)
 		goto err;
@@ -6151,8 +6132,6 @@ static int query_routing_table(struct peer *peer)
 						       peer->ignore_message_types,
 						       peer->num_ignore_message_types);
 					}
-					allocated_peer->local_eid =
-						peer->local_eid;
 					rc = setup_added_peer(allocated_peer);
 					if (rc < 0) {
 						warnx("%s failed to setup peer for active eid %d: %d %s",
