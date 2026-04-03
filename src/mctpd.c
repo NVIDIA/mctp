@@ -2978,14 +2978,12 @@ static int query_get_peer_msgtypes(struct peer *peer)
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_msg_type_support req;
 	struct mctp_ctrl_resp_get_msg_type_support *resp = NULL;
+	uint8_t *new_message_types = NULL;
 	uint8_t *buf = NULL;
 	size_t buf_size, expect_size;
 	uint8_t iid;
 	int rc;
 
-	peer->num_message_types = 0;
-	free(peer->message_types);
-	peer->message_types = NULL;
 	iid = mctp_next_iid(peer->ctx);
 
 	mctp_ctrl_msg_hdr_init_req(&req.ctrl_hdr, iid,
@@ -3013,13 +3011,16 @@ static int query_get_peer_msgtypes(struct peer *peer)
 		goto out;
 	}
 
-	// free previous message types to avoid memory leak
-	free(peer->message_types);
-	peer->message_types = malloc(resp->msg_type_count);
-	if (!peer->message_types) {
+	new_message_types = malloc(resp->msg_type_count);
+	if (!new_message_types) {
 		rc = -ENOMEM;
 		goto out;
 	}
+
+	// free previous message types to avoid memory leak
+	free(peer->message_types);
+	peer->message_types = new_message_types;
+	peer->num_message_types = 0;
 
 	size_t idx = 0;
 	bool ignore = false;
