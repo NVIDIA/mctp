@@ -1914,6 +1914,9 @@ static bool is_eid_in_bridge_pool(const struct net *n, const struct ctx *ctx,
 	for (int i = ctx->dyn_eid_min; i <= eid; i++) {
 		struct peer *peer = n->peers[i];
 		if (peer && peer->pool_size > 0) {
+			if (peer->eid == eid) {
+				continue;
+			}
 			if (peer->static_pool_eids) {
 				// This is static pool bridge, no point in checking here as any eid
 				// could be part of its pool space [8-254], simply avoid this.
