@@ -25,8 +25,65 @@ Service au.com.codeconstruct.MCTP1:
 
 ## Top-level object: `/au/com/codeconstruct/mctp1`
 
-This object serves as the global MCTP daemon namespace; it doesn't contain
-much at present, but hosts two trees of MCTP objects:
+This object serves as the global MCTP daemon namespace.
+It hosts `au.com.codeconstruct.MCTP1` dbus interface to modify properties of
+the MCTP stack, such as supported message types.
+```
+NAME                                TYPE      SIGNATURE  RESULT/VALUE  FLAGS
+au.com.codeconstruct.MCTP1          interface -          -             -
+.RegisterTypeSupport                  method    yau        -             -
+.RegisterVDMTypeSupport               method    yvq        -             -
+```
+
+#### `.RegisterTypeSupport`: `yau`
+
+This method is used to add support for mctp message types other than control
+messages. Once called successfully subsequent response for Get Message Type
+Support control commands will include this new message type. Versions passed to
+this method will be used to respond to Get MCTP Version Support commands.
+
+`RegisterTypeSupport <msg type> <versions>`
+
+If the message type is already registered, then dbus call will fail.
+
+ - `<msg type>` Message type, as defined in DSP0239.
+ - `<versions>` Versions supported for this message type formatted as uint32
+   integers as specified in DSP0236
+
+The `msg_type` value must be a valid message type, and cannot be one of the
+VDM types (0x7e or 0x7f). Those VDM types are handled by the
+`RegisterVDMTypeSupport` method instead.
+
+De-registration is automatic - the specified types (and versions) are registered
+for as long as the dbus sender remains attached to the message bus, and are
+unregistered on disconnect.
+
+#### `.RegisterVDMTypeSupport`: `yvq`
+
+This method is used to add support for MCTP Vendor Defined Message (VDM) types.
+Once called successfully, subsequent responses for Get Vendor Defined Message
+Support control commands will include this new VDM type.
+
+`RegisterVDMTypeSupport <vid format> <vendor id> <command set type>`
+
+If the VDM type is already registered, then dbus call will fail.
+
+ - `<vid format>` Vendor ID format:
+   - `0x00` - PCI/PCIe Vendor ID (16-bit)
+   - `0x01` - IANA Enterprise Number (32-bit)
+ - `<vendor id>` Vendor identifier as a variant type:
+   - For PCIe format: 16-bit unsigned integer (`q`)
+   - For IANA format: 32-bit unsigned integer (`u`)
+ - `<command set type>` Command set type (16-bit unsigned integer) as defined by the vendor
+
+Registering a VDM type will cause the corresponding VDM type value (0x7e or
+0x7f) to be returned in mctpd's Get Message Type Support response.
+
+De-registration is automatic - the specified VDM types are registered for as
+long as the dbus sender remains attached to the message bus, and are
+removed when the sender disconnects.
+
+Also it hosts two trees of MCTP objects:
 
  * Interfaces: Local hardware transport bindings that connect us to a MCTP bus
  * Endpoints: MCTP endpoints that `mctpd` knows about, both remote and local
@@ -127,7 +184,11 @@ busctl call au.com.codeconstruct.MCTP1 \
 
 Similar to SetupEndpoint, but will always assign an EID rather than querying for
 existing ones. Will return `new = false` when an endpoint is already known to
-`mctpd`. Moreover, will also allocate downstream eids for MCTP Bridges.
+`mctpd`. If the endpoint is an MCTP bridge (indicated by requesting a pool size
+in its Set Endpoint ID response), this method attempts to allocate a contiguous
+range of EIDs for the bridge's downstream endpoints. If sufficient contiguous
+EIDs are not available within the dynamic allocation pool for the network, only
+the bridge's own EID will be assigned, and downstream EID allocation will fail.
 
 #### `.AssignEndpointStatic`: `ayyyay` → `yisb`
 
@@ -158,6 +219,14 @@ endpoint.
 Like SetupEndpoint but will not assign EIDs, will only query endpoints for a
 current EID. The `new` return value is set to `false` for an already known
 endpoint, or `true` when an endpoint's EID is newly discovered.
+
+Because we are not issuing a Set Endpoint ID as part of the LearnEndpoint call,
+we do not have any details of the endpoint's bridge pool range. So,
+LearnEndpoint is unsuitable for use with bridge endpoints - it cannot provide
+the bridge with its own EID pool. `mctpd` will warn if the device type
+reports as a bridge.
+
+Bridge endpoints should be initialised with `AssignEndpoint` instead.
 
 ### Signals
 
@@ -266,6 +335,25 @@ busctl call au.com.codeconstruct.MCTP1 \
 ### `.Remove`
 
 Removes the MCTP endpoint from `mctpd`, and deletes routes and neighbour entries.
+If endpoint is a bridge (have EID pool allocated for downstream devices) removing
+it will cause removal of all downstream devices endpoint objects as well.
+
+### MCTP bridge interface: `au.com.codeconstruct.MCTP.Bridge1` interface
+
+MCTP endpoints that are set up as a bridge device (and therefore have an
+EID pool allocated to them, for downstream devices) also carry the
+`MCTP.Bridge1` interface. This provides details of the allocated EID pool, via
+two properties:
+
+### `.PoolStart`: `y`
+
+A constant property representing the first EID in the range allocated for
+downstream endpoints.
+
+### `.PoolEnd`: `y`
+
+A constant property representing the last EID in the range allocated for
+downstream endpoints.
 
 ### MCTP bridge interface: `au.com.codeconstruct.MCTP.Bridge1` interface
 For any endpoint which also happens to be an MCTP Bridge, if dynamic eid is
@@ -366,3 +454,15 @@ allocations.
 This setting determines the maximum EID pool size that a bridge peer may request
 via their Set Endpoint ID response. Requests larger than this size will be
 truncated.
+
+#### `endpoint_poll_ms`: Periodic polling interval for briged peers.
+
+* type: integer, in milliseconds
+* default: 0
+
+This is periodic polling interval time in milliseconds, which bus owner/bridge
+needs to perform to identify accessible bridged eid among the allocated pool
+space. Value should be between [```0.5 * TRECLAIM (5)```- ```10```] seconds.
+Such periodic polling is common for all the briged endpoints among allocated
+pool space [`.PoolStart` - `.PoolEnd`] of the bridge.
+Polling could be provisioned to be disabled via setting the value as ```0```.

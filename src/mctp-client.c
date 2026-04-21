@@ -209,13 +209,11 @@ static int find_data(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-	bool valid_parse, valid_eid, valid_type;
-	int ctr, data_idx, net = MCTP_NET_ANY;
+	unsigned int net = MCTP_NET_ANY;
+	bool valid_eid, valid_type;
 	struct data_t send_data;
-	char *tag, *endp, *val;
-	unsigned long int tmp;
+	int type, ctr, data_idx;
 	mctp_eid_t eid;
-	int type;
 
 	data_idx = find_data(argc, argv);
 	if (data_idx < 0) {
@@ -235,31 +233,40 @@ int main(int argc, char **argv)
 	valid_type = false;
 
 	for (ctr = 1; ctr < argc; ctr += 2) {
+		char *tag, *val;
+		int rc;
+
 		tag = argv[ctr];
 		val = argv[ctr + 1];
-		tmp = strtoul(val, &endp, 0);
-		valid_parse = endp != val;
+
 		if (!strcmp(tag, "eid")) {
-			if (tmp > 0xff)
-				errx(EXIT_FAILURE, "invalid eid: %s", val);
-			eid = tmp;
+			rc = parse_eid(val, &eid);
+			if (rc) {
+				warnx("invalid eid: %s", val);
+				return EXIT_FAILURE;
+			}
 			valid_eid = true;
 		} else if (!strcmp(tag, "net")) {
-			if (net > 0xff)
-				errx(EXIT_FAILURE, "invalid net: %s", val);
-			net = tmp;
+			rc = parse_uint32(val, &net);
+			if (rc) {
+				warnx("invalid net: %s", val);
+				return EXIT_FAILURE;
+			}
 		} else if (!strcmp(tag, "type")) {
 			type = do_type_lookup(val);
-			if (type < 0 || type > 0xff)
-				errx(EXIT_FAILURE, "invalid type: %s", val);
-
-			valid_parse = true;
+			if (type < 0 || type > 0xff) {
+				warnx("invalid type: %s", val);
+				return EXIT_FAILURE;
+			}
 			valid_type = true;
-		} else
-			errx(EXIT_FAILURE, "invalid tag: %s", tag);
+
+		} else {
+			warnx("invalid argument: %s", tag);
+			return EXIT_FAILURE;
+		}
 	}
 
-	if (!valid_parse || !valid_eid || !valid_type) {
+	if (!valid_eid || !valid_type) {
 		print_usage();
 		return EXIT_FAILURE;
 	}

@@ -6,14 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## Fixed
+## [2.5] - 2026-02-17
+
+### Added
+
+1. `mctpd` now implements the Get Vendor Defined Message Support control
+   protocol command, and allows registration of vendor-defined message types via
+   dbus.
+
+2. `mctpd` will now retry endpoint query commands (Get Message Type Support and
+   Get Endpoint UUID) on initial endpoint enumeration.
+
+3. `mctpd` can now poll for the presence of bridged endpoints once a bridge has
+   been discovered and enumerated. Polling is implemented using a Get Endpoint
+   ID command, at an interval configurable through the `endpoint_poll_ms`
+   configuration parameter within the bus-owner section. A value of `0` (the
+   default) will disable polling.
+
+   Once a bridged endpoint has been discovered, the endpoint will be enumerated,
+   published on dbus, and polling will cease.
+
+### Changed
+
+1. `mctpd`'s `RegisterTypeSupport` dbus method will no longer allow the
+   VDM messaging types (0x7e and 0x7f) to be registered, as these do not
+   make sense without a corresponding VDM type registration.
+
+   Registering a VDM type will automatically include the corresponding VDM type
+   in the Get Message Type Support response.
+
+## [2.4] - 2025-10-28
+
+### Fixed
+
+1. Fixed `mctp-bench` compile on musl libc
+
+## [2.3] - 2025-10-22
+
+### Fixed
 
 1. mctpd: fixed an issue where endpoints may persist when their dependent
    interface is deleted
 
 2. Header compatibility fixes for environments without a recent linux/mctp.h
 
-## Added
+3. Fixed a potential array overrun when dumping netlink change events
+
+### Added
 
 1. `mctp-bench` now supports a "request receive" mode, where
    `mctp-bench recv eid <...>` sends a command to start the benchmark session.
@@ -26,6 +65,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 5. When in endpoint mode, `mctpd` now handles to Set Endpoint ID messages,
    assigning an EID to local interfaces.
+
+6. `mctpd` now handles downstream MCTP bridges, which may request an EID
+   pool from their Set Endpoint ID response. It will attempt an EID allocation
+   from the dynamic range, and pass this to the bridge using a subsequent
+   Allocate Endpoint IDs command.
+
+7. In endpoint mode, `mctpd` now supports the discovery process (Prepare
+   for Endpoint Discovery -> Endpoint Discovery), where permitted by transport
+   type.
+
+8. `mctpd` now has a facility for applications to register support for MCTP
+   message types. Those types are reported in `mctpd`'s responses to
+   Get Message Type Support and Get MCTP Version support commands.
+
+9. `mctpd`'s Network1.LearnEndpoint method will now check for endpoint
+   presence before publishing an endpoint.
 
 ## [2.2] - 2025-07-28
 

@@ -1080,8 +1080,8 @@ static void test_linkmap_add_entry_direct(void)
     mctp_nl *nl = mctp_nl_new(false);
     if (!nl) { TEST_PASS(); return; }
     struct ifinfomsg info = { .ifi_index = 42 };
-    int rc = linkmap_add_entry(nl, &info, "mctptest", 9, "mctpusb-alt", 12,
-                               3, true, 68, 1024, 1);
+    int rc = linkmap_add_entry(nl, &info, "mctptest", 9, "mctpusb-alt", 12, 3,
+			       true, 68, 1024, 1, 0);
     if (rc < 0) TEST_FAIL("linkmap_add_entry failed");
     /* Verify the entry */
     struct linkmap_entry *e = entry_byindex(nl, 42);
@@ -1303,8 +1303,10 @@ static void test_linkmap_add_entry_multiple(void)
     if (!nl) { TEST_PASS(); return; }
     struct ifinfomsg info1 = { .ifi_index = 10 };
     struct ifinfomsg info2 = { .ifi_index = 20 };
-    int rc1 = linkmap_add_entry(nl, &info1, "mctpi2c0", 9, "", 0, 1, true, 68, 256, 1);
-    int rc2 = linkmap_add_entry(nl, &info2, "mctpusb0", 9, "mctpusb-alt", 12, 2, false, 256, 1024, 0);
+    int rc1 = linkmap_add_entry(nl, &info1, "mctpi2c0", 9, "", 0, 1, true, 68,
+				256, 1, 0);
+    int rc2 = linkmap_add_entry(nl, &info2, "mctpusb0", 9, "mctpusb-alt", 12, 2,
+				false, 256, 1024, 0, 0);
     if (rc1 < 0) TEST_FAIL("linkmap_add_entry 1 failed");
     else if (rc2 < 0) TEST_FAIL("linkmap_add_entry 2 failed");
     else if (nl->linkmap_count != 2) TEST_FAIL("expected 2 entries");
@@ -1386,7 +1388,8 @@ static void test_linkmap_add_entry_edge_cases(void)
     char long_name[IFNAMSIZ + 10];
     memset(long_name, 'x', sizeof(long_name));
     long_name[sizeof(long_name)-1] = '\0';
-    int rc = linkmap_add_entry(nl, &info, long_name, sizeof(long_name), "", 0, 1, true, 68, 256, 1);
+    int rc = linkmap_add_entry(nl, &info, long_name, sizeof(long_name), "", 0,
+			       1, true, 68, 256, 1, 0);
     /* Should handle gracefully (truncate or error) */
 
     /* ifaltname too long */
@@ -1394,11 +1397,13 @@ static void test_linkmap_add_entry_edge_cases(void)
     memset(long_alt, 'y', sizeof(long_alt));
     long_alt[sizeof(long_alt)-1] = '\0';
     struct ifinfomsg info2 = { .ifi_index = 51 };
-    rc = linkmap_add_entry(nl, &info2, "mctp0", 6, long_alt, sizeof(long_alt), 1, true, 68, 256, 0);
+    rc = linkmap_add_entry(nl, &info2, "mctp0", 6, long_alt, sizeof(long_alt),
+			   1, true, 68, 256, 0, 0);
 
     /* net = 0 (invalid) */
     struct ifinfomsg info3 = { .ifi_index = 52 };
-    rc = linkmap_add_entry(nl, &info3, "mctp1", 6, "", 0, 0, true, 68, 256, 0);
+    rc = linkmap_add_entry(nl, &info3, "mctp1", 6, "", 0, 0, true, 68, 256, 0,
+			   0);
 
     if (rc >= 0) TEST_FAIL("expected negative rc");
     mctp_nl_close(nl);
@@ -1766,8 +1771,9 @@ static void test_netlink_allocator_failure_paths(void)
 		int rc;
 		info.ifi_index = 33;
 		nl_fail_next_realloc = 1;
-		rc = linkmap_add_entry(nl, &info, "mctptest", strlen("mctptest"),
-				       "", 0, 1, true, 64, 254, 1);
+		rc = linkmap_add_entry(nl, &info, "mctptest",
+				       strlen("mctptest"), "", 0, 1, true, 64,
+				       254, 1, 0);
 		if (rc == 0)
 			TEST_FAIL("linkmap_add_entry should fail on realloc");
 	}
@@ -2422,12 +2428,12 @@ static void test_last_low_hanging_branches(void)
 		if (nl) {
 			struct ifinfomsg info = { 0 };
 			info.ifi_index = 61;
-			if (linkmap_add_entry(nl, &info, "mctp61", 6, "", 0, 1, true, 64,
-						128, 1) < 0)
+			if (linkmap_add_entry(nl, &info, "mctp61", 6, "", 0, 1,
+					      true, 64, 128, 1, 0) < 0)
 				TEST_FAIL("linkmap_add_entry 61 should succeed");
 			info.ifi_index = 62;
-			if (linkmap_add_entry(nl, &info, "mctp62", 6, "", 0, 1, true, 64,
-						128, 1) < 0)
+			if (linkmap_add_entry(nl, &info, "mctp62", 6, "", 0, 1,
+					      true, 64, 128, 1, 0) < 0)
 				TEST_FAIL("linkmap_add_entry 62 should succeed");
 
 			/* False path: ifname found in changes_dump. */
@@ -2836,7 +2842,7 @@ static void test_linkmap_add_no_realloc(void)
 
 	struct ifinfomsg info = { .ifi_index = 70 };
 	int rc = linkmap_add_entry(nl, &info, "mctp70", 7, "", 0, 3, true, 68,
-				   256, 1);
+				   256, 1, 0);
 	if (rc < 0)
 		TEST_FAIL("linkmap_add_entry should succeed without realloc");
 	else if (nl->linkmap_alloc != 4)
@@ -3049,7 +3055,7 @@ static void test_fill_local_addrs_realloc_fail(void)
 
 	/* Make realloc fail when fill_local_addrs tries to grow local_eids */
 	nl_fail_next_realloc = 1;
-	int rc = fill_local_addrs(nl);
+	(void)fill_local_addrs(nl);
 	/* Realloc failure causes continue (skips that EID).
 	   The EID should NOT be added to local_eids since realloc failed. */
 	struct linkmap_entry *e = entry_byindex(nl, 80);

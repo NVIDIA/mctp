@@ -290,7 +290,12 @@ class TestBridgeRoutingDeep:
     """Deeper bridge/routing flows to cover query_routing_table and should_ignore_eid."""
 
     async def test_bridge_routing_all_entries_ignored(self, dbus, mctpd):
-        """Force should_ignore_eid() true paths during bridge routing-table parse."""
+        """Exercise should_ignore_eid() during bridge routing-table parse.
+
+        Pool EIDs that appear in the routing table are ignored per AssignEndpointStatic.
+        GetRoutingTable still completes successfully: query_routing_table() does not
+        fail the D-Bus call when every entry is skipped or ignored.
+        """
         iface = mctpd.system.interfaces[0]
         bridge = Endpoint(iface, bytes([0xF2]), types=[0, 1, 5])
         bridge.add_bridged_ep(Endpoint(iface, bytes(), eid=170, types=[0, 1]))
@@ -302,8 +307,7 @@ class TestBridgeRoutingDeep:
             bridge.lladdr, 169, 170, ignore, b''
         )
         assert eid == 169
-        with pytest.raises(asyncdbus.errors.DBusError):
-            await mctp.call_get_routing_table(eid)
+        await mctp.call_get_routing_table(eid)
 
 class TestConfigBranchConditions:
     """Hit specific AND/OR branch conditions in config parsing."""

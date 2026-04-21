@@ -168,20 +168,20 @@ static void run_active_child_case(void)
 	case CC_MAIN_INVALID_TAG: {
 		char *argv[] = {"mctp-client", "foo", "1", "eid", "8", "type",
 				"control", "data", "01"};
-		(void)mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv);
-		break;
+		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
+				       argv));
 	}
 	case CC_MAIN_INVALID_EID: {
 		char *argv[] = {"mctp-client", "eid", "300", "type", "control",
 				"data", "01"};
-		(void)mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv);
-		break;
+		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
+				       argv));
 	}
 	case CC_MAIN_INVALID_TYPE: {
 		char *argv[] = {"mctp-client", "eid", "8", "type", "badtype",
 				"data", "01"};
-		(void)mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv);
-		break;
+		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
+				       argv));
 	}
 	case CC_SOCKET_FAIL:
 		stub_socket_mode = 1;
@@ -223,10 +223,11 @@ static void run_active_child_case(void)
 		break;
 	}
 	case CC_MAIN_INVALID_NET_REPARSE: {
+		/* Duplicate net tags: last wins; with stubs do_send_recv succeeds. */
 		char *argv[] = {"mctp-client", "net", "300", "net", "1", "eid",
 				"8", "type", "control", "data", "01"};
-		(void)mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv);
-		break;
+		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
+				       argv));
 	}
 	}
 }
@@ -312,12 +313,15 @@ static void test_main_parse_invalid_numeric(void)
 static void test_error_paths(void)
 {
 	static const enum child_case cases[] = {
-		CC_CREATE_EMPTY, CC_CREATE_INVALID_TOKEN, CC_CREATE_TOO_LARGE,
-		CC_CREATE_ULONG_MAX, CC_MAIN_INVALID_TAG, CC_MAIN_INVALID_EID,
-		CC_MAIN_INVALID_TYPE, CC_SOCKET_FAIL, CC_SEND_FAIL, CC_SEND_PARTIAL,
-		CC_RECV_PEEK_FAIL, CC_RECV_DATA_FAIL, CC_RECV_DATA_SHORT,
-		CC_RECV_ALLOC_FAIL, CC_CREATE_ALLOC_FAIL,
-		CC_CTRL_HDR_ASSERT, CC_MAIN_INVALID_NET_REPARSE,
+		CC_CREATE_EMPTY,      CC_CREATE_INVALID_TOKEN,
+		CC_CREATE_TOO_LARGE,  CC_CREATE_ULONG_MAX,
+		CC_MAIN_INVALID_TAG,  CC_MAIN_INVALID_EID,
+		CC_MAIN_INVALID_TYPE, CC_SOCKET_FAIL,
+		CC_SEND_FAIL,	      CC_SEND_PARTIAL,
+		CC_RECV_PEEK_FAIL,    CC_RECV_DATA_FAIL,
+		CC_RECV_DATA_SHORT,   CC_RECV_ALLOC_FAIL,
+		CC_CREATE_ALLOC_FAIL, CC_CTRL_HDR_ASSERT,
+		/* CC_MAIN_INVALID_NET_REPARSE succeeds with stubs; not a failure case */
 	};
 	size_t i;
 

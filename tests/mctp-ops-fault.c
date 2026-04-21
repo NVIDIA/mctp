@@ -28,6 +28,10 @@
 
 #include "mctp-ops.h"
 
+#if OPS_SD_EVENT
+#include <systemd/sd-event.h>
+#endif
+
 /* Fault injection state — set these before calling a function to make it fail.
  * NOT static: test code (test_mctpd_fault.c) sets these externally. */
 int fault_mctp_socket_errno = 0;
@@ -349,6 +353,12 @@ const struct mctp_ops mctp_ops = {
         .recvfrom = fi_nl_recvfrom,
         .close = fi_mctp_close,
     },
+#if OPS_SD_EVENT
+    .sd_event = {
+        .add_time_relative = sd_event_add_time_relative,
+        .source_set_time_relative = sd_event_source_set_time_relative,
+    },
+#endif
     .bug_warn = fi_bug_warn,
 };
 

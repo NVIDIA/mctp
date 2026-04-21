@@ -1,4 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * mctp-bench: small MCTP benchmarking utility
+ *
+ * Copyright (c) 2024-2025 Code Construct
+ */
+
 #define _XOPEN_SOURCE 700
+
 #include <time.h>
 #include <err.h>
 #include <errno.h>
@@ -12,8 +20,6 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/prctl.h>
-#include <sys/prctl.h>
 #include <assert.h>
 #include <sys/random.h>
 
@@ -683,7 +689,10 @@ static int command(mctp_eid_t eid, int net, enum command command,
 	req->magic = COMMAND_MAGIC;
 	req->version = COMMAND_VERSION;
 	req->command = command;
-	getrandom(&req->iid, sizeof(req->iid), 0);
+	/* on a recent kernel (ie., any with MCTP support), getrandom is
+	 * infallible with <=256-byte lengths
+	 */
+	(void)getrandom(&req->iid, sizeof(req->iid), 0);
 	memcpy(req->body, body, body_len);
 
 	rc = sendto(sd, req, req_len, 0, (struct sockaddr *)&addr,

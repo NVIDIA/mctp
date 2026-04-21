@@ -75,30 +75,6 @@ struct mctp_ctrl_cmd_get_mctp_ver_support {
 	uint8_t msg_type_number;
 } __attribute__((__packed__));
 
-typedef enum {
-	alloc_eid = 0,
-	force_alloc = 1,
-	get_alloc_info = 2,
-	reserved = 3
-} mctp_ctrl_cmd_alloc_eid_op;
-
-struct mctp_ctrl_cmd_alloc_eid {
-	struct mctp_ctrl_msg_hdr ctrl_hdr;
-	mctp_ctrl_cmd_alloc_eid_op alloc_eid_op : 2;
-	uint8_t : 6;
-	uint8_t pool_size;
-	uint8_t start_eid;
-} __attribute__((__packed__));
-
-struct mctp_ctrl_resp_alloc_eid {
-	struct mctp_ctrl_msg_hdr ctrl_hdr;
-	uint8_t completion_code;
-	uint8_t status : 2;
-	uint8_t : 6;
-	uint8_t eid_pool_size;
-	uint8_t eid_set;
-} __attribute__((__packed__));
-
 #define MCTP_GET_VERSION_SUPPORT_BASE_INFO 0xFF
 
 struct mctp_ctrl_resp_get_mctp_ver_support {
@@ -220,6 +196,27 @@ struct routing_info_entry {
 	uint8_t first_eid;
 	uint8_t phys_address[1];
 } __attribute__((__packed__));
+typedef enum {
+	mctp_ctrl_cmd_allocate_eids_alloc_eids = 0,
+	mctp_ctrl_cmd_allocate_eids_force_alloc = 1,
+	mctp_ctrl_cmd_allocate_eids_get_alloc_info = 2,
+	mctp_ctrl_cmd_allocate_eids_reserved = 3
+} mctp_ctrl_cmd_allocate_eids_op;
+
+struct mctp_ctrl_cmd_allocate_eids {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	uint8_t alloc_eid_op;
+	uint8_t pool_size;
+	uint8_t start_eid;
+} __attribute__((__packed__));
+
+struct mctp_ctrl_resp_allocate_eids {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	uint8_t completion_code;
+	uint8_t status;
+	uint8_t eid_pool_size;
+	uint8_t eid_set;
+} __attribute__((__packed__));
 
 #define MCTP_CTRL_HDR_MSG_TYPE 0
 #define MCTP_CTRL_HDR_FLAG_REQUEST (1 << 7)
@@ -294,6 +291,28 @@ struct routing_info_entry {
 	 << MCTP_EID_ASSIGNMENT_STATUS_SHIFT)
 #define MCTP_SET_EID_ACCEPTED 0x0
 #define MCTP_SET_EID_REJECTED 0x1
+
+/* MCTP Get Endpoint ID request and response fields
+ * See DSP0236 v1.3.0 Table 15.
+ */
+#define MCTP_GET_EID_EP_TYPE_SHIFT 4
+#define MCTP_GET_EID_EP_TYPE_MASK 0x03
+#define GET_MCTP_GET_EID_EP_TYPE(field) \
+	(((field) >> MCTP_GET_EID_EP_TYPE_SHIFT) & MCTP_GET_EID_EP_TYPE_MASK)
+#define MCTP_GET_EID_EP_TYPE_EP 0
+#define MCTP_GET_EID_EP_TYPE_BRIDGE 1
+
+#define MCTP_GET_EID_EID_TYPE_SHIFT 0
+#define MCTP_GET_EID_EID_TYPE_MASK 0x03
+#define GET_MCTP_GET_EID_EID_TYPE(field) \
+	(((field) >> MCTP_GET_EID_EID_TYPE_SHIFT) & MCTP_GET_EID_EID_TYPE_MASK)
+#define MCTP_GET_EID_EID_TYPE_DYNAMIC 0
+/* Static EID is supported, may or may not match current */
+#define MCTP_GET_EID_EID_TYPE_STATIC 1
+/* Current eid is the same as static */
+#define MCTP_GET_EID_EID_TYPE_STATIC_SAME 2
+/* Current eid is different from static */
+#define MCTP_GET_EID_EID_TYPE_STATIC_DIFFERENT 3
 
 #define MCTP_EID_ALLOCATION_STATUS_SHIFT 0x0
 #define MCTP_EID_ALLOCATION_STATUS_MASK 0x3
@@ -391,3 +410,21 @@ static inline void mctp_ctrl_msg_hdr_init_resp(struct mctp_ctrl_msg_hdr *resp,
 	resp->command_code = req.command_code;
 	resp->rq_dgram_inst = (req.rq_dgram_inst & RQDI_IID_MASK) | RQDI_RESP;
 }
+
+/* MCTP IDs and Codes from DMTF specification
+ * "DSP0239 Management Component Transport Protocol (MCTP) IDs and Codes"
+ * https://www.dmtf.org/sites/default/files/standards/documents/DSP0239_1.11.1.pdf
+ */
+enum mctp_phys_binding {
+	MCTP_PHYS_BINDING_UNSPEC = 0x00,
+	MCTP_PHYS_BINDING_SMBUS = 0x01,
+	MCTP_PHYS_BINDING_PCIE_VDM = 0x02,
+	MCTP_PHYS_BINDING_USB = 0x03,
+	MCTP_PHYS_BINDING_KCS = 0x04,
+	MCTP_PHYS_BINDING_SERIAL = 0x05,
+	MCTP_PHYS_BINDING_I3C = 0x06,
+	MCTP_PHYS_BINDING_MMBI = 0x07,
+	MCTP_PHYS_BINDING_PCC = 0x08,
+	MCTP_PHYS_BINDING_UCIE = 0x09,
+	MCTP_PHYS_BINDING_VENDOR = 0xFF,
+};

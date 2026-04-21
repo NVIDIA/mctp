@@ -38,20 +38,7 @@
 #define MCTP_DIR_TX 0
 #define MCTP_DIR_RX 1
 
-/* MCTP Binding Types (must match kernel values in linux/mctp.h) */
-enum mctp_phys_binding {
-	MCTP_PHYS_BINDING_UNSPEC = 0x00,
-	MCTP_PHYS_BINDING_SMBUS = 0x01,
-	MCTP_PHYS_BINDING_PCIE_VDM = 0x02,
-	MCTP_PHYS_BINDING_USB = 0x03,
-	MCTP_PHYS_BINDING_KCS = 0x04,
-	MCTP_PHYS_BINDING_SERIAL = 0x05,
-	MCTP_PHYS_BINDING_I3C = 0x06,
-	MCTP_PHYS_BINDING_MMBI = 0x07,
-	MCTP_PHYS_BINDING_PCC = 0x08,
-	MCTP_PHYS_BINDING_UCIE = 0x09,
-	MCTP_PHYS_BINDING_VENDOR = 0xFF,
-};
+#include "mctp-control-spec.h"
 
 /* MCTP Physical Media Type Identifiers as per DSP0236 (v1.7.1) - Table 2 */
 enum mctp_phys_media_type {

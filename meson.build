@@ -3,7 +3,7 @@
 project(
     'mctp', 'c',
     meson_version: '>= 0.59.0',
-    version: 'v2.2',
+    version: 'v2.5',
     license: 'GPLv2',
     default_options: [
         'warning_level=2',
@@ -24,6 +24,10 @@ conf.set10('HAVE_LINUX_MCTP_H',
 conf.set10('HAVE_STRUCT_MCTP_FQ_ADDR',
     cc.has_type('struct mctp_fq_addr', prefix: '#include <linux/mctp.h>'),
     description: 'Is struct mctp_fq_addr available?'
+)
+conf.set10('HAVE_IFLA_MCTP_PHYS_BINDING',
+    cc.has_header_symbol('linux/if_link.h', 'IFLA_MCTP_PHYS_BINDING'),
+    description: 'Is IFLA_MCTP_PHYS_BINDING enum member available?'
 )
 conf.set10('MCTPD_RECOVER_NIL_UUID',
     get_option('unsafe-recover-nil-uuid'),
@@ -94,6 +98,7 @@ if libsystemd.found()
         dependencies: [libsystemd, toml_dep],
         install: true,
         install_dir: get_option('sbindir'),
+        c_args: ['-DOPS_SD_EVENT=1'],
     )
 
     mctpd_test = executable('test-mctpd',
@@ -102,6 +107,7 @@ if libsystemd.found()
         ] + test_ops_sources + netlink_sources + util_sources,
         include_directories:  include_directories('src'),
         dependencies: [libsystemd, toml_dep],
+        c_args: ['-DOPS_SD_EVENT=1'],
     )
 endif
 
@@ -117,7 +123,7 @@ netlink_unit_test = executable('test-mctp-netlink-unit',
 )
 
 mctp_client_unit_test = executable('test-mctp-client-unit',
-    sources: ['tests/test_mctp_client_unit.c'],
+    sources: ['tests/test_mctp_client_unit.c'] + util_sources,
     include_directories: include_directories('src'),
 )
 
@@ -139,6 +145,7 @@ if libsystemd.found()
         ] + netlink_sources + util_sources,
         include_directories: include_directories('src'),
         dependencies: [libsystemd, toml_dep],
+        c_args: ['-DOPS_SD_EVENT=1'],
     )
 endif
 
