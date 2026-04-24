@@ -12,7 +12,7 @@ struct mctp_nl;
 typedef struct mctp_nl mctp_nl;
 
 struct mctp_nl_change {
-#define MCTP_NL_OP_COUNT 6
+#define MCTP_NL_OP_COUNT 7
 	enum {
 		MCTP_NL_ADD_LINK,
 		MCTP_NL_DEL_LINK,
