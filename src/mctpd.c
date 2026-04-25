@@ -933,7 +933,13 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 		return reply_message(ctx, sd, resp, resp_len, addr);
 	case MCTP_SET_EID_FORCE:
 
-		fprintf(stderr, "setting EID to %d\n", req->eid);
+		fprintf(stderr, "Trying to set EID to %d\n", req->eid);
+		if (find_peer_by_addr(ctx, req->eid, addr->smctp_base.smctp_network)) {
+			warnx("EID %d already assigned", req->eid);
+			resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+			resp_len = sizeof(struct mctp_ctrl_resp);
+			return reply_message(ctx, sd, resp, resp_len, addr);
+		}
 
 		// When we are assigned a new EID, assume our world view of the
 		// network reachable from this interface has been stale. Reset
