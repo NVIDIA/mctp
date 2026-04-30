@@ -4594,7 +4594,7 @@ static int method_net_learn_endpoint(sd_bus_message *call, void *data,
 	struct ctx *ctx = net->ctx;
 	dest_phys dest = { 0 };
 	mctp_eid_t eid = 0;
-	struct peer *peer;
+	struct peer *peer = NULL;
 	int rc;
 
 	rc = sd_bus_message_read(call, "y", &eid);
@@ -4628,6 +4628,10 @@ static int method_net_learn_endpoint(sd_bus_message *call, void *data,
 		goto err;
 	return sd_bus_reply_method_return(call, "sb", peer_path, 1);
 err:
+	if (peer) {
+		remove_peer(peer);
+	}
+
 	set_berr(ctx, rc, berr);
 	return rc;
 }
