@@ -314,6 +314,8 @@ static int add_interface(struct ctx *ctx, int ifindex);
 static int endpoint_allocate_eid(struct peer *peer);
 static int query_routing_table(struct peer *peer);
 static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid);
+static int add_pool_gw_routes_ignore_aware(struct peer *peer);
+static int del_pool_gw_routes_ignore_aware(struct peer *peer);
 static int endpoint_send_routing_info_update(struct peer *peer,
 					     mctp_eid_t first_eid,
 					     uint8_t range, uint8_t entry_type,
@@ -4057,13 +4059,7 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 					 peer->phys.ifindex, NULL, peer->mtu);
 	} else if (type == RTM_DELROUTE) {
 		if (peer->pool_size > 0) {
-			int rc = 0;
-			struct mctp_fq_addr gw_addr = { 0 };
-			gw_addr.net = peer->net;
-			gw_addr.eid = peer->eid;
-			rc = mctp_nl_route_del(peer->ctx->nl, peer->pool_start,
-					       peer->pool_size - 1, 0,
-					       &gw_addr);
+			int rc = del_pool_gw_routes_ignore_aware(peer);
 			if (rc < 0)
 				warnx("failed to delete route for peer pool eids %d-%d %s",
 				      peer->pool_start,
@@ -6300,15 +6296,18 @@ static int endpoint_allocate_eid(struct peer *peer)
 	/* Add gateway route for all bridge's downstream EIDs.
 	* After allocation, the endpoint may initiate communication
 	* immediately, so set up routes for downstream endpoints beforehand.
+	* Any EIDs in the ignore list are excluded; routes are installed
+	* per-EID (extent 0) so late-discovered peers inside the range can
+	* coexist without colliding with a range route.
 	*/
-	struct mctp_fq_addr gw_addr = { 0 };
-	gw_addr.net = peer->net;
-	gw_addr.eid = peer->eid;
-	rc = mctp_nl_route_add(peer->ctx->nl, peer->pool_start,
-			       peer->pool_size - 1, 0, &gw_addr, peer->mtu);
+	rc = add_pool_gw_routes_ignore_aware(peer);
 	if (rc < 0 && rc != -EEXIST) {
-		warnx("Failed to add gateway route for EID %d: %s", gw_addr.eid,
+		warnx("Failed to add gateway route for EID %d: %s", peer->eid,
 		      strerror(-rc));
+		int drc = del_pool_gw_routes_ignore_aware(peer);
+		if (drc < 0)
+			warnx("Rollback of partial pool gw routes failed: %s",
+			      strerror(-drc));
 		return rc;
 	}
 
@@ -6320,8 +6319,7 @@ static int endpoint_allocate_eid(struct peer *peer)
 		warnx("%s failed to allocate endpoints, returned %s %d\n",
 		      __func__, strerror(-rc), rc);
 		// delete prior set routes for downstream endpoints
-		rc = mctp_nl_route_del(peer->ctx->nl, peer->pool_start,
-				       peer->pool_size - 1, 0, &gw_addr);
+		rc = del_pool_gw_routes_ignore_aware(peer);
 		if (rc < 0)
 			warnx("failed to delete route for peer pool eids %d-%d %s",
 			      peer->pool_start,
@@ -6708,6 +6706,75 @@ static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid)
 		}
 	}
 	return false;
+}
+
+/*
+ * Walk the bridge peer's downstream pool [pool_start .. pool_start+pool_size-1]
+ * and install (or remove) a separate gateway route per EID, skipping any EID
+ * flagged by should_ignore_eid(). The peer's own EID/net is used as the
+ * gateway. extent is 0 on every call so each route covers exactly one EID.
+ *
+ * Per-EID (rather than range) routes are used so that late-discovered peers
+ * inside the pool range don't collide with an existing range route — the
+ * kernel rejects single-EID adds that overlap a range with -EEXIST.
+ *
+ * On add, -EEXIST is tolerated (an existing route for that EID is left in
+ * place). On delete, errors are logged but iteration continues so as many
+ * EIDs as possible are cleaned up; the first error is returned.
+ */
+static int walk_pool_gw_routes(struct peer *peer, bool adding)
+{
+	if (peer->pool_size == 0)
+		return 0;
+
+	struct mctp_fq_addr gw_addr = { 0 };
+	gw_addr.net = peer->net;
+	gw_addr.eid = peer->eid;
+
+	const int pool_end = peer->pool_start + peer->pool_size - 1;
+	int first_err = 0;
+
+	for (int eid = peer->pool_start; eid <= pool_end; eid++) {
+		if (should_ignore_eid(peer, (mctp_eid_t)eid))
+			continue;
+
+		int rc;
+		if (adding) {
+			rc = mctp_nl_route_add(peer->ctx->nl, (uint8_t)eid, 0,
+					       0, &gw_addr, peer->mtu);
+			if (rc < 0 && rc != -EEXIST) {
+				warnx("Failed to add gateway route for EID %d via %d: %s",
+				      eid, gw_addr.eid, strerror(-rc));
+				return rc;
+			}
+		} else {
+			rc = mctp_nl_route_del(peer->ctx->nl, (uint8_t)eid, 0,
+					       0, &gw_addr);
+			if (rc < 0) {
+				warnx("Failed to delete gateway route for EID %d via %d: %s",
+				      eid, gw_addr.eid, strerror(-rc));
+				if (!first_err)
+					first_err = rc;
+			}
+		}
+		if (peer->ctx->verbose)
+			fprintf(stderr,
+				"%s gateway route EID %d via %d (net %d)\n",
+				adding ? "added" : "deleted", eid, gw_addr.eid,
+				gw_addr.net);
+	}
+
+	return first_err;
+}
+
+static int add_pool_gw_routes_ignore_aware(struct peer *peer)
+{
+	return walk_pool_gw_routes(peer, true);
+}
+
+static int del_pool_gw_routes_ignore_aware(struct peer *peer)
+{
+	return walk_pool_gw_routes(peer, false);
 }
 
 static int endpoint_send_routing_info_update(struct peer *peer,
