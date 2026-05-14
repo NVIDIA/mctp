@@ -1050,6 +1050,61 @@ async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
     assert neigh.eid == static_eid
     assert len(mctpd.system.routes) == 2
 
+""" Bridge pool: gateway routes are installed per-EID with extent 0 for every
+pool EID *except* those in ignore_eids, and use the bridge's own EID as gw."""
+async def test_pool_gw_routes_skip_ignore_eids(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    bridge = mctpd.network.endpoints[0]
+    bridge.types = [0, 1, 5]
+
+    bridge_eid = 12
+    pool_start = 13
+    pool_size = 5
+    ignore_eids = bytes([14, 16])
+    ignore_message_types = b''
+
+    for _ in range(pool_size):
+        bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
+
+    mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
+    (eid, _, _, _) = await mctp.call_assign_endpoint_static(
+        bridge.lladdr,
+        bridge_eid,
+        pool_start,
+        ignore_eids,
+        ignore_message_types,
+    )
+    assert eid == bridge_eid
+
+    pool_eids = set(range(pool_start, pool_start + pool_size))
+    ignored = set(ignore_eids)
+    expected_gw_eids = pool_eids - ignored
+
+    gw_routes = {}
+    for rt in mctpd.system.routes:
+        if rt.gw is not None and rt.gw[1] == bridge_eid:
+            assert rt.start_eid == rt.end_eid, (
+                f"pool gw route {rt} must be per-EID (extent 0), "
+                f"got range {rt.start_eid}-{rt.end_eid}"
+            )
+            gw_routes[rt.start_eid] = rt
+
+    for e in expected_gw_eids:
+        assert e in gw_routes, (
+            f"missing gateway route for pool EID {e} via bridge {bridge_eid}; "
+            f"installed gw routes: {sorted(gw_routes)}"
+        )
+
+    for e in ignored:
+        assert e not in gw_routes, (
+            f"unexpected gateway route for ignored EID {e}; "
+            f"installed gw routes: {sorted(gw_routes)}"
+        )
+
+    assert set(gw_routes) == expected_gw_eids, (
+        f"gw route set {sorted(gw_routes)} != expected {sorted(expected_gw_eids)}"
+    )
+
 """ Test that we use the minimum EID from the dynamic_eid_range config """
 async def test_config_dyn_eid_range_min(nursery, dbus, sysnet):
     (min_dyn_eid, max_dyn_eid) = (20, 254)
