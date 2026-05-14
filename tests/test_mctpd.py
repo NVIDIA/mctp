@@ -1105,6 +1105,103 @@ async def test_pool_gw_routes_skip_ignore_eids(dbus, mctpd):
         f"gw route set {sorted(gw_routes)} != expected {sorted(expected_gw_eids)}"
     )
 
+async def _setup_bridge_with_pool(dbus, mctpd, bridge_eid, pool_start,
+                                  pool_size, ignore_eids):
+    iface = mctpd.system.interfaces[0]
+    bridge = mctpd.network.endpoints[0]
+    bridge.types = [0, 1, 5]
+
+    for _ in range(pool_size):
+        bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
+
+    mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
+    (eid, _, path, _) = await mctp.call_assign_endpoint_static(
+        bridge.lladdr,
+        bridge_eid,
+        pool_start,
+        ignore_eids,
+        b'',
+    )
+    assert eid == bridge_eid
+    return bridge, path
+
+def _pool_gw_route_eids(routes, bridge_eid):
+    found = {}
+    for rt in routes:
+        if rt.gw is not None and rt.gw[1] == bridge_eid:
+            assert rt.start_eid == rt.end_eid, (
+                f"pool gw route {rt} must be per-EID (extent 0), "
+                f"got range {rt.start_eid}-{rt.end_eid}"
+            )
+            found[rt.start_eid] = rt
+    return found
+
+""" Empty ignore_eids: every pool EID must still get its own per-EID gw route
+(extent 0). Regression guard against falling back to a single range route. """
+async def test_pool_gw_routes_empty_ignore_list(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 4
+    _, _ = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, b''
+    )
+
+    gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert set(gw_routes) == set(range(pool_start, pool_start + pool_size))
+
+""" Whole pool in ignore list: walker must iterate every EID through the
+should_ignore_eid() continue branch and install zero gw routes, without
+errors. """
+async def test_pool_gw_routes_whole_pool_ignored(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 3
+    ignore_eids = bytes(range(pool_start, pool_start + pool_size))
+    _, _ = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+    )
+
+    gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert gw_routes == {}, (
+        f"expected no gw routes when whole pool is ignored, got {sorted(gw_routes)}"
+    )
+
+""" Ignore list disjoint from pool: should_ignore_eid() never matches, so
+every pool EID gets a gw route. Catches a bug where the ignore lookup
+matched by index rather than EID value. """
+async def test_pool_gw_routes_disjoint_ignore_list(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 4
+    ignore_eids = bytes([200, 201, 202])
+    _, _ = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+    )
+
+    gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert set(gw_routes) == set(range(pool_start, pool_start + pool_size))
+
+""" Delete path: removing the bridge peer must drop every gw route that the
+add path installed, exercising del_pool_gw_routes_ignore_aware (the
+adding=false branch of walk_pool_gw_routes). Ignored EIDs were never
+installed and must not be requested for deletion. """
+async def test_pool_gw_routes_delete_path_honors_ignore(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 5
+    ignore_eids = bytes([14, 16])
+    bridge, ep_path = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+    )
+
+    before = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    expected_installed = set(range(pool_start, pool_start + pool_size)) - set(ignore_eids)
+    assert set(before) == expected_installed, (
+        f"precondition: gw routes after add = {sorted(before)}, "
+        f"expected {sorted(expected_installed)}"
+    )
+
+    ep = await mctpd_mctp_endpoint_control_obj(dbus, ep_path)
+    await ep.call_remove()
+
+    after = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert after == {}, (
+        f"gw routes remaining after Remove: {sorted(after)} "
+        f"(should be empty)"
+    )
+
 """ Test that we use the minimum EID from the dynamic_eid_range config """
 async def test_config_dyn_eid_range_min(nursery, dbus, sysnet):
     (min_dyn_eid, max_dyn_eid) = (20, 254)
