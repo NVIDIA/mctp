@@ -4443,6 +4443,10 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 		mctp_eid_t new_eid;
 
 		rc = query_get_peer_uuid_by_phys(ctx, &peer->phys, uuid);
+		if (rc == -ENOTSUP) {
+			uuid[15] = peer->eid;
+			rc = 0;
+		}
 		if (!rc && peer->uuid) {
 			static_assert(sizeof(uuid) == sizeof(nil_uuid),
 				      "Unsynchronized UUID sizes");
@@ -4496,6 +4500,10 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 
 		/* Query UUID by EID instead of physical address to avoid bridge UUID responses */
 		rc = query_get_peer_uuid(peer, uuid);
+		if (rc == -ENOTSUP) {
+			uuid[15] = peer->eid;
+			rc = 0;
+		}
 		if (rc) {
 			remove_peer(peer);
 			return rc;

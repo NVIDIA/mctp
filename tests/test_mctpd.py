@@ -348,6 +348,61 @@ async def test_assign_endpoint_static(dbus, mctpd):
     assert neigh.eid == static_eid
     assert len(mctpd.system.routes) == 2
 
+async def test_recover_endpoint_without_uuid_keeps_eid(dbus, mctpd):
+    class NoUuidEndpoint(Endpoint):
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            if opcode != 3:
+                return await super().handle_mctp_control(sock, src_addr, msg)
+
+            dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+            rsp_flags = flags & 0x1f
+            await sock.send(dst_addr, bytes([rsp_flags, opcode, 0x05]))
+
+    iface = mctpd.system.interfaces[0]
+    dev = NoUuidEndpoint(iface, bytes([0x1d]))
+    mctpd.network.endpoints[0] = dev
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 210
+    start_eid = 0
+
+    (eid, _, path, new) = await mctp.call_assign_endpoint_static(
+        dev.lladdr,
+        static_eid,
+        start_eid,
+        b'',
+        b''
+    )
+
+    assert eid == static_eid
+    assert dev.eid == static_eid
+    assert new
+
+    ep = await dbus.get_proxy_object(MCTPD_C, path)
+    ep_props = await ep.get_interface(DBUS_PROPERTIES_I)
+
+    recovered = trio.Semaphore(initial_value=0)
+
+    def ep_connectivity_changed(iface, changed, invalidated):
+        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
+            if 'Available' == changed['Connectivity'].value:
+                recovered.release()
+
+    await ep_props.on_properties_changed(ep_connectivity_changed)
+
+    dev.reset()
+
+    ep_ep = await ep.get_interface(MCTPD_ENDPOINT_I)
+    await ep_ep.call_recover()
+
+    with trio.move_on_after(2 * MCTPD_TRECLAIM) as expected:
+        await recovered.acquire()
+
+    assert not expected.cancelled_caught
+    assert dev.eid == static_eid
+    assert mctpd.system.lookup_neighbour(iface, static_eid) is not None
+    assert mctpd.system.lookup_route(iface.net, static_eid) is not None
+
 """ Test that we can repeat an AssignEndpointStatic call with the same static
 EID"""
 async def test_assign_endpoint_static_allocated(dbus, mctpd):
@@ -1628,4 +1683,3 @@ async def test_local_eid_exposed_on_endpoint(dbus, mctpd):
     # The default system has local EID 8 assigned to the interface
     assert local_eid == 8, \
         f"Expected LocalEID 8 but got {local_eid}"
-
