@@ -86,6 +86,8 @@ static void test_get_binding_from_ifname(void)
     CHECK_STR(get_binding_from_ifname("mctpusb0"), "USB");
     /* spi branch */
     CHECK_STR(get_binding_from_ifname("mctpspi0"), "SPI");
+    /* pcie branch */
+    CHECK_STR(get_binding_from_ifname("mctppcie0"), "PCIe");
     /* irot branch */
     CHECK_STR(get_binding_from_ifname("mctpirot0"), "VDM");
     /* vrot branch */
@@ -115,6 +117,7 @@ static void test_binding_and_media_ids(void)
     check_u8("media SMBus", get_media_type_id_from_string("SMBus"), MCTP_PHYS_MEDIA_I2C_400KHZ);
     check_u8("media USB", get_media_type_id_from_string("USB"), MCTP_PHYS_MEDIA_USB_2_0);
     check_u8("media SPI", get_media_type_id_from_string("SPI"), MCTP_PHYS_MEDIA_UNSPEC);
+    check_u8("media PCIe", get_media_type_id_from_string("PCIe"), MCTP_PHYS_MEDIA_PCIE_3_0);
     check_u8("media I3C", get_media_type_id_from_string("I3C"), MCTP_PHYS_MEDIA_I3C_BASIC);
     check_u8("media unknown", get_media_type_id_from_string("zzz"), MCTP_PHYS_MEDIA_UNSPEC);
 }
