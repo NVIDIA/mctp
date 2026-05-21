@@ -366,6 +366,62 @@ async def test_assign_endpoint_static(dbus, mctpd):
     assert len(mctpd.system.routes) == 2
 
 
+async def test_recover_endpoint_without_uuid_keeps_eid(dbus, mctpd):
+    class NoUuidEndpoint(Endpoint):
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            if opcode != 3:
+                return await super().handle_mctp_control(sock, src_addr, msg)
+
+            dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+            rsp_flags = flags & 0x1f
+            await sock.send(dst_addr, bytes([rsp_flags, opcode, 0x05]))
+
+    iface = mctpd.system.interfaces[0]
+    dev = NoUuidEndpoint(iface, bytes([0x1d]))
+    mctpd.network.endpoints[0] = dev
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 210
+    start_eid = 0
+
+    (eid, _, path, new) = await mctp.call_assign_endpoint_static(
+        dev.lladdr,
+        static_eid,
+        start_eid,
+        b'',
+        b''
+    )
+
+    assert eid == static_eid
+    assert dev.eid == static_eid
+    assert new
+
+    ep = await dbus.get_proxy_object(MCTPD_C, path)
+    ep_props = await ep.get_interface(DBUS_PROPERTIES_I)
+
+    recovered = trio.Semaphore(initial_value=0)
+
+    def ep_connectivity_changed(iface, changed, invalidated):
+        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
+            if 'Available' == changed['Connectivity'].value:
+                recovered.release()
+
+    await ep_props.on_properties_changed(ep_connectivity_changed)
+
+    dev.reset()
+
+    ep_ep = await ep.get_interface(MCTPD_ENDPOINT_I)
+    await ep_ep.call_recover()
+
+    with trio.move_on_after(2 * MCTPD_TRECLAIM) as expected:
+        await recovered.acquire()
+
+    assert not expected.cancelled_caught
+    assert dev.eid == static_eid
+    assert mctpd.system.lookup_neighbour(iface, static_eid) is not None
+    assert mctpd.system.lookup_route(iface.net, static_eid) is not None
+
+
 async def test_assign_endpoint_static_allocated(dbus, mctpd):
     """Test that we can repeat an AssignEndpointStatic call with the same
     static EID
@@ -1065,6 +1121,158 @@ async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
     assert neigh.lladdr == dev.lladdr
     assert neigh.eid == static_eid
     assert len(mctpd.system.routes) == 2
+
+""" Bridge pool: gateway routes are installed per-EID with extent 0 for every
+pool EID *except* those in ignore_eids, and use the bridge's own EID as gw."""
+async def test_pool_gw_routes_skip_ignore_eids(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    bridge = mctpd.network.endpoints[0]
+    bridge.types = [0, 1, 5]
+
+    bridge_eid = 12
+    pool_start = 13
+    pool_size = 5
+    ignore_eids = bytes([14, 16])
+    ignore_message_types = b''
+
+    for _ in range(pool_size):
+        bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
+
+    mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
+    (eid, _, _, _) = await mctp.call_assign_endpoint_static(
+        bridge.lladdr,
+        bridge_eid,
+        pool_start,
+        ignore_eids,
+        ignore_message_types,
+    )
+    assert eid == bridge_eid
+
+    pool_eids = set(range(pool_start, pool_start + pool_size))
+    ignored = set(ignore_eids)
+    expected_gw_eids = pool_eids - ignored
+
+    gw_routes = {}
+    for rt in mctpd.system.routes:
+        if rt.gw is not None and rt.gw[1] == bridge_eid:
+            assert rt.start_eid == rt.end_eid, (
+                f"pool gw route {rt} must be per-EID (extent 0), "
+                f"got range {rt.start_eid}-{rt.end_eid}"
+            )
+            gw_routes[rt.start_eid] = rt
+
+    for e in expected_gw_eids:
+        assert e in gw_routes, (
+            f"missing gateway route for pool EID {e} via bridge {bridge_eid}; "
+            f"installed gw routes: {sorted(gw_routes)}"
+        )
+
+    for e in ignored:
+        assert e not in gw_routes, (
+            f"unexpected gateway route for ignored EID {e}; "
+            f"installed gw routes: {sorted(gw_routes)}"
+        )
+
+    assert set(gw_routes) == expected_gw_eids, (
+        f"gw route set {sorted(gw_routes)} != expected {sorted(expected_gw_eids)}"
+    )
+
+async def _setup_bridge_with_pool(dbus, mctpd, bridge_eid, pool_start,
+                                  pool_size, ignore_eids):
+    iface = mctpd.system.interfaces[0]
+    bridge = mctpd.network.endpoints[0]
+    bridge.types = [0, 1, 5]
+
+    for _ in range(pool_size):
+        bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
+
+    mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
+    (eid, _, path, _) = await mctp.call_assign_endpoint_static(
+        bridge.lladdr,
+        bridge_eid,
+        pool_start,
+        ignore_eids,
+        b'',
+    )
+    assert eid == bridge_eid
+    return bridge, path
+
+def _pool_gw_route_eids(routes, bridge_eid):
+    found = {}
+    for rt in routes:
+        if rt.gw is not None and rt.gw[1] == bridge_eid:
+            assert rt.start_eid == rt.end_eid, (
+                f"pool gw route {rt} must be per-EID (extent 0), "
+                f"got range {rt.start_eid}-{rt.end_eid}"
+            )
+            found[rt.start_eid] = rt
+    return found
+
+""" Empty ignore_eids: every pool EID must still get its own per-EID gw route
+(extent 0). Regression guard against falling back to a single range route. """
+async def test_pool_gw_routes_empty_ignore_list(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 4
+    _, _ = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, b''
+    )
+
+    gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert set(gw_routes) == set(range(pool_start, pool_start + pool_size))
+
+""" Whole pool in ignore list: walker must iterate every EID through the
+should_ignore_eid() continue branch and install zero gw routes, without
+errors. """
+async def test_pool_gw_routes_whole_pool_ignored(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 3
+    ignore_eids = bytes(range(pool_start, pool_start + pool_size))
+    _, _ = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+    )
+
+    gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert gw_routes == {}, (
+        f"expected no gw routes when whole pool is ignored, got {sorted(gw_routes)}"
+    )
+
+""" Ignore list disjoint from pool: should_ignore_eid() never matches, so
+every pool EID gets a gw route. Catches a bug where the ignore lookup
+matched by index rather than EID value. """
+async def test_pool_gw_routes_disjoint_ignore_list(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 4
+    ignore_eids = bytes([200, 201, 202])
+    _, _ = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+    )
+
+    gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert set(gw_routes) == set(range(pool_start, pool_start + pool_size))
+
+""" Delete path: removing the bridge peer must drop every gw route that the
+add path installed, exercising del_pool_gw_routes_ignore_aware (the
+adding=false branch of walk_pool_gw_routes). Ignored EIDs were never
+installed and must not be requested for deletion. """
+async def test_pool_gw_routes_delete_path_honors_ignore(dbus, mctpd):
+    bridge_eid, pool_start, pool_size = 12, 13, 5
+    ignore_eids = bytes([14, 16])
+    bridge, ep_path = await _setup_bridge_with_pool(
+        dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+    )
+
+    before = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    expected_installed = set(range(pool_start, pool_start + pool_size)) - set(ignore_eids)
+    assert set(before) == expected_installed, (
+        f"precondition: gw routes after add = {sorted(before)}, "
+        f"expected {sorted(expected_installed)}"
+    )
+
+    ep = await mctpd_mctp_endpoint_control_obj(dbus, ep_path)
+    await ep.call_remove()
+
+    after = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
+    assert after == {}, (
+        f"gw routes remaining after Remove: {sorted(after)} "
+        f"(should be empty)"
+    )
 
 """ Test that we use the minimum EID from the dynamic_eid_range config """
 async def test_config_dyn_eid_range_min(nursery, dbus, sysnet):

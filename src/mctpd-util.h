@@ -161,6 +161,8 @@ static inline uint8_t get_media_type_id_from_string(const char *media_type_str)
 		return MCTP_PHYS_MEDIA_USB_2_0;
 	if (strncmp(media_type_str, "SPI", 3) == 0)
 		return MCTP_PHYS_MEDIA_UNSPEC;
+	if (strncmp(media_type_str, "PCIe", 4) == 0)
+		return MCTP_PHYS_MEDIA_PCIE_3_0;
 	if (strncmp(media_type_str, "I3C", 3) == 0)
 		return MCTP_PHYS_MEDIA_I3C_BASIC;
 	return MCTP_PHYS_MEDIA_UNSPEC;
@@ -177,6 +179,8 @@ const char *get_binding_from_ifname(const char *ifname)
 		return "USB";
 	if (strstr(ifname, "spi"))
 		return "SPI";
+	if (strstr(ifname, "pcie"))
+		return "PCIe";
 	if (strstr(ifname, "irot"))
 		return "VDM";
 	if (strstr(ifname, "vrot"))
