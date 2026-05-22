@@ -3193,11 +3193,6 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 			peer->pool_start = new_eid + 1;
 	}
 
-	/* Add a route to the peer prior to assigning it an EID.
-	 * The peer may initiate communication immediately, so
-	 * it should be routable. */
-	add_peer_route(peer);
-
 	rc = endpoint_send_set_endpoint_id(peer, &new_eid, &req_pool_size);
 	if (rc == -ECONNREFUSED)
 		sd_bus_error_setf(
