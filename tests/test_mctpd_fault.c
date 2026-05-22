@@ -729,54 +729,49 @@ static void test_mctp_ctrl_validate_response(void)
     /* exp_size too small */
     uint8_t buf1[16] = { 0 };
     rc = mctp_ctrl_validate_response(buf1, 16, sizeof(struct mctp_ctrl_resp),
-                                     "test", 0, 0x02, &addr);
+				     "test", 0, 0x02, &addr, false);
     ASSERT_NE(rc, 0);
 
     /* rsp_size too short for error response */
     uint8_t buf2[2] = { 0 };
-    rc = mctp_ctrl_validate_response(buf2, 2,
-                                     sizeof(struct mctp_ctrl_resp) + 1,
-                                     "test", 0, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf2, 2, sizeof(struct mctp_ctrl_resp) + 1,
+				     "test", 0, 0x02, &addr, false);
     ASSERT_NE(rc, 0);
 
     /* Wrong IID */
     uint8_t buf3[8] = { 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf3, 8,
-                                     sizeof(struct mctp_ctrl_resp) + 1,
-                                     "test", 0x05, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf3, 8, sizeof(struct mctp_ctrl_resp) + 1,
+				     "test", 0x05, 0x02, &addr, false);
     ASSERT_NE(rc, 0);
 
     /* Wrong opcode */
     uint8_t buf4[8] = { 0x05, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf4, 8,
-                                     sizeof(struct mctp_ctrl_resp) + 1,
-                                     "test", 0x05, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf4, 8, sizeof(struct mctp_ctrl_resp) + 1,
+				     "test", 0x05, 0x02, &addr, false);
     ASSERT_NE(rc, 0);
 
     /* Non-zero completion code (UNSUPPORTED) */
     uint8_t buf5[8] = { 0x05, 0x02, MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD };
-    rc = mctp_ctrl_validate_response(buf5, 8,
-                                     sizeof(struct mctp_ctrl_resp) + 1,
-                                     "test", 0x05, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf5, 8, sizeof(struct mctp_ctrl_resp) + 1,
+				     "test", 0x05, 0x02, &addr, false);
     ASSERT_EQ(rc, -ENOTSUP);
 
     /* Non-zero completion code (generic error) */
     uint8_t buf6[8] = { 0x05, 0x02, 0x01 }; /* CC_ERROR */
-    rc = mctp_ctrl_validate_response(buf6, 8,
-                                     sizeof(struct mctp_ctrl_resp) + 1,
-                                     "test", 0x05, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf6, 8, sizeof(struct mctp_ctrl_resp) + 1,
+				     "test", 0x05, 0x02, &addr, false);
     ASSERT_EQ(rc, -ECONNREFUSED);
 
     /* Success but response too short for full message */
     uint8_t buf7[4] = { 0x05, 0x02, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf7, 4, 8,
-                                     "test", 0x05, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf7, 4, 8, "test", 0x05, 0x02, &addr,
+				     false);
     ASSERT_NE(rc, 0);
 
     /* Success - full size */
     uint8_t buf8[8] = { 0x05, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf8, 8, 8,
-                                     "test", 0x05, 0x02, &addr);
+    rc = mctp_ctrl_validate_response(buf8, 8, 8, "test", 0x05, 0x02, &addr,
+				     false);
     ASSERT_EQ(rc, 0);
 
     TEST_PASS();
@@ -816,67 +811,64 @@ static void test_wait_fd_timeout_success(void)
     TEST_PASS();
 }
 
-/* Test: suppress_logs false-branches in response/read paths          */
+/* Test: suppress logs false-branches in response/read paths */
 static void test_suppress_logs_branches(void)
 {
-    TEST_START("suppress_logs branch matrix");
-    bool old_suppress = suppress_logs;
-    struct sockaddr_mctp_ext addr = { 0 };
-    struct ctx ctx = { .verbose = true };
-    uint8_t *buf = NULL;
-    size_t buf_size = 0;
-    int rc;
+	TEST_START("suppress branch matrix");
+	struct sockaddr_mctp_ext addr = { 0 };
+	struct ctx ctx = { .verbose = true };
+	uint8_t *buf = NULL;
+	size_t buf_size = 0;
+	int rc;
 
-    suppress_logs = true;
-
-    /* Exercise !suppress_logs false branches in validate paths. */
-    {
-        uint8_t wrong_iid[8] = { 0x01, 0x02, 0x00 };
-        rc = mctp_ctrl_validate_response(wrong_iid, sizeof(wrong_iid),
-                                         sizeof(struct mctp_ctrl_resp) + 1,
-                                         "peer", 0x05, 0x02, &addr);
-        ASSERT_EQ(rc, -ENOMSG);
-    }
+	/* Exercise suppressed branches in validate paths (suppress=true). */
+	{
+		uint8_t wrong_iid[8] = { 0x01, 0x02, 0x00 };
+		rc = mctp_ctrl_validate_response(
+			wrong_iid, sizeof(wrong_iid),
+			sizeof(struct mctp_ctrl_resp) + 1, "peer", 0x05, 0x02,
+			&addr, true);
+		ASSERT_EQ(rc, -ENOMSG);
+	}
     {
         uint8_t wrong_opcode[8] = { 0x05, 0x03, 0x00 };
-        rc = mctp_ctrl_validate_response(wrong_opcode, sizeof(wrong_opcode),
-                                         sizeof(struct mctp_ctrl_resp) + 1,
-                                         "peer", 0x05, 0x02, &addr);
-        ASSERT_EQ(rc, -ENOMSG);
+	rc = mctp_ctrl_validate_response(wrong_opcode, sizeof(wrong_opcode),
+					 sizeof(struct mctp_ctrl_resp) + 1,
+					 "peer", 0x05, 0x02, &addr, true);
+	ASSERT_EQ(rc, -ENOMSG);
     }
     {
         uint8_t err_cc[8] = { 0x05, 0x02, 0x01 };
-        rc = mctp_ctrl_validate_response(err_cc, sizeof(err_cc),
-                                         sizeof(struct mctp_ctrl_resp) + 1,
-                                         "peer", 0x05, 0x02, &addr);
-        ASSERT_EQ(rc, -ECONNREFUSED);
+	rc = mctp_ctrl_validate_response(err_cc, sizeof(err_cc),
+					 sizeof(struct mctp_ctrl_resp) + 1,
+					 "peer", 0x05, 0x02, &addr, true);
+	ASSERT_EQ(rc, -ECONNREFUSED);
     }
     {
         uint8_t short_rsp[4] = { 0x05, 0x02, 0x00, 0x00 };
-        rc = mctp_ctrl_validate_response(short_rsp, sizeof(short_rsp), 8,
-                                         "peer", 0x05, 0x02, &addr);
-        ASSERT_EQ(rc, -ENOMSG);
+	rc = mctp_ctrl_validate_response(short_rsp, sizeof(short_rsp), 8,
+					 "peer", 0x05, 0x02, &addr, true);
+	ASSERT_EQ(rc, -ENOMSG);
     }
 
-    /* Exercise mctp_ctrl_print_response with suppress_logs=true. */
+    /* Exercise mctp_ctrl_print_response with suppress=true. */
     {
         uint8_t ok_rsp[8] = { 0 };
-        rc = mctp_ctrl_print_response(ok_rsp, sizeof(ok_rsp), &addr);
-        ASSERT_EQ(rc, 0);
+	rc = mctp_ctrl_print_response(ok_rsp, sizeof(ok_rsp), &addr, true);
+	ASSERT_EQ(rc, 0);
     }
 
-    /* Exercise read_message verbose && !suppress_logs false branch. */
+    /* Exercise read_message verbose && !suppress false branch. */
     fault_mctp_recvfrom_peek_len = 8;
     fault_mctp_recvfrom_data_len = 4;
     fault_mctp_recvfrom_addrlen = sizeof(struct sockaddr_mctp_ext);
-    rc = read_message(&ctx, -1, &buf, &buf_size, &addr);
+    rc = read_message(&ctx, -1, &buf, &buf_size, &addr, true);
     ASSERT_NE(rc, 0);
     ASSERT_NULL(buf);
     fault_mctp_recvfrom_peek_len = -1;
     fault_mctp_recvfrom_data_len = -1;
     fault_mctp_recvfrom_addrlen = 0;
 
-    suppress_logs = old_suppress;
     TEST_PASS();
 }
 
@@ -1275,7 +1267,7 @@ static void test_read_message_empty(void)
     struct sockaddr_mctp_ext addr = { 0 };
 
     /* Our mock recvfrom returns 0 -> len==0 path */
-    int rc = read_message(&ctx, sd, &buf, &buf_size, &addr);
+    int rc = read_message(&ctx, sd, &buf, &buf_size, &addr, false);
     ASSERT_EQ(rc, 0);
     ASSERT_NULL(buf);
     ASSERT_EQ(buf_size, 0);
@@ -1295,7 +1287,7 @@ static void test_read_message_fail(void)
 
     /* Make first recvfrom fail */
     fault_mctp_recvfrom_errno = ENOMEM;
-    int rc = read_message(&ctx, sd, &buf, &buf_size, &addr);
+    int rc = read_message(&ctx, sd, &buf, &buf_size, &addr, false);
     ASSERT_NE(rc, 0);
     ASSERT_NULL(buf);
 
@@ -1316,7 +1308,7 @@ static void test_read_message_mismatch_and_bad_addrlen(void)
     fault_mctp_recvfrom_peek_len = 8;
     fault_mctp_recvfrom_data_len = 4;
     fault_mctp_recvfrom_addrlen = sizeof(struct sockaddr_mctp_ext);
-    int rc = read_message(&ctx, sd, &buf, &buf_size, &addr);
+    int rc = read_message(&ctx, sd, &buf, &buf_size, &addr, false);
     ASSERT_NE(rc, 0);
     ASSERT_NULL(buf);
 
@@ -1324,7 +1316,7 @@ static void test_read_message_mismatch_and_bad_addrlen(void)
     fault_mctp_recvfrom_peek_len = 8;
     fault_mctp_recvfrom_data_len = 8;
     fault_mctp_recvfrom_addrlen = sizeof(struct sockaddr_mctp_ext) - 1;
-    rc = read_message(&ctx, sd, &buf, &buf_size, &addr);
+    rc = read_message(&ctx, sd, &buf, &buf_size, &addr, false);
     ASSERT_NE(rc, 0);
     ASSERT_NULL(buf);
 
@@ -1348,7 +1340,7 @@ static void test_endpoint_query_addr_socket_fail(void)
 
     fault_mctp_socket_errno = ENOMEM;
     int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-                                 &resp, &resp_len, &resp_addr);
+				 &resp, &resp_len, &resp_addr, false);
     ASSERT_NE(rc, 0);
     ASSERT_NULL(resp);
 
@@ -1369,7 +1361,7 @@ static void test_endpoint_query_addr_setsockopt_fail(void)
 
     fault_mctp_setsockopt_errno = ENOPROTOOPT;
     int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-                                 &resp, &resp_len, &resp_addr);
+				 &resp, &resp_len, &resp_addr, false);
     ASSERT_NE(rc, 0);
 
     TEST_PASS();
@@ -1392,7 +1384,7 @@ static void test_endpoint_query_addr_sendto_fail(void)
 
     fault_mctp_sendto_errno = EHOSTUNREACH;
     int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-                                 &resp, &resp_len, &resp_addr);
+				 &resp, &resp_len, &resp_addr, false);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
@@ -1408,8 +1400,8 @@ static void test_endpoint_query_addr_zero_len(void)
     size_t resp_len = 0;
     struct sockaddr_mctp_ext resp_addr = { 0 };
 
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, 0,
-                                 &resp, &resp_len, &resp_addr);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, 0, &resp,
+				 &resp_len, &resp_addr, false);
     ASSERT_NE(rc, 0);
 
     TEST_PASS();
@@ -1857,8 +1849,8 @@ static void test_endpoint_query_addr_ext(void)
     struct sockaddr_mctp_ext resp_addr = { 0 };
 
     /* ext_addr=true; sendto succeeds, wait_fd_timeout will timeout */
-    int rc = endpoint_query_addr(&ctx, &req_addr, true, req, sizeof(req),
-                                 &resp, &resp_len, &resp_addr);
+    int rc = endpoint_query_addr(&ctx, &req_addr, true, req, sizeof(req), &resp,
+				 &resp_len, &resp_addr, false);
     /* Should fail (timeout or bad fd) */
     ASSERT_NE(rc, 0);
     TEST_PASS();
@@ -2108,7 +2100,7 @@ static void test_endpoint_query_addr_timeout(void)
     struct sockaddr_mctp_ext resp_addr = { 0 };
 
     int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-                                 &resp, &resp_len, &resp_addr);
+				 &resp, &resp_len, &resp_addr, false);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
@@ -2163,7 +2155,7 @@ static void test_endpoint_query_addr_setsockopt2_fail(void)
        succeeds, this test just exercises the normal path which already covers
        the non-failure branch of the errqueue setsockopt. */
     int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-                                 &resp, &resp_len, &resp_addr);
+				 &resp, &resp_len, &resp_addr, false);
     /* Will fail at wait_fd_timeout or later, that's fine */
     ASSERT_EQ(rc, -110);
     TEST_PASS();
@@ -4032,8 +4024,11 @@ static void test_query_peer_properties_no_bus(void)
     ASSERT_EQ(p->eid, 16);
 
     int rc = query_peer_properties(p);
-    /* Transport/query failures are often ignored; function returns 0. */
-    ASSERT_EQ(rc, 0);
+    /* New contract: when the peer never answers Get Message Type Support,
+     * query_peer_properties() exhausts its retries and bails with
+     * -ETIMEDOUT rather than silently returning 0.  See the matching
+     * Python coverage in test_query_peer_properties_retry_timeout. */
+    ASSERT_EQ(rc, -ETIMEDOUT);
 
     n.peers[16] = NULL;
     free(p);

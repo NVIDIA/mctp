@@ -2514,16 +2514,36 @@ async def test_query_peer_properties_retry_timeout(nursery, dbus, sysnet):
     assert objtypes == expected_types
 
     ep.lladdr = bytes([0x1C])  # change lladdr to force retry
-    ep.timeout_count = 5  # timeout five times before responding
+    ep.timeout_count = 5  # timeout more than max_retries (4) times
 
-    # call setup_endpoint again, which will trigger query of peer properties
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    def _endpoint_paths(node_set):
+        return {
+            p for p in node_set
+            if '/endpoints/' in p and p.rsplit('/endpoints/', 1)[1].isdigit()
+        }
 
-    # timeout five times does prevent us from getting the correct message types
-    objep = await mctpd_mctp_endpoint_common_obj(dbus, path)
-    objtypes = list(await objep.get_supported_message_types())
-    expected_types = []  # exceeded retry limit, so no types known
-    assert objtypes == expected_types
+    # Snapshot the published endpoints before the failing setup (this
+    # includes the local EID endpoint plus 0x1A and 0x1B).
+    before = set()
+    await _introspect_path_recursive(dbus, '/', before)
+    before_eps = _endpoint_paths(before)
+
+    # call setup_endpoint again, which will trigger query of peer properties.
+    # Exceeding the retry limit now causes query_peer_properties() to bail;
+    # setup_endpoint() removes the peer and fails the D-Bus call, rather than
+    # publishing an endpoint with an empty message-type list.
+    with pytest.raises(asyncdbus.errors.DBusError):
+        await mctp.call_setup_endpoint(ep.lladdr)
+
+    # The failed setup must not have published (or left behind) any
+    # endpoint object: the set of endpoints is unchanged.
+    after = set()
+    await _introspect_path_recursive(dbus, '/', after)
+    after_eps = _endpoint_paths(after)
+    assert after_eps == before_eps, (
+        "retry-exhausted 0x1C setup must not publish or leak an endpoint. "
+        f"before={sorted(before_eps)} after={sorted(after_eps)}"
+    )
 
     # exit mctpd
     res = await mctpd.stop_mctpd()

@@ -70,8 +70,6 @@
 	"xyz.openbmc_project.State.ServiceReady.ServiceTypes.MCTP"
 // an arbitrary constant for use with sd_id128_get_machine_app_specific()
 static const char *mctpd_appid = "67369c05-4b97-4b7e-be72-65cfd8639f10";
-static bool suppress_logs = false;
-
 static const char *conf_file_default = MCTPD_CONF_FILE_DEFAULT;
 
 static const uint64_t max_poll_interval_ms = 10000;
@@ -665,13 +663,13 @@ static int get_role(const char *mode, struct role *role)
    ret_buf is allocated, should be freed by the caller */
 static int read_message(struct ctx *ctx, int sd, uint8_t **ret_buf,
 			size_t *ret_buf_size,
-			struct sockaddr_mctp_ext *ret_addr)
+			struct sockaddr_mctp_ext *ret_addr, bool suppress_logs)
 {
 	int rc;
 	socklen_t addrlen;
 	ssize_t len;
 	uint8_t *buf = NULL;
-	size_t buf_size;
+	size_t buf_size = 0;
 
 	len = mctp_ops.mctp.recvfrom(sd, NULL, 0, MSG_PEEK | MSG_TRUNC, NULL,
 				     0);
@@ -807,10 +805,12 @@ static void clear_interface_addrs(struct ctx *ctx, int ifindex)
 	}
 
 	// Remove all peers on this interface
-	for (i = 0; i < ctx->num_peers; i++) {
+	for (i = 0; i < ctx->num_peers;) {
 		struct peer *p = ctx->peers[i];
 		if (p->state == REMOTE && p->phys.ifindex == ifindex) {
 			remove_peer(p);
+		} else {
+			i++;
 		}
 	}
 }
@@ -1374,13 +1374,21 @@ static int handle_control_discovery_notify(struct ctx *ctx, int sd,
 	memset(path, 0, sizeof(path));
 	snprintf(path, sizeof(path), "%s/%s", MCTP_DBUS_PATH_LINKS, ifname);
 
-	int r = sd_bus_emit_signal(ctx->bus, path, CC_MCTP_DBUS_IFACE_BUSOWNER,
-				   "DiscoveryNotify", NULL);
-	if (r < 0) {
-		warnx("Failed to emit DiscoveryNotify signal: %s",
-		      strerror(-r));
-		resp.completion_code = MCTP_CTRL_CC_ERROR;
+	/* Retry transient sd_bus_emit_signal failures before giving up.
+	 * On final failure return CC_ERROR so the device retries the
+	 * DiscoveryNotify, and log at warning level for field diagnosis. */
+	int r = 0;
+	for (int attempt = 1; attempt <= 3; attempt++) {
+		r = sd_bus_emit_signal(ctx->bus, path,
+				       CC_MCTP_DBUS_IFACE_BUSOWNER,
+				       "DiscoveryNotify", NULL);
+		if (r >= 0)
+			break;
+		warnx("WARNING: DiscoveryNotify emit attempt %d/3 failed: %s",
+		      attempt, strerror(-r));
 	}
+	if (r < 0)
+		resp.completion_code = MCTP_CTRL_CC_ERROR;
 
 	if (!(req->ctrl_hdr.rq_dgram_inst & MCTP_CTRL_HDR_FLAG_DGRAM)) {
 		return reply_message(ctx, sd, &resp, sizeof(resp), addr);
@@ -1806,7 +1814,8 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 	if (!(revents & EPOLLIN))
 		return 0;
 
-	rc = read_message(ctx, sd, &buf, &buf_size, &addr);
+	/* Main control socket dispatcher: no peer context yet, never suppress. */
+	rc = read_message(ctx, sd, &buf, &buf_size, &addr, false);
 	if (rc < 0)
 		goto out;
 
@@ -2325,7 +2334,8 @@ static const char *peer_cmd_prefix(const char *peer, uint8_t cmd)
  * Avoid journal flooding by using only on failure path
  */
 static int mctp_ctrl_print_response(uint8_t *resp_buf, size_t rsp_size,
-				    struct sockaddr_mctp_ext *resp_addr)
+				    struct sockaddr_mctp_ext *resp_addr,
+				    bool suppress_logs)
 {
 	if (!suppress_logs) {
 		fprintf(stderr, "Response received from socket %s len %zu\nbuffer: ",
@@ -2341,7 +2351,8 @@ static int mctp_ctrl_print_response(uint8_t *resp_buf, size_t rsp_size,
 static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 				       size_t exp_size, const char *peer,
 				       uint8_t iid, uint8_t cmd,
-				       struct sockaddr_mctp_ext *resp_addr)
+				       struct sockaddr_mctp_ext *resp_addr,
+				       bool suppress_logs)
 {
 	struct mctp_ctrl_resp *rsp;
 
@@ -2367,7 +2378,8 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 			warnx("%s: Wrong IID (0x%02x, expected 0x%02x)",
 			      peer_cmd_prefix(peer, cmd),
 			      rsp->ctrl_hdr.rq_dgram_inst & RQDI_IID_MASK, iid);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr,
+						 suppress_logs);
 		}
 		return -ENOMSG;
 	}
@@ -2376,7 +2388,8 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		if (!suppress_logs) {
 			warnx("%s: Wrong opcode (0x%02x) in response",
 			      peer_cmd_prefix(peer, cmd), rsp->ctrl_hdr.command_code);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr,
+						 suppress_logs);
 		}
 		return -ENOMSG;
 	}
@@ -2385,7 +2398,8 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		if (!suppress_logs) {
 			warnx("%s: Command failed, completion code 0x%02x",
 			      peer_cmd_prefix(peer, cmd), rsp->completion_code);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr,
+						 suppress_logs);
 		}
 		if (rsp->completion_code == MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD)
 			return -ENOTSUP;
@@ -2397,7 +2411,8 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 		if (!suppress_logs) {
 			warnx("%s: Wrong reply length (%zu bytes)",
 			      peer_cmd_prefix(peer, cmd), rsp_size);
-			mctp_ctrl_print_response(buf, rsp_size, resp_addr);
+			mctp_ctrl_print_response(buf, rsp_size, resp_addr,
+						 suppress_logs);
 		}
 		return -ENOMSG;
 	}
@@ -2477,7 +2492,8 @@ static int endpoint_query_addr(struct ctx *ctx,
 			       const struct sockaddr_mctp_ext *req_addr,
 			       bool ext_addr, const void *req, size_t req_len,
 			       uint8_t **resp, size_t *resp_len,
-			       struct sockaddr_mctp_ext *resp_addr)
+			       struct sockaddr_mctp_ext *resp_addr,
+			       bool suppress_logs)
 {
 	size_t req_addr_len;
 	int sd = -1, val;
@@ -2561,7 +2577,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 		}
 	}
 
-	rc = read_message(ctx, sd, &buf, &buf_size, resp_addr);
+	rc = read_message(ctx, sd, &buf, &buf_size, resp_addr, suppress_logs);
 	if (rc < 0) {
 		goto out;
 	}
@@ -2610,7 +2626,7 @@ static int endpoint_query_peer(const struct peer *peer, uint8_t req_type,
 	addr.smctp_base.smctp_tag = MCTP_TAG_OWNER;
 
 	return endpoint_query_addr(peer->ctx, &addr, false, req, req_len, resp,
-				   resp_len, resp_addr);
+				   resp_len, resp_addr, peer->ping_failed_once);
 }
 
 /* Queries an endpoint using physical addressing, null EID.
@@ -2639,8 +2655,9 @@ static int endpoint_query_phys(struct ctx *ctx, const dest_phys *dest,
 	addr.smctp_base.smctp_type = req_type;
 	addr.smctp_base.smctp_tag = MCTP_TAG_OWNER;
 
+	/* Physical-addressed query: no peer context, never suppress logs. */
 	return endpoint_query_addr(ctx, &addr, true, req, req_len, resp,
-				   resp_len, resp_addr);
+				   resp_len, resp_addr, false);
 }
 
 /* returns -ECONNREFUSED if the endpoint returns failure.
@@ -2679,7 +2696,8 @@ static int endpoint_send_set_endpoint_id(const struct peer *peer,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_SET_ENDPOINT_ID, &addr);
+					 MCTP_CTRL_CMD_SET_ENDPOINT_ID, &addr,
+					 peer && peer->ping_failed_once);
 	if (rc)
 		goto out;
 
@@ -3350,7 +3368,8 @@ static int query_get_endpoint_id(struct ctx *ctx, const dest_phys *dest,
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_ID, &addr);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_ID, &addr,
+					 peer && peer->ping_failed_once);
 	if (rc)
 		goto out;
 
@@ -3455,7 +3474,7 @@ static int query_get_peer_msgtypes(struct peer *peer)
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
 					 MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT,
-					 &addr);
+					 &addr, peer->ping_failed_once);
 	if (rc)
 		goto out;
 
@@ -3537,10 +3556,11 @@ static int query_get_peer_uuid_by_phys(struct ctx *ctx, const dest_phys *dest,
 	if (rc < 0)
 		goto out;
 
+	/* Physical-addressed query without peer context; never suppress. */
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 dest_phys_tostr(dest), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
-					 &addr);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID, &addr,
+					 false);
 	if (rc)
 		goto out;
 
@@ -3580,8 +3600,8 @@ static int query_get_peer_uuid(struct peer *peer, uint8_t uuid_out[16])
 
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
-					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
-					 &addr);
+					 MCTP_CTRL_CMD_GET_ENDPOINT_UUID, &addr,
+					 peer->ping_failed_once);
 	if (rc)
 		goto out;
 
@@ -4103,7 +4123,10 @@ static int cb_ping_response(sd_event_source *s, int fd, uint32_t revents,
 	struct pending_ping *pp = data;
 
 	if (revents & EPOLLERR) {
-		read_mctp_error_queue(pp->ctx, fd, pp->ctx->verbose,
+		/* Dummy peers are transient probes of unknown EIDs; don't
+		 * surface their error-queue noise. */
+		read_mctp_error_queue(pp->ctx, fd,
+				      pp->ctx->verbose && !pp->is_dummy,
 				      &pp->req_addr);
 		if (!(revents & EPOLLIN)) {
 			pending_ping_reply_error(pp, -EIO);
@@ -4117,7 +4140,9 @@ static int cb_ping_response(sd_event_source *s, int fd, uint32_t revents,
 		struct sockaddr_mctp_ext resp_addr = { 0 };
 		int rc;
 
-		rc = read_message(pp->ctx, fd, &buf, &buf_size, &resp_addr);
+		rc = read_message(pp->ctx, fd, &buf, &buf_size, &resp_addr,
+				  pp->is_dummy || (pp->peer &&
+						   pp->peer->ping_failed_once));
 		free(buf);
 
 		if (rc < 0 || buf_size == 0) {
@@ -4135,8 +4160,12 @@ static int cb_ping_timeout(sd_event_source *s, uint64_t usec, void *data)
 {
 	struct pending_ping *pp = data;
 
-	report_transaction_error(pp->ctx, ETIMEDOUT, MCTP_DIR_RX, &pp->req_addr,
-				 NULL, 0);
+	/* Report the timeout only on the first failure of a streak; suppress
+	 * repeats until a successful ping re-arms ping_failed_once. Dummy peers
+	 * don't persist across pings, so never report for them. */
+	if (!pp->is_dummy && !(pp->peer && pp->peer->ping_failed_once))
+		report_transaction_error(pp->ctx, ETIMEDOUT, MCTP_DIR_RX,
+					 &pp->req_addr, NULL, 0);
 	pending_ping_reply_error(pp, -ETIMEDOUT);
 	return 0;
 }
@@ -4223,10 +4252,8 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	addr.smctp_base.smctp_type = MCTP_CTRL_HDR_MSG_TYPE;
 	addr.smctp_base.smctp_tag = MCTP_TAG_OWNER;
 
-	/* Keep first ping failure visible, suppress only repeated retry noise. */
+	/* Keep first ping failure visible, suppress only repeated retry */
 	bool suppress_for_ping = peer->ping_failed_once;
-	if (suppress_for_ping)
-		suppress_logs = true;
 
 	rc = mctp_ops.mctp.sendto(sd, &req, sizeof(req), 0,
 				  (struct sockaddr *)&addr,
@@ -4234,19 +4261,17 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 
 	if (rc < 0) {
 		rc = -errno;
-		if (ctx->verbose && !suppress_for_ping)
+		if (ctx->verbose && !suppress_for_ping && !is_dummy)
 			warnx("EndpointPing: sendto EID %d failed: %s", eid,
 			      strerror(-rc));
-		if (!suppress_for_ping)
+		if (!suppress_for_ping && !is_dummy)
 			report_transaction_error(ctx, -rc, MCTP_DIR_TX, &addr,
 						 &req, sizeof(req));
-		if (suppress_for_ping)
-			suppress_logs = false;
+		/* Record the failed state so a repeated sendto failure is
+		 * suppressed and a later successful ping re-arms reporting. */
+		peer->ping_failed_once = true;
 		goto err_close;
 	}
-
-	if (suppress_for_ping)
-		suppress_logs = false;
 
 	/* Allocate async ping state */
 	pp = calloc(1, sizeof(*pp));
@@ -4349,7 +4374,9 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 {
 	struct mctp_ctrl_resp_get_routing_table *resp = NULL;
 	struct mctp_ctrl_cmd_get_routing_table req;
+	const unsigned int max_iter = 256;
 	struct sockaddr_mctp_ext addr;
+	unsigned int iter = 0;
 	struct ctx *ctx = NULL;
 	uint8_t *buf = NULL;
 	size_t buf_size;
@@ -4363,6 +4390,12 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 	ctx = peer->ctx;
 
 	while (req.entry_handle != 0xFF) {
+		if (++iter > max_iter) {
+			warnx("%s pagination exceeded %u iterations; aborting",
+			      __func__, max_iter);
+			rc = -EPROTO;
+			goto out;
+		}
 		rc = endpoint_query_peer(pool_owner_peer,
 					 MCTP_CTRL_HDR_MSG_TYPE, &req,
 					 sizeof(req), &buf, &buf_size, &addr);
@@ -4372,14 +4405,16 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 		rc = mctp_ctrl_validate_response(
 			buf, buf_size, sizeof(*resp),
 			peer_tostr_short(pool_owner_peer), iid,
-			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr);
+			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr,
+			pool_owner_peer->ping_failed_once);
 		if (rc)
 			goto out;
 
 		resp = (void *)buf;
 		if (!resp) {
 			warnx("%s Invalid response Buffer\n", __func__);
-			return -ENOMEM;
+			rc = -ENOMEM;
+			goto out;
 		}
 
 		if (ctx->verbose) {
@@ -4404,12 +4439,14 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 							 *)malloc(entry_size);
 					if (!peer->routing_table_entry) {
 						warnx("Failed to allocate memory for local routing");
-						return -ENOMEM;
+						rc = -ENOMEM;
+						goto out;
 					}
 					memset(peer->routing_table_entry, 0,
 					       entry_size);
 					memcpy(peer->routing_table_entry, entry,
 					       entry_size);
+					free(buf);
 					return 0;
 				}
 				// Advance to next entry: fixed structure size + variable phys_address data
@@ -4419,10 +4456,22 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 						    entry->phys_address_size);
 			}
 		}
+		/* If bridge returns 0 after we've already started paginating,
+		 * treat as end-of-table rather than restarting from 0. */
+		if ((resp->next_entry_handle == 0 && req.entry_handle != 0) ||
+		    (resp->next_entry_handle == req.entry_handle)) {
+			warnx("Unexpected routing table entry handle 0 after %u iterations",
+			      iter);
+			free(peer->routing_table_entry);
+			peer->routing_table_entry = NULL;
+			return -ERANGE;
+		}
 		req.entry_handle = resp->next_entry_handle;
+		free(buf);
 	}
 	return 0;
 out:
+	free(buf);
 	return rc;
 }
 // Query various properties of a peer.
@@ -4445,6 +4494,9 @@ static int query_peer_properties(struct peer *peer)
 
 		// On timeout, retry
 		if (rc == -ETIMEDOUT) {
+			if (i == max_retries - 1)
+				goto out;
+
 			if (peer->ctx->verbose)
 				warnx("Retrying to get endpoint types for %s. Attempt %u",
 				      peer_tostr(peer), i + 1);
@@ -4472,6 +4524,9 @@ static int query_peer_properties(struct peer *peer)
 
 		// On timeout, retry
 		if (rc == -ETIMEDOUT) {
+			if (i == max_retries - 1)
+				goto out;
+
 			if (peer->ctx->verbose)
 				warnx("Retrying to get peer UUID for %s. Attempt %u",
 				      peer_tostr(peer), i + 1);
@@ -4528,6 +4583,18 @@ static int query_peer_properties(struct peer *peer)
 			peer->pool_owner_eid = pool_owner_peer->eid;
 			peer->local_eid = pool_owner_peer->local_eid;
 			peer->is_direct_endpoint = false;
+			peer->num_ignore_message_types =
+				pool_owner_peer->num_ignore_message_types;
+			peer->ignore_message_types = malloc(
+				pool_owner_peer->num_ignore_message_types);
+			if (peer->num_ignore_message_types &&
+			    !peer->ignore_message_types) {
+				warnx("Failed to allocate memory for ignore message types");
+				rc = -ENOMEM;
+				goto out;
+			}
+			memset(peer->ignore_message_types, 0,
+			       pool_owner_peer->num_ignore_message_types);
 			memcpy(peer->phys.hwaddr, pool_owner_peer->phys.hwaddr,
 			       pool_owner_peer->phys.hwaddr_len);
 			memcpy(peer->ignore_message_types,
@@ -7045,7 +7112,7 @@ static int endpoint_send_allocate_endpoint_ids(
 	rc = mctp_ctrl_validate_response(buf, buf_size, sizeof(*resp),
 					 peer_tostr_short(peer), iid,
 					 MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS,
-					 &addr);
+					 &addr, peer->ping_failed_once);
 
 	if (rc)
 		goto out;
@@ -7221,7 +7288,8 @@ static int peer_endpoint_poll(sd_event_source *s, uint64_t usec, void *userdata)
 				   MCTP_CTRL_CMD_GET_ENDPOINT_ID);
 
 	rc = endpoint_query_addr(bridge->ctx, &req_addr, false, &req,
-				 sizeof(req), &buf, &buf_size, &resp_addr);
+				 sizeof(req), &buf, &buf_size, &resp_addr,
+				 bridge->ping_failed_once);
 	if (rc < 0) {
 		free(buf);
 		peer_reschedule_poll(source, bridge->ctx->endpoint_poll);
@@ -7353,6 +7421,14 @@ static int endpoint_allocate_eids(struct peer *peer)
 
 	if (!mctp_eid_is_valid_unicast(peer->pool_start)) {
 		warnx("Invalid pool start %d", peer->pool_start);
+		return -1;
+	}
+	/* validate pool range is fully within [eid_alloc_min,
+		* eid_alloc_max] before allocating to avoid landing on 0xFF. */
+	if (peer->pool_size - 1 > (uint8_t)(eid_alloc_max - peer->pool_start)) {
+		warnx("WARNING: bridge pool [%u..%u] out of allocatable range [%u..%u]; rejecting",
+		      peer->pool_start, peer->pool_start + peer->pool_size - 1,
+		      eid_alloc_min, eid_alloc_max);
 		return -1;
 	}
 	/* Find pool sized contiguous unused eids to allocate on the bridge. */
@@ -7499,7 +7575,8 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 
 	rc = mctp_ctrl_validate_response(
 		buf, buf_size, sizeof(*resp), peer_tostr_short(peer), iid,
-		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr);
+		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr,
+		peer->ping_failed_once);
 	if (rc)
 		goto out;
 
@@ -7584,6 +7661,8 @@ static int query_routing_table(struct peer *peer)
 	struct link *link =
 		mctp_nl_get_link_userdata(peer->ctx->nl, peer->phys.ifindex);
 	bool is_static_pool_bridge = false;
+	const unsigned int max_iter = 256;
+	unsigned int iter = 0;
 
 	if (peer->pool_size == 0 &&
 	    GET_ENDPOINT_TYPE(peer->endpoint_type) == MCTP_BUS_OWNER_BRIDGE) {
@@ -7612,11 +7691,24 @@ static int query_routing_table(struct peer *peer)
 	}
 
 	while (next_handle != 0xFF) {
+		if (++iter > max_iter) {
+			warnx("WARNING: %s pagination exceeded %u iterations; aborting",
+			      __func__, max_iter);
+			rc = -EPROTO;
+			goto out;
+		}
 		rc = endpoint_send_get_routing_table(peer, entry_handle,
 						     &next_handle,
 						     active_pool_eid,
 						     local_routing);
 		if (rc < 0) {
+			goto out;
+		}
+		if ((next_handle == 0 && entry_handle != 0) ||
+		    (next_handle == entry_handle)) {
+			warnx("Unexpected routing table entry handle 0 after %u iterations",
+			      iter);
+			rc = -ERANGE;
 			goto out;
 		}
 		entry_handle = next_handle;
@@ -7783,6 +7875,14 @@ out:
 
 static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid)
 {
+	// Check if BMC as Bridge is enabled
+	if (peer->ctx->bmc_bridge_eid) {
+		for (size_t i = 0; i < peer->ctx->bmc_ignore_eids_count; i++) {
+			if (peer->ctx->bmc_ignore_eids[i] == eid)
+				return true;
+		}
+	}
+
 	if (!peer->ignore_eids)
 		return false;
 
@@ -7791,13 +7891,6 @@ static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid)
 			return true;
 	}
 
-	// Check if BMC as Bridge is enabled
-	if (peer->ctx->bmc_bridge_eid) {
-		for (size_t i = 0; i < peer->ctx->bmc_ignore_eids_count; i++) {
-			if (peer->ctx->bmc_ignore_eids[i] == eid)
-				return true;
-		}
-	}
 	return false;
 }
 
