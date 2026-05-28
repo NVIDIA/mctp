@@ -17,7 +17,7 @@
 #include <limits.h>
 
 #include "mctp.h"
-#include "mctp-util.h"	
+#include "mctp-util.h"
 
 struct data_t {
 	uint8_t *data;
@@ -118,6 +118,7 @@ static int do_send_recv(unsigned int net, mctp_eid_t eid, uint8_t type,
 		err(EXIT_FAILURE, "sendto(%zd) partial send (%zd)", data->len,
 		    rc);
 
+	addrlen = sizeof(addr);
 	recvlen = recvfrom(sd, NULL, 0, MSG_TRUNC | MSG_PEEK,
 			   (struct sockaddr *)&addr, &addrlen);
 	if (recvlen < 0)
@@ -145,6 +146,8 @@ static int do_send_recv(unsigned int net, mctp_eid_t eid, uint8_t type,
 
 	printf("\n");
 
+	free(recv_buffer);
+	close(sd);
 	return 0;
 }
 
