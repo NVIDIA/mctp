@@ -209,9 +209,13 @@ mctp_nl_change *push_change(mctp_nl_change **changes, size_t *psize)
 {
 	struct mctp_nl_change *ch;
 	size_t siz = *psize;
+	struct mctp_nl_change *tmp;
 
 	siz++;
-	*changes = realloc(*changes, siz * sizeof(**changes));
+	tmp = realloc(*changes, siz * sizeof(**changes));
+	if (!tmp)
+		return NULL;
+	*changes = tmp;
 	*psize = siz;
 	ch = &(*changes)[siz - 1];
 	memset(ch, 0, sizeof(*ch));
@@ -242,6 +246,8 @@ static void fill_eid_changes(const struct linkmap_entry *oe,
 		} else if (vn < vo) {
 			// Added eid
 			ch = push_change(changes, psize);
+			if (!ch)
+				return;
 			ch->op = MCTP_NL_ADD_EID;
 			ch->ifindex = oe->ifindex;
 			ch->eid = vn;
@@ -249,6 +255,8 @@ static void fill_eid_changes(const struct linkmap_entry *oe,
 		} else if (vo < vn) {
 			// Removed eid
 			ch = push_change(changes, psize);
+			if (!ch)
+				return;
 			ch->op = MCTP_NL_DEL_EID;
 			ch->ifindex = oe->ifindex;
 			ch->old_net = oe->net;
@@ -293,6 +301,8 @@ static void fill_link_changes(const struct linkmap_entry *old, size_t old_count,
 						 changes, &siz);
 
 				ch = push_change(changes, &siz);
+				if (!ch)
+					goto out;
 				ch->op = MCTP_NL_CHANGE_NET;
 				ch->ifindex = ne->ifindex;
 				ch->old_net = oe->net;
@@ -301,6 +311,8 @@ static void fill_link_changes(const struct linkmap_entry *old, size_t old_count,
 
 			if (oe->up != ne->up) {
 				ch = push_change(changes, &siz);
+				if (!ch)
+					goto out;
 				ch->op = MCTP_NL_CHANGE_UP;
 				ch->ifindex = ne->ifindex;
 				ch->old_up = oe->up;
@@ -310,6 +322,8 @@ static void fill_link_changes(const struct linkmap_entry *old, size_t old_count,
 			if (strncmp(oe->ifname, ne->ifname,
 				    sizeof(oe->ifname))) {
 				ch = push_change(changes, &siz);
+				if (!ch)
+					goto out;
 				ch->op = MCTP_NL_CHANGE_NAME;
 				ch->ifindex = ne->ifindex;
 				memcpy(ch->old_name, ne->ifname,
@@ -321,6 +335,8 @@ static void fill_link_changes(const struct linkmap_entry *old, size_t old_count,
 		} else if (!oe || (ne && ne->ifindex < oe->ifindex)) {
 			// Added link
 			ch = push_change(changes, &siz);
+			if (!ch)
+				goto out;
 			ch->op = MCTP_NL_ADD_LINK;
 			ch->ifindex = ne->ifindex;
 			n++;
@@ -333,6 +349,8 @@ static void fill_link_changes(const struct linkmap_entry *old, size_t old_count,
 					 NULL, 0, changes, &siz);
 			// Delete the link itself
 			ch = push_change(changes, &siz);
+			if (!ch)
+				goto out;
 			ch->op = MCTP_NL_DEL_LINK;
 			ch->ifindex = oe->ifindex;
 			ch->old_net = oe->net;
@@ -340,6 +358,7 @@ static void fill_link_changes(const struct linkmap_entry *old, size_t old_count,
 			o++;
 		}
 	}
+out:
 	*num_changes = siz;
 }
 
@@ -347,8 +366,8 @@ void mctp_nl_changes_dump(mctp_nl *nl, mctp_nl_change *changes,
 			  size_t num_changes)
 {
 	const char *ops[MCTP_NL_OP_COUNT] = {
-		"ADD_LINK",  "DEL_LINK", "CHANGE_NET",
-		"CHANGE_UP",  "CHANGE_NAME", "ADD_EID",	 "DEL_EID",
+		"ADD_LINK",    "DEL_LINK", "CHANGE_NET", "CHANGE_UP",
+		"CHANGE_NAME", "ADD_EID",  "DEL_EID",
 	};
 
 	fprintf(stderr, "%zu changes:\n", num_changes);
@@ -415,6 +434,7 @@ err:
 void *mctp_get_rtnlmsg_attr(int rta_type, struct rtattr *rta, size_t len,
 			    size_t *ret_len)
 {
+	/* coverity[audit_speculative_execution_data_leak] */
 	for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
 		if (rta->rta_type == rta_type) {
 			if (ret_len) {

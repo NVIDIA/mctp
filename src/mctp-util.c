@@ -12,9 +12,13 @@ void mctp_hexdump(const void *b, int len, const char *indent)
 	const int row_len = 16;
 	int i, j;
 
+	/* coverity[audit_speculative_execution_data_leak] */
 	for (i = 0; i < len; i += row_len) {
 		char hbuf[row_len * strlen("00 ") + 1];
 		char cbuf[row_len + strlen("|") + 1];
+
+		hbuf[0] = '\0';
+		cbuf[0] = '\0';
 
 		for (j = 0; (j < row_len) && ((i + j) < len); j++) {
 			unsigned char c = buf[i + j];
