@@ -1259,6 +1259,21 @@ static void test_security_v2_routing_info_update_bounds(void)
     TEST_PASS();
 }
 
+static void test_security_v5_control_demux_request_gate(void)
+{
+    TEST_START("security V5: control demux request gate");
+    struct mctp_ctrl_msg_hdr hdr = { 0 };
+
+    hdr.rq_dgram_inst = RQDI_REQ | 0x03;
+    hdr.command_code = MCTP_CTRL_CMD_DISCOVERY_NOTIFY;
+    ASSERT_EQ(mctp_ctrl_msg_is_request(&hdr), 1);
+
+    hdr.rq_dgram_inst = 0x03;
+    ASSERT_EQ(mctp_ctrl_msg_is_request(&hdr), 0);
+
+    TEST_PASS();
+}
+
 /* Test: add_peer - all branches                                      */
 static void test_add_peer(void)
 {
@@ -5029,6 +5044,7 @@ int main(void)
     test_security_v9_routing_table_response_guard();
     test_security_v1_routing_table_entry_stride();
     test_security_v2_routing_info_update_bounds();
+        test_security_v5_control_demux_request_gate();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
