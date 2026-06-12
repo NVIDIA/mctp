@@ -54,12 +54,14 @@ static uint8_t recvmsg_stub_dest_eid = 0;
 static uint8_t recvmsg_stub_msg_type = MCTP_CTRL_HDR_MSG_TYPE;
 static uint8_t recvmsg_stub_cmd = MCTP_CTRL_CMD_GET_ENDPOINT_ID;
 static int route_add_stub_rc = INT32_MIN;
+static int route_add_stub_calls = 0;
 int mctp_nl_route_add(struct mctp_nl *nl, uint8_t eid, unsigned int extent,
                       int ifindex, const struct mctp_fq_addr *gw, uint32_t mtu);
 
 int mctpd_test_route_add(mctp_nl *nl, uint8_t eid, unsigned int extent,
                          int ifindex, const struct mctp_fq_addr *gw, uint32_t mtu)
 {
+    route_add_stub_calls++;
     if (route_add_stub_rc != INT32_MIN) {
         return route_add_stub_rc;
     }
@@ -1271,6 +1273,45 @@ static void test_security_v5_control_demux_request_gate(void)
     hdr.rq_dgram_inst = 0x03;
     ASSERT_EQ(mctp_ctrl_msg_is_request(&hdr), 0);
 
+    TEST_PASS();
+}
+
+static void test_security_v6_set_eid_rejects_before_route_add(void)
+{
+    TEST_START("security V6: Set EID rejects before route add");
+    queue_single_mctp_link_dump(1, "mctpi2c0", 1);
+    mctp_nl *nl = mctp_nl_new(false);
+    if (!nl) { TEST_PASS(); return; }
+
+    struct ctx ctx = { 0 };
+    struct link link = { 0 };
+    struct sockaddr_mctp_ext addr = { 0 };
+    struct mctp_ctrl_cmd_set_eid req = { 0 };
+
+    setup_config_defaults(&ctx);
+    ctx.nl = nl;
+    link.role = ENDPOINT_ROLE_ENDPOINT;
+    link.ctx = &ctx;
+    link.ifindex = 1;
+    mctp_nl_set_link_userdata(ctx.nl, 1, &link);
+
+    addr.smctp_base.smctp_addr.s_addr = 10;
+    addr.smctp_base.smctp_network = 1;
+    addr.smctp_ifindex = 1;
+    req.ctrl_hdr.rq_dgram_inst = RQDI_REQ;
+    req.ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    req.operation = MCTP_SET_EID_SET;
+    req.eid = 7;
+
+    route_add_stub_calls = 0;
+    route_add_stub_rc = -EPERM;
+    (void)handle_control_set_endpoint_id(&ctx, -1, &addr, (uint8_t *)&req,
+                                         sizeof(req));
+    ASSERT_EQ(route_add_stub_calls, 0);
+    route_add_stub_rc = INT32_MIN;
+
+    mctp_nl_set_link_userdata(ctx.nl, 1, NULL);
+    mctp_nl_close(nl);
     TEST_PASS();
 }
 
@@ -5045,6 +5086,7 @@ int main(void)
     test_security_v1_routing_table_entry_stride();
     test_security_v2_routing_info_update_bounds();
         test_security_v5_control_demux_request_gate();
+    test_security_v6_set_eid_rejects_before_route_add();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
