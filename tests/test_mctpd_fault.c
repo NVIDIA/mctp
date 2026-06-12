@@ -1315,6 +1315,23 @@ static void test_security_v6_set_eid_rejects_before_route_add(void)
     TEST_PASS();
 }
 
+static void test_security_v7_2_pool_route_range_guard(void)
+{
+    TEST_START("security V7.2: pool route range guard");
+    struct peer peer = { 0 };
+
+    ASSERT_EQ(eid_pool_range_is_valid(8, 247), 1);
+    ASSERT_EQ(eid_pool_range_is_valid(8, 248), 0);
+    ASSERT_EQ(eid_pool_range_is_valid(250, 10), 0);
+
+    peer.eid = 32;
+    peer.pool_start = 250;
+    peer.pool_size = 10;
+    ASSERT_EQ(walk_pool_gw_routes(&peer, true), -EINVAL);
+
+    TEST_PASS();
+}
+
 /* Test: add_peer - all branches                                      */
 static void test_add_peer(void)
 {
@@ -5087,6 +5104,7 @@ int main(void)
     test_security_v2_routing_info_update_bounds();
         test_security_v5_control_demux_request_gate();
     test_security_v6_set_eid_rejects_before_route_add();
+        test_security_v7_2_pool_route_range_guard();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
