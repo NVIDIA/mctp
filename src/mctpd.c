@@ -78,6 +78,7 @@ static const uint64_t max_poll_interval_ms = 10000;
 static const uint64_t min_poll_interval_ms = 2500;
 static const mctp_eid_t eid_alloc_min = 0x08;
 static const mctp_eid_t eid_alloc_max = 0xfe;
+static const size_t static_pool_eid_count = (size_t)UINT8_MAX + 1;
 static const uint8_t MCTP_TYPE_VENDOR_PCIE = 0x7e;
 static const uint8_t MCTP_TYPE_VENDOR_IANA = 0x7f;
 
@@ -549,6 +550,33 @@ static bool eid_pool_range_is_valid(mctp_eid_t pool_start,
 
 	pool_end = (unsigned int)pool_start + pool_size - 1;
 	return pool_end <= eid_alloc_max;
+}
+
+static int peer_alloc_static_pool_eids(struct peer *peer)
+{
+	if (peer->static_pool_eids)
+		return 0;
+
+	peer->static_pool_eids =
+		calloc(static_pool_eid_count, sizeof(*peer->static_pool_eids));
+	if (!peer->static_pool_eids)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void peer_static_pool_mark_eid(struct peer *peer, mctp_eid_t eid)
+{
+	if (!peer->static_pool_eids || !mctp_eid_is_valid_unicast(eid))
+		return;
+
+	peer->static_pool_eids[eid] = eid;
+}
+
+static bool peer_static_pool_has_eid(const struct peer *peer, mctp_eid_t eid)
+{
+	return peer->static_pool_eids && mctp_eid_is_valid_unicast(eid) &&
+	       peer->static_pool_eids[eid] == eid;
 }
 
 static int find_local_eids_by_net(struct net *net, size_t *local_eid_cnt,
@@ -4062,10 +4090,9 @@ static int method_assign_endpoint(sd_bus_message *call, void *data,
 		// TODO: Do we need bridge timer here?
 		peer->pool_size = 0;
 		peer->pool_start = 0;
-		peer->static_pool_eids =
-			malloc((eid_alloc_max + 1) * sizeof(mctp_eid_t));
-		memset(peer->static_pool_eids, 0,
-		       (eid_alloc_max + 1) * sizeof(mctp_eid_t));
+		rc = peer_alloc_static_pool_eids(peer);
+		if (rc < 0)
+			goto err;
 		sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_bridge,
 					 peer->path, CC_MCTP_DBUS_IFACE_BRIDGE,
 					 bus_endpoint_bridge, peer);
@@ -4205,10 +4232,9 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 		// TODO: Do we need bridge timer here?
 		peer->pool_size = 0;
 		peer->pool_start = 0;
-		peer->static_pool_eids =
-			malloc((eid_alloc_max + 1) * sizeof(mctp_eid_t));
-		memset(peer->static_pool_eids, 0,
-		       (eid_alloc_max + 1) * sizeof(mctp_eid_t));
+		rc = peer_alloc_static_pool_eids(peer);
+		if (rc < 0)
+			goto err;
 		sd_bus_add_object_vtable(peer->ctx->bus, &peer->slot_bridge,
 					 peer->path, CC_MCTP_DBUS_IFACE_BRIDGE,
 					 bus_endpoint_bridge, peer);
@@ -7971,22 +7997,28 @@ static int query_routing_table(struct peer *peer)
 	if (peer->pool_size == 0 &&
 	    GET_ENDPOINT_TYPE(peer->endpoint_type) == MCTP_BUS_OWNER_BRIDGE) {
 		// We don't know eid pool space for the Bridge (Static EID pool), need to rely on routing table data
-		// temporary set pool size to eid_alloc_max and start to eid_alloc_min
-		peer->pool_size = eid_alloc_max;
+		// temporary set pool range to the valid allocatable unicast range
+		peer->pool_size = eid_alloc_max - eid_alloc_min + 1;
 		peer->pool_start = eid_alloc_min;
 		is_static_pool_bridge = true;
 	}
 
+	if (!eid_pool_range_is_valid(peer->pool_start, peer->pool_size)) {
+		warnx("%s Invalid pool range start %d size %d", __func__,
+		      peer->pool_start, peer->pool_size);
+		if (is_static_pool_bridge) {
+			peer->pool_size = 0;
+			peer->pool_start = 0;
+		}
+		return -EINVAL;
+	}
+
 	if (peer->pool_size) {
-		active_pool_eid = (bool *)malloc(peer->pool_size);
-		local_routing = (struct get_routing_table_entry **)malloc(
-			peer->pool_size *
-			sizeof(struct get_routing_table_entry *));
-		if (active_pool_eid && local_routing) {
-			for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
-				(active_pool_eid)[idx] = false;
-				local_routing[idx] = NULL;
-			}
+		active_pool_eid = calloc(peer->pool_size, sizeof(*active_pool_eid));
+		local_routing = calloc(peer->pool_size, sizeof(*local_routing));
+		if (!active_pool_eid || !local_routing) {
+			rc = -ENOMEM;
+			goto out;
 		}
 	} else {
 		warnx(" %s Not a Bridge peer, pool size = %d", __func__,
@@ -8057,8 +8089,8 @@ static int query_routing_table(struct peer *peer)
 						       peer->num_ignore_message_types);
 					}
 					if (is_static_pool_bridge) {
-						peer->static_pool_eids[eid] =
-							eid;
+						peer_static_pool_mark_eid(
+							peer, eid);
 					}
 					allocated_peer->pool_owner_eid =
 						peer->eid;
@@ -8115,7 +8147,7 @@ static int query_routing_table(struct peer *peer)
 				     false == should_ignore_eid(peer, eid) &&
 				     !is_static_pool_bridge) ||
 				    (existing_peer && is_static_pool_bridge &&
-				     peer->static_pool_eids[eid] == eid)) {
+				     peer_static_pool_has_eid(peer, eid))) {
 					// EID is not active but exists locally - remove it
 					if (!existing_peer->degraded) {
 						if (peer->ctx->verbose) {
@@ -8135,8 +8167,10 @@ static int query_routing_table(struct peer *peer)
 		}
 	}
 	// clean all thats left behind as peer might already have routing entry
-	for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
-		free(local_routing[idx]);
+	if (local_routing) {
+		for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
+			free(local_routing[idx]);
+		}
 	}
 	free(local_routing);
 	free(active_pool_eid);
@@ -8154,23 +8188,23 @@ static int query_routing_table(struct peer *peer)
 	}
 
 	// Restore pool size and start to original values
-	if (peer->pool_size == eid_alloc_max &&
-	    peer->pool_start == eid_alloc_min) {
+	if (is_static_pool_bridge && peer->pool_start == eid_alloc_min) {
 		peer->pool_size = 0;
 		peer->pool_start = 0;
 	}
 	return 0;
 out:
-	for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
-		free(local_routing[idx]);
+	if (local_routing) {
+		for (uint8_t idx = 0; idx < peer->pool_size; idx++) {
+			free(local_routing[idx]);
+		}
 	}
 	free(local_routing);
 	free(active_pool_eid);
 	warnx(" %s Failed to get routing table data for handle %d\n", __func__,
 	      entry_handle);
 	// Restore pool size and start to original values
-	if (peer->pool_size == eid_alloc_max &&
-	    peer->pool_start == eid_alloc_min) {
+	if (is_static_pool_bridge && peer->pool_start == eid_alloc_min) {
 		peer->pool_size = 0;
 		peer->pool_start = 0;
 	}

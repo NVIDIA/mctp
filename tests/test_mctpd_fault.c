@@ -1353,6 +1353,29 @@ static void test_security_v8_allocate_eid_wrap_guard(void)
     TEST_PASS();
 }
 
+static void test_security_v10_static_pool_bounds(void)
+{
+    TEST_START("security V10: static pool bounds");
+    struct peer peer = { 0 };
+
+    ASSERT_EQ(eid_pool_range_is_valid(eid_alloc_min,
+                                      eid_alloc_max - eid_alloc_min + 1),
+              1);
+    ASSERT_EQ(eid_pool_range_is_valid(eid_alloc_min, eid_alloc_max), 0);
+
+    ASSERT_EQ(peer_alloc_static_pool_eids(&peer), 0);
+    peer_static_pool_mark_eid(&peer, eid_alloc_max);
+    ASSERT_EQ(peer_static_pool_has_eid(&peer, eid_alloc_max), 1);
+
+    peer_static_pool_mark_eid(&peer, UINT8_MAX);
+    ASSERT_EQ(peer_static_pool_has_eid(&peer, UINT8_MAX), 0);
+    peer_static_pool_mark_eid(&peer, 0);
+    ASSERT_EQ(peer_static_pool_has_eid(&peer, 0), 0);
+
+    free(peer.static_pool_eids);
+    TEST_PASS();
+}
+
 /* Test: add_peer - all branches                                      */
 static void test_add_peer(void)
 {
@@ -5127,6 +5150,7 @@ int main(void)
     test_security_v6_set_eid_rejects_before_route_add();
         test_security_v7_2_pool_route_range_guard();
     test_security_v8_allocate_eid_wrap_guard();
+    test_security_v10_static_pool_bounds();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
