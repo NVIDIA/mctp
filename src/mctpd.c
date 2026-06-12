@@ -895,16 +895,6 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 		return -ENOENT;
 	}
 
-	// create route for incoming packet SRC eid
-	src_eid = addr->smctp_base.smctp_addr.s_addr;
-	rc = mctp_nl_route_add(ctx->nl, src_eid, 0, addr->smctp_ifindex, NULL,
-			       0);
-	if (rc < 0 && rc != -EEXIST) {
-		warnx("failed to setup routes for incoming SRC EID %d [rc %s]",
-		      src_eid, strerror(-rc));
-		return -errno;
-	}
-
 	mctp_ctrl_msg_hdr_init_resp(&respi.ctrl_hdr, req->ctrl_hdr);
 	resp->completion_code = MCTP_CTRL_CC_SUCCESS;
 	resp_len = sizeof(struct mctp_ctrl_resp_set_eid);
@@ -915,15 +905,34 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 		      req->eid, ext_addr_tostr(addr));
 		resp->completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
 		resp_len = sizeof(struct mctp_ctrl_resp);
-		return reply_message(ctx, sd, resp, resp_len, addr);
+		// reply via phys addr: the route for this peer is not set up yet
+		return reply_message_phys(ctx, sd, resp, resp_len, addr);
 	}
 
 	// error if EID is invalid
-	if (req->eid < 0x08 || req->eid == 0xFF) {
+	if (!mctp_eid_is_valid_unicast(req->eid)) {
 		warnx("Rejected invalid EID %d", req->eid);
 		resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
 		resp_len = sizeof(struct mctp_ctrl_resp);
-		return reply_message(ctx, sd, resp, resp_len, addr);
+		// reply via phys addr: the route for this peer is not set up yet
+		return reply_message_phys(ctx, sd, resp, resp_len, addr);
+	}
+
+	// create route for incoming packet SRC eid only after request validation
+	src_eid = addr->smctp_base.smctp_addr.s_addr;
+	if (!mctp_eid_is_valid_unicast(src_eid)) {
+		warnx("Rejected Set EID from invalid source EID %d", src_eid);
+		resp->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+		resp_len = sizeof(struct mctp_ctrl_resp);
+		return reply_message_phys(ctx, sd, resp, resp_len, addr);
+	}
+
+	rc = mctp_nl_route_add(ctx->nl, src_eid, 0, addr->smctp_ifindex, NULL,
+			       0);
+	if (rc < 0 && rc != -EEXIST) {
+		warnx("failed to setup routes for incoming SRC EID %d [rc %s]",
+		      src_eid, strerror(-rc));
+		return rc;
 	}
 
 	switch (GET_MCTP_SET_EID_OPERATION(req->operation)) {
