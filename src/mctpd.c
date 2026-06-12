@@ -316,6 +316,7 @@ static int query_routing_table(struct peer *peer);
 static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid);
 static int add_pool_gw_routes_ignore_aware(struct peer *peer);
 static int del_pool_gw_routes_ignore_aware(struct peer *peer);
+static bool mctp_ctrl_msg_is_request(const struct mctp_ctrl_msg_hdr *ctrl_msg);
 static int endpoint_send_routing_info_update(struct peer *peer,
 					     mctp_eid_t first_eid,
 					     uint8_t range, uint8_t entry_type,
@@ -1630,6 +1631,16 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 		warnx("Got control request command code %hhd",
 		      ctrl_msg->command_code);
 	}
+
+	if (!mctp_ctrl_msg_is_request(ctrl_msg)) {
+		if (ctx->verbose) {
+			warnx("Ignoring non-request control message command code 0x%02x",
+			      ctrl_msg->command_code);
+		}
+		rc = -EINVAL;
+		goto out;
+	}
+
 	switch (ctrl_msg->command_code) {
 	case MCTP_CTRL_CMD_GET_VERSION_SUPPORT:
 		rc = handle_control_get_version_support(ctx, sd, &addr, buf,
@@ -2015,6 +2026,11 @@ static uint8_t mctp_next_iid(struct ctx *ctx)
 
 	ctx->iid = (iid + 1) & RQDI_IID_MASK;
 	return iid;
+}
+
+static bool mctp_ctrl_msg_is_request(const struct mctp_ctrl_msg_hdr *ctrl_msg)
+{
+	return ctrl_msg->rq_dgram_inst & RQDI_REQ;
 }
 
 // Checks if given EID belongs to any bridge's pool range
