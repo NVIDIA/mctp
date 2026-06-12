@@ -1220,6 +1220,45 @@ static void test_security_v1_routing_table_entry_stride(void)
     TEST_PASS();
 }
 
+static void test_security_v2_routing_info_update_bounds(void)
+{
+    TEST_START("security V2: routing-info-update bounds");
+    uint8_t msg[16] = { 0 };
+    struct mctp_ctrl_cmd_routing_info_update *rtu = (void *)msg;
+    const struct routing_info_entry *entry = NULL;
+    size_t entry_size = 0;
+    size_t phyaddr_size = 0;
+    const size_t base =
+        offsetof(struct mctp_ctrl_cmd_routing_info_update, entries);
+    int rc;
+
+    rtu->number_of_entries = 1;
+    rtu->entries[0] = 0;
+    rtu->entries[1] = 1;
+    rtu->entries[2] = 22;
+    rtu->entries[3] = 0xaa;
+    rtu->entries[4] = 0xbb;
+    rc = routing_info_update_get_single_entry(
+        rtu, base + routing_info_entry_size_from_phys(2), &entry,
+        &entry_size, &phyaddr_size);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(entry_size, routing_info_entry_size_from_phys(2));
+    ASSERT_EQ(phyaddr_size, 2);
+
+    rtu->number_of_entries = 2;
+    rc = routing_info_update_get_single_entry(
+        rtu, base + routing_info_entry_size_from_phys(0), &entry,
+        &entry_size, &phyaddr_size);
+    ASSERT_EQ(rc, -EINVAL);
+
+    rtu->number_of_entries = 1;
+    rc = routing_info_update_get_single_entry(rtu, base + 2, &entry,
+                                              &entry_size, &phyaddr_size);
+    ASSERT_EQ(rc, -ENOMSG);
+
+    TEST_PASS();
+}
+
 /* Test: add_peer - all branches                                      */
 static void test_add_peer(void)
 {
@@ -4986,6 +5025,7 @@ int main(void)
     test_mctp_ctrl_validate_response();
     test_security_v9_routing_table_response_guard();
     test_security_v1_routing_table_entry_stride();
+    test_security_v2_routing_info_update_bounds();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
