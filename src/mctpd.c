@@ -3346,19 +3346,24 @@ static int allocate_eid(struct ctx *ctx, struct net *net,
 			unsigned int bridged_len, struct eid_allocation *alloc)
 {
 	struct eid_allocation cur = { 0 }, best = { 0 };
-	mctp_eid_t eid;
+	unsigned int eid;
 
 	for (eid = ctx->dyn_eid_min; eid <= ctx->dyn_eid_max; eid++) {
 		if (net->peers[eid]) {
+			unsigned int skip_to =
+				eid + net->peers[eid]->pool_size;
+
 			// reset our current candidate allocation
 			cur.start = 0;
-			eid += net->peers[eid]->pool_size;
+			if (skip_to > ctx->dyn_eid_max)
+				break;
+			eid = skip_to;
 			continue;
 		}
 
 		// start a new candidate allocation
 		if (!cur.start)
-			cur.start = eid;
+			cur.start = (mctp_eid_t)eid;
 		cur.extent = eid - cur.start;
 
 		// if this suits, we're done

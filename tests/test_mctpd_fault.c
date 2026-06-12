@@ -1332,6 +1332,27 @@ static void test_security_v7_2_pool_route_range_guard(void)
     TEST_PASS();
 }
 
+static void test_security_v8_allocate_eid_wrap_guard(void)
+{
+    TEST_START("security V8: allocate_eid wrap guard");
+    struct ctx ctx;
+    struct net n;
+    struct peer blocker = { 0 };
+    struct eid_allocation alloc = { 0 };
+
+    make_ctx_with_net(&ctx, &n, 1);
+    ctx.dyn_eid_min = 8;
+    ctx.dyn_eid_max = 10;
+    blocker.pool_size = UINT8_MAX;
+    n.peers[8] = &blocker;
+
+    ASSERT_NE(allocate_eid(&ctx, &n, 1, &alloc), 0);
+
+    n.peers[8] = NULL;
+    cleanup_ctx(&ctx);
+    TEST_PASS();
+}
+
 /* Test: add_peer - all branches                                      */
 static void test_add_peer(void)
 {
@@ -5105,6 +5126,7 @@ int main(void)
         test_security_v5_control_demux_request_gate();
     test_security_v6_set_eid_rejects_before_route_add();
         test_security_v7_2_pool_route_range_guard();
+    test_security_v8_allocate_eid_wrap_guard();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
