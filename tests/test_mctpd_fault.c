@@ -1117,6 +1117,109 @@ static void cleanup_ctx(struct ctx *ctx)
     ctx->num_nets = 0;
 }
 
+static void test_security_v9_routing_table_response_guard(void)
+{
+    TEST_START("security V9: routing-table response guard");
+    struct sockaddr_mctp_ext addr = { 0 };
+    const size_t base =
+        offsetof(struct mctp_ctrl_resp_get_routing_table, routing_entries);
+    int rc;
+
+    {
+        uint8_t respbuf[64] = { 0 };
+        struct mctp_ctrl_resp_get_routing_table *resp =
+            (struct mctp_ctrl_resp_get_routing_table *)respbuf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)resp->routing_entries;
+
+        resp->ctrl_hdr.rq_dgram_inst = 0x05;
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 2;
+        entry[0].starting_eid = 10;
+        entry[0].phys_address_size = 0;
+        entry[1].starting_eid = 11;
+        entry[1].phys_address_size = 0;
+
+        rc = mctp_ctrl_validate_get_routing_table_response(
+            respbuf, base + 2 * sizeof(*entry), "peer", 0x05, &addr,
+            false);
+        ASSERT_EQ(rc, 0);
+    }
+
+    {
+        uint8_t respbuf[64] = { 0 };
+        struct mctp_ctrl_resp_get_routing_table *resp =
+            (struct mctp_ctrl_resp_get_routing_table *)respbuf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)resp->routing_entries;
+
+        resp->ctrl_hdr.rq_dgram_inst = 0x05;
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 2;
+        entry[0].starting_eid = 10;
+        entry[0].phys_address_size = 0;
+
+        rc = mctp_ctrl_validate_get_routing_table_response(
+            respbuf, base + sizeof(*entry), "peer", 0x05, &addr, false);
+        ASSERT_EQ(rc, -ENOMSG);
+    }
+
+    {
+        uint8_t respbuf[64] = { 0 };
+        struct mctp_ctrl_resp_get_routing_table *resp =
+            (struct mctp_ctrl_resp_get_routing_table *)respbuf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)resp->routing_entries;
+
+        resp->ctrl_hdr.rq_dgram_inst = 0x05;
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 1;
+        entry->starting_eid = 10;
+        entry->phys_address_size = 4;
+
+        rc = mctp_ctrl_validate_get_routing_table_response(
+            respbuf, base + sizeof(*entry) + 3, "peer", 0x05, &addr,
+            false);
+        ASSERT_EQ(rc, -ENOMSG);
+    }
+
+    TEST_PASS();
+}
+
+static void test_security_v1_routing_table_entry_stride(void)
+{
+    TEST_START("security V1: routing-table entry stride");
+    uint8_t entry_buf[sizeof(struct get_routing_table_entry) + 8] = { 0 };
+    struct get_routing_table_entry *entry =
+        (struct get_routing_table_entry *)entry_buf;
+    const struct get_routing_table_entry *next;
+    size_t entry_len = 0;
+    int rc;
+
+    entry->starting_eid = 10;
+    entry->phys_address_size = 3;
+
+    rc = routing_table_entry_len(entry, sizeof(entry_buf), &entry_len);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(entry_len, sizeof(*entry) + 3);
+
+    next = routing_table_entry_next(entry);
+    if ((const uint8_t *)next != entry_buf + sizeof(*entry) + 3)
+        TEST_FAIL("routing table entry stride did not include phys tail");
+
+    entry->phys_address_size = sizeof(entry_buf);
+    rc = routing_table_entry_len(entry, sizeof(entry_buf), &entry_len);
+    ASSERT_EQ(rc, -ENOMSG);
+
+    TEST_PASS();
+}
+
 /* Test: add_peer - all branches                                      */
 static void test_add_peer(void)
 {
@@ -4881,6 +4984,8 @@ int main(void)
     test_check_peer_struct();
     test_peer_set_uuid();
     test_mctp_ctrl_validate_response();
+    test_security_v9_routing_table_response_guard();
+    test_security_v1_routing_table_entry_stride();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
