@@ -481,6 +481,21 @@ static int cache_routing_info_entry(struct ctx *ctx,
 	return 0;
 }
 
+static bool eid_pool_range_is_valid(mctp_eid_t pool_start,
+				    unsigned int pool_size)
+{
+	unsigned int pool_end;
+
+	if (pool_size == 0)
+		return true;
+
+	if (!mctp_eid_is_valid_unicast(pool_start))
+		return false;
+
+	pool_end = (unsigned int)pool_start + pool_size - 1;
+	return pool_end <= eid_alloc_max;
+}
+
 static int find_local_eids_by_net(struct net *net, size_t *local_eid_cnt,
 				  mctp_eid_t *ret_eids)
 {
@@ -6400,6 +6415,9 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 	uint8_t iid, stat;
 	int rc;
 
+	if (!eid_pool_range_is_valid(eid_start, eid_pool_size))
+		return -EINVAL;
+
 	iid = mctp_next_iid(peer->ctx);
 	req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | iid;
 	req.ctrl_hdr.command_code = MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS;
@@ -7066,14 +7084,21 @@ static int walk_pool_gw_routes(struct peer *peer, bool adding)
 	if (peer->pool_size == 0)
 		return 0;
 
+	if (!eid_pool_range_is_valid(peer->pool_start, peer->pool_size)) {
+		warnx("Invalid bridge pool range start %d size %d for EID %d",
+		      peer->pool_start, peer->pool_size, peer->eid);
+		return -EINVAL;
+	}
+
 	struct mctp_fq_addr gw_addr = { 0 };
 	gw_addr.net = peer->net;
 	gw_addr.eid = peer->eid;
 
-	const int pool_end = peer->pool_start + peer->pool_size - 1;
+	const unsigned int pool_end =
+		(unsigned int)peer->pool_start + peer->pool_size - 1;
 	int first_err = 0;
 
-	for (int eid = peer->pool_start; eid <= pool_end; eid++) {
+	for (unsigned int eid = peer->pool_start; eid <= pool_end; eid++) {
 		if (should_ignore_eid(peer, (mctp_eid_t)eid))
 			continue;
 
