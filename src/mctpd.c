@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -2489,6 +2490,77 @@ static int mctp_ctrl_validate_response(uint8_t *buf, size_t rsp_size,
 	return 0;
 }
 
+static int routing_table_entry_len(const struct get_routing_table_entry *entry,
+				   size_t available, size_t *entry_len)
+{
+	if (available < sizeof(*entry))
+		return -ENOMSG;
+
+	if (entry->phys_address_size > available - sizeof(*entry))
+		return -ENOMSG;
+
+	*entry_len = sizeof(*entry) + entry->phys_address_size;
+	return 0;
+}
+
+static int mctp_ctrl_validate_get_routing_table_response(
+	uint8_t *buf, size_t rsp_size, const char *peer, uint8_t iid,
+	struct sockaddr_mctp_ext *resp_addr, bool suppress_logs)
+{
+	struct mctp_ctrl_resp_get_routing_table *rsp;
+	size_t entries_offset =
+		offsetof(struct mctp_ctrl_resp_get_routing_table,
+			 routing_entries);
+	size_t remaining;
+	const uint8_t *entry_ptr;
+	int rc;
+
+	rc = mctp_ctrl_validate_response(
+		buf, rsp_size, entries_offset, peer, iid,
+		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, resp_addr,
+		suppress_logs);
+	if (rc)
+		return rc;
+
+	rsp = (void *)buf;
+	remaining = rsp_size - entries_offset;
+	entry_ptr = rsp->routing_entries;
+
+	for (uint8_t idx = 0; idx < rsp->number_of_entries; idx++) {
+		const struct get_routing_table_entry *entry =
+			(const struct get_routing_table_entry *)entry_ptr;
+		size_t entry_len = 0;
+
+		rc = routing_table_entry_len(entry, remaining, &entry_len);
+		if (rc < 0) {
+			if (!suppress_logs) {
+				warnx("%s: Invalid routing table entry %u length",
+				      peer_cmd_prefix(
+					      peer,
+					      MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES),
+				      idx);
+				mctp_ctrl_print_response(buf, rsp_size,
+							 resp_addr,
+							 suppress_logs);
+			}
+			return rc;
+		}
+
+		entry_ptr += entry_len;
+		remaining -= entry_len;
+	}
+
+	return 0;
+}
+
+static const struct get_routing_table_entry *
+routing_table_entry_next(const struct get_routing_table_entry *entry)
+{
+	return (const struct get_routing_table_entry
+			*)((const uint8_t *)entry + sizeof(*entry) +
+			   entry->phys_address_size);
+}
+
 static void report_transaction_error(struct ctx *ctx, int error_code,
 				     uint8_t direction,
 				     const struct sockaddr_mctp_ext *req_addr,
@@ -4491,11 +4563,9 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 		if (rc < 0)
 			goto out;
 
-		rc = mctp_ctrl_validate_response(
-			buf, buf_size, sizeof(*resp),
-			peer_tostr_short(pool_owner_peer), iid,
-			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr,
-			pool_owner_peer->ping_failed_once);
+		rc = mctp_ctrl_validate_get_routing_table_response(
+			buf, buf_size, peer_tostr_short(pool_owner_peer), iid,
+			&addr, pool_owner_peer->ping_failed_once);
 		if (rc)
 			goto out;
 
@@ -4539,10 +4609,8 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 					return 0;
 				}
 				// Advance to next entry: fixed structure size + variable phys_address data
-				entry = (struct get_routing_table_entry
-						 *)((char *)entry +
-						    sizeof(struct get_routing_table_entry) +
-						    entry->phys_address_size);
+				entry = (struct get_routing_table_entry *)
+					routing_table_entry_next(entry);
 			}
 		}
 		/* If bridge returns 0 after we've already started paginating,
@@ -7668,9 +7736,8 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 	if (rc < 0)
 		goto out;
 
-	rc = mctp_ctrl_validate_response(
-		buf, buf_size, sizeof(*resp), peer_tostr_short(peer), iid,
-		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES, &addr,
+	rc = mctp_ctrl_validate_get_routing_table_response(
+		buf, buf_size, peer_tostr_short(peer), iid, &addr,
 		peer->ping_failed_once);
 	if (rc)
 		goto out;
@@ -7701,10 +7768,8 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 				if (peer->ctx->verbose)
 					fprintf(stderr, "skipping eid %d\n",
 						entry->starting_eid);
-				entry = (struct get_routing_table_entry
-						 *)((char *)(&entry->phys_address_size) +
-						    entry->phys_address_size +
-						    1);
+				entry = (struct get_routing_table_entry *)
+					routing_table_entry_next(entry);
 				continue;
 			}
 			// Check if this EID should be ignored
@@ -7714,10 +7779,8 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 						"%s: ignoring EID %d as requested\n",
 						__func__, entry->starting_eid);
 				}
-				entry = (struct get_routing_table_entry
-						 *)((char *)(&entry->phys_address_size) +
-						    entry->phys_address_size +
-						    1);
+				entry = (struct get_routing_table_entry *)
+					routing_table_entry_next(entry);
 				continue;
 			}
 
@@ -7731,9 +7794,8 @@ endpoint_send_get_routing_table(struct peer *peer, uint8_t entry_handle,
 					       peer->pool_start],
 				entry);
 
-			entry = (struct get_routing_table_entry
-					 *)((char *)(&entry->phys_address_size) +
-					    entry->phys_address_size + 1);
+			entry = (struct get_routing_table_entry *)
+				routing_table_entry_next(entry);
 		}
 	}
 
