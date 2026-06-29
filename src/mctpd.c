@@ -2526,10 +2526,6 @@ static int endpoint_query_addr(struct ctx *ctx,
 	val = 1;
 	rc = mctp_ops.mctp.setsockopt(sd, SOL_MCTP, MCTP_OPT_ENABLE_ERRQUEUE,
 				      &val, sizeof(val));
-	if (rc < 0) {
-		if (ctx->verbose)
-			warnx("MCTP error queue not supported by kernel (fd %d)", sd);
-	}
 
 	if (ext_addr) {
 		req_addr_len = sizeof(struct sockaddr_mctp_ext);
@@ -4237,12 +4233,6 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	val = 1;
 	rc = mctp_ops.mctp.setsockopt(sd, SOL_MCTP, MCTP_OPT_ENABLE_ERRQUEUE,
 				      &val, sizeof(val));
-	if (rc < 0) {
-		if (ctx->verbose)
-			warnx("MCTP error queue not supported by kernel (fd %d)",
-			      sd);
-		/* non-fatal, continue */
-	}
 
 	/* Build the destination address */
 	struct sockaddr_mctp_ext addr = { 0 };
