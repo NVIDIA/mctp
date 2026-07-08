@@ -427,6 +427,10 @@ class Endpoint:
             self.types = types
         self.bridged_eps = []
         self.allocated_pool = None  # or (start, size)
+        # Routing Information Updates (cmd 0x09) received from mctpd. Each item
+        # is the first_eid carried by the update; used by bridge-forwarding
+        # tests to assert whether mctpd forwarded an update to this endpoint.
+        self.routing_info_updates = []
 
         # keyed by (type, type-specific-instance)
         self.commands = {}
@@ -497,6 +501,17 @@ class Endpoint:
                 # Get Message Type Support
                 types = self.types
                 data = bytes(hdr + [0x00, len(types)] + types)
+                await sock.send(raddr, data)
+
+            elif opcode == 9:
+                # Routing Information Update (DSP0236). Record the advertised
+                # first_eid so tests can assert whether mctpd forwarded this
+                # update to us, then ack with success.
+                # Wire layout after [flags, opcode]:
+                #   [number_of_entries, entry_type, eid_range, first_eid, ...]
+                first_eid = data[5] if len(data) > 5 else None
+                self.routing_info_updates.append(first_eid)
+                data = bytes(hdr + [0x00])
                 await sock.send(raddr, data)
 
             elif opcode == 0x0A:
