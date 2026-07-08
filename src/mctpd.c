@@ -2572,11 +2572,17 @@ static int check_peer_struct(const struct peer *peer, const struct net *n)
 
 static int remove_peer(struct peer *peer)
 {
-	struct ctx *ctx = peer->ctx;
+	struct ctx *ctx = NULL;
 	struct net *n = NULL;
 	struct peer **tmp;
 	size_t idx;
 
+	if (!peer) {
+		bug_warn("%s: Bad peer, was it removed already?", __func__);
+		return -EPROTO;
+	}
+
+	ctx = peer->ctx;
 	n = lookup_net(peer->ctx, peer->net);
 	if (!n) {
 		bug_warn("%s: Bad net %u", __func__, peer->net);
@@ -3594,7 +3600,7 @@ static void cleanup_pending_ping(struct pending_ping *pp)
 		pp->sock_fd = -1;
 	}
 	if (pp->is_dummy && pp->peer)
-		remove_peer(pp->peer);
+		free(pp->peer); /* private throwaway peer, never in the table */
 
 	sd_bus_message_unref(pp->call);
 	free(pp);
@@ -3703,11 +3709,17 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	peer = find_peer_by_addr(ctx, eid, net->net);
 	if (!peer) {
 		/* create dummy peer for querying then later remove it */
-		rc = add_peer(ctx, &dest, eid, net->net, &peer);
-		if (rc) {
-			warnx("can't add peer: %s", strerror(-rc));
+		peer = calloc(1, sizeof(*peer));
+		if (!peer) {
+			rc = -ENOMEM;
+			warnx("Failed to allocate memory for dummy peer");
 			goto err;
 		}
+		peer->ctx = ctx;
+		peer->net = net->net;
+		peer->eid = eid;
+		peer->state = REMOTE;
+		memcpy(&peer->phys, &dest, sizeof(dest));
 		is_dummy = true;
 	}
 
@@ -3715,7 +3727,7 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 		/* Non-remote peer (e.g. local), treat as not-supported
 		 * and return success immediately */
 		if (is_dummy)
-			remove_peer(peer);
+			free(peer);
 		return sd_bus_reply_method_return(call, NULL);
 	}
 
@@ -3814,11 +3826,7 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 	return 1;
 
 err_pp:
-	/* pp->call is ref'd, cleanup will unref */
 	cleanup_pending_ping(pp);
-	/* cleanup_pending_ping already replied error and cleaned up peer,
-	 * but we haven't replied yet at this point since we failed before
-	 * event sources were active. Reply error manually. */
 	set_berr(ctx, rc, berr);
 	return rc;
 
@@ -3826,7 +3834,7 @@ err_close:
 	close(sd);
 err_peer:
 	if (is_dummy)
-		remove_peer(peer);
+		free(peer); /* private throwaway peer, never in the table */
 err:
 	set_berr(ctx, rc, berr);
 	return rc;
