@@ -502,6 +502,110 @@ class TestLinkRoleSetBranches:
             await props.call_set(iface_name, 'Role', Variant('s', 'InvalidRole'))
 
 
+async def _set_iface_role(dbus, iface, role):
+    obj = await dbus.get_proxy_object(
+        'au.com.codeconstruct.MCTP1',
+        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name,
+    )
+    props = await obj.get_interface(DBUS_PROPERTIES_I)
+    await props.call_set(
+        'au.com.codeconstruct.MCTP.Interface1', 'Role', Variant('s', role)
+    )
+
+
+async def _send_routing_info_update(sender, mctpd, iid, first_eid, eid_range=1):
+    """Inject a Routing Information Update request into mctpd.
+
+    Body after [flags, command_code]:
+        number_of_entries=1, entry_type=0, eid_range, first_eid
+    """
+    payload = bytes([1, 0x00, eid_range, first_eid])
+    cmd = MCTPControlCommand(
+        True, iid, MCTP_CTRL_CMD_ROUTING_INFO_UPDATE, payload
+    )
+    return await sender.send_control(mctpd.network.mctp_socket, cmd)
+
+
+class TestRoutingInfoUpdateForwarding:
+    """Routing Info Update (0x09) handling on a bridge (Endpoint role).
+
+    When the advertised EID is already a known endpoint on our network -- our
+    own local EID, a downstream bridge, or a directly discovered endpoint --
+    mctpd already has routing for it, so the whole entry is ignored (no route
+    add, no forwarding, no cache). Only a genuinely unknown EID is processed
+    and forwarded to downstream bridges.
+    """
+
+    async def _setup_bridge_and_sender(self, dbus, mctpd):
+        iface = mctpd.system.interfaces[0]
+        mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+        # Discover endpoints[0] as a downstream bridge -- it reports a bridge
+        # endpoint type in Get Endpoint ID and has a bridged endpoint behind
+        # it. This is the peer updates are forwarded to.
+        bridge = mctpd.network.endpoints[0]
+        bridge.types = [0, 1, 5]
+        bridge.endpoint_type = 0x1 << 4  # MCTP_BUS_OWNER_BRIDGE
+        bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
+        (bridge_eid, _, _, _) = await mctp.call_setup_endpoint(bridge.lladdr)
+
+        # Discover a plain (non-bridge) endpoint so mctpd also tracks it as a
+        # known peer of ours (endpoint_type defaults to 0).
+        known_ep = Endpoint(iface, bytes([0x2a]), types=[0])
+        mctpd.network.add_endpoint(known_ep)
+        (known_eid, _, _, _) = await mctp.call_setup_endpoint(known_ep.lladdr)
+
+        # Put our interface into Endpoint (gateway) role so the RUI handler
+        # does not reject the request as the bus owner.
+        await _set_iface_role(dbus, iface, 'Endpoint')
+
+        # An upstream sender that injects the Routing Info Update into mctpd.
+        sender = Endpoint(iface, bytes([0x1e]), eid=20, types=[0])
+        mctpd.network.add_endpoint(sender)
+        await setup_endpoint_with_route(mctpd, sender, eid=20)
+
+        # Endpoint discovery must not have forwarded any update yet.
+        bridge.routing_info_updates.clear()
+        return bridge, bridge_eid, known_eid, sender
+
+    async def test_rui_forwarded_when_eid_is_unknown(self, dbus, mctpd):
+        bridge, bridge_eid, known_eid, sender = \
+            await self._setup_bridge_and_sender(dbus, mctpd)
+
+        target_eid = 50
+        assert target_eid not in (bridge_eid, known_eid)
+        rsp = await _send_routing_info_update(sender, mctpd, 1, target_eid)
+        assert rsp[2] == MCTP_CTRL_CC_SUCCESS
+
+        # Unknown EID -> full processing -> forwarded to the bridge.
+        assert bridge.routing_info_updates == [target_eid]
+
+    async def test_rui_not_forwarded_when_eid_is_a_bridge(self, dbus, mctpd):
+        bridge, bridge_eid, known_eid, sender = \
+            await self._setup_bridge_and_sender(dbus, mctpd)
+
+        rsp = await _send_routing_info_update(sender, mctpd, 1, bridge_eid)
+        assert rsp[2] == MCTP_CTRL_CC_SUCCESS
+
+        # The advertised EID is a known peer (a downstream bridge), so the
+        # whole entry is ignored and nothing is forwarded.
+        assert bridge.routing_info_updates == []
+
+    async def test_rui_not_forwarded_when_eid_is_a_known_peer(
+        self, dbus, mctpd
+    ):
+        bridge, bridge_eid, known_eid, sender = \
+            await self._setup_bridge_and_sender(dbus, mctpd)
+
+        assert known_eid != bridge_eid
+        rsp = await _send_routing_info_update(sender, mctpd, 1, known_eid)
+        assert rsp[2] == MCTP_CTRL_CC_SUCCESS
+
+        # The advertised EID is a known (non-bridge) endpoint on our network,
+        # so mctpd ignores the entry entirely and does not forward it.
+        assert bridge.routing_info_updates == []
+
+
 def test_cli_help_and_invalid_option():
     help_res = run_test_mctpd(['-h'])
     assert help_res.returncode != 0
