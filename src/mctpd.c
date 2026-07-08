@@ -1277,6 +1277,21 @@ handle_control_routing_info_update(struct ctx *ctx, int sd,
 	size_t phyaddr_size =
 		(buf_size - 3) - (sizeof(struct routing_info_entry) - 1);
 
+	// The advertised EID may already be a known endpoint on this network --
+	// our own local EID, a downstream bridge, or a directly discovered
+	// endpoint. In that case we already have routing for it, so re-adding a
+	// route, forwarding the update to downstream bridges, or caching the
+	// entry would be redundant and can create routing loops. Ignore the
+	// entry entirely; the command is still acknowledged with success.
+	if (find_peer_by_addr(ctx, first_eid,
+			      addr->smctp_base.smctp_network)) {
+		if (ctx->verbose)
+			fprintf(stderr,
+				"Ignoring Routing Info Update for EID %d: already a known endpoint\n",
+				first_eid);
+		goto out;
+	}
+
 	// 2. create local route for first_eid
 	rc = mctp_nl_route_add(ctx->nl, first_eid, 0, addr->smctp_ifindex, NULL,
 			       local_peer->mtu);
@@ -1288,7 +1303,7 @@ handle_control_routing_info_update(struct ctx *ctx, int sd,
 		goto out;
 	}
 
-	// 3. send same routing data to all bridges
+	// 3. send the same routing data to all downstream bridges
 	struct peer *sendto_peer = NULL;
 
 	for (size_t i = 0; i < ctx->num_peers; i++) {
