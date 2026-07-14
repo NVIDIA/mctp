@@ -3606,10 +3606,19 @@ static void cleanup_pending_ping(struct pending_ping *pp)
 	free(pp);
 }
 
+static struct peer *ping_resolve_peer(struct pending_ping *pp)
+{
+	if (pp->is_dummy)
+		return NULL;
+	return find_peer_by_addr(pp->ctx, pp->eid,
+				 pp->req_addr.smctp_base.smctp_network);
+}
+
 static void pending_ping_reply_success(struct pending_ping *pp)
 {
-	if (pp->peer)
-		pp->peer->ping_failed_once = false;
+	struct peer *peer = ping_resolve_peer(pp);
+	if (peer)
+		peer->ping_failed_once = false;
 
 	sd_bus_reply_method_return(pp->call, NULL);
 	cleanup_pending_ping(pp);
@@ -3617,8 +3626,9 @@ static void pending_ping_reply_success(struct pending_ping *pp)
 
 static void pending_ping_reply_error(struct pending_ping *pp, int errcode)
 {
-	if (pp->peer)
-		pp->peer->ping_failed_once = true;
+	struct peer *peer = ping_resolve_peer(pp);
+	if (peer)
+		peer->ping_failed_once = true;
 
 	sd_bus_error berr = SD_BUS_ERROR_NULL;
 	set_berr(pp->ctx, errcode, &berr);
@@ -3650,9 +3660,11 @@ static int cb_ping_response(sd_event_source *s, int fd, uint32_t revents,
 		struct sockaddr_mctp_ext resp_addr = { 0 };
 		int rc;
 
+		struct peer *peer = ping_resolve_peer(pp);
+		bool suppress_log =
+			pp->is_dummy || (peer && peer->ping_failed_once);
 		rc = read_message(pp->ctx, fd, &buf, &buf_size, &resp_addr,
-				  pp->is_dummy || (pp->peer &&
-						   pp->peer->ping_failed_once));
+				  suppress_log);
 		free(buf);
 
 		if (rc < 0 || buf_size == 0) {
@@ -3672,8 +3684,11 @@ static int cb_ping_timeout(sd_event_source *s, uint64_t usec, void *data)
 
 	/* Report the timeout only on the first failure of a streak; suppress
 	 * repeats until a successful ping re-arms ping_failed_once. Dummy peers
-	 * don't persist across pings, so never report for them. */
-	if (!pp->is_dummy && !(pp->peer && pp->peer->ping_failed_once))
+	 * don't persist across pings, so never report for them. Re-resolve the
+	 * peer pointer at callback time — the raw pointer stored at ping
+	 * dispatch may have been freed by remove_peer() while in flight. */
+	struct peer *peer = ping_resolve_peer(pp);
+	if (!pp->is_dummy && !(peer && peer->ping_failed_once))
 		report_transaction_error(pp->ctx, ETIMEDOUT, MCTP_DIR_RX,
 					 &pp->req_addr, NULL, 0);
 	pending_ping_reply_error(pp, -ETIMEDOUT);
@@ -3796,7 +3811,8 @@ static int method_endpoint_ping(sd_bus_message *call, void *data,
 		goto err_close;
 	}
 	pp->call = sd_bus_message_ref(call);
-	pp->peer = peer;
+	if (is_dummy)
+		pp->peer = peer;
 	pp->ctx = ctx;
 	pp->sock_fd = sd;
 	pp->is_dummy = is_dummy;
