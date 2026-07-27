@@ -3,7 +3,7 @@
 project(
     'mctp', 'c',
     meson_version: '>= 0.59.0',
-    version: 'v2.5',
+    version: 'v2.6',
     license: 'GPLv2',
     default_options: [
         'warning_level=2',
@@ -15,6 +15,8 @@ cc = meson.get_compiler('c')
 add_project_arguments('-Wno-unused-parameter', language : 'c')
 
 libsystemd = dependency('libsystemd', version: '>=247', required: false)
+
+libcap = dependency('libcap', required: false)
 
 conf = configuration_data()
 conf.set10('HAVE_LINUX_MCTP_H',
@@ -36,6 +38,10 @@ conf.set10('MCTPD_RECOVER_NIL_UUID',
 conf.set10('MCTPD_WRITABLE_CONNECTIVITY',
     get_option('unsafe-writable-connectivity'),
     description: 'Allow writes to the Connectivity member of the au.com.codeconstruct.MCTP.Endpoint1 interface on endpoint objects')
+
+conf.set10('HAVE_LIBCAP',
+    libcap.found(),
+    description: 'Require mctpd to minimise its capabilities')
 
 conf.set_quoted('MCTPD_CONF_FILE_DEFAULT',
     join_paths(get_option('prefix'), get_option('sysconfdir'), 'mctpd.conf'),
@@ -94,11 +100,10 @@ if libsystemd.found()
         sources: [
             'src/mctpd.c',
         ] + netlink_sources + util_sources + ops_sources,
-        c_args: mctpd_c_args,
-        dependencies: [libsystemd, toml_dep],
+        dependencies: [libsystemd, toml_dep, libcap],
         install: true,
         install_dir: get_option('sbindir'),
-        c_args: ['-DOPS_SD_EVENT=1'],
+        c_args: mctpd_c_args + ['-DOPS_SD_EVENT=1'],
     )
 
     mctpd_test = executable('test-mctpd',
@@ -106,7 +111,7 @@ if libsystemd.found()
             'src/mctpd.c',
         ] + test_ops_sources + netlink_sources + util_sources,
         include_directories:  include_directories('src'),
-        dependencies: [libsystemd, toml_dep],
+        dependencies: [libsystemd, toml_dep, libcap],
         c_args: ['-DOPS_SD_EVENT=1'],
     )
 endif

@@ -8,6 +8,8 @@ After=mctp-local.target
 Type=dbus
 BusName=au.com.codeconstruct.MCTP1
 ExecStart=/usr/sbin/mctpd
+User=mctpd
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 
 [Install]
 WantedBy=mctp.target

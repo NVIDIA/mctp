@@ -4,13 +4,21 @@ import asyncdbus
 
 from mctp_test_utils import (
     mctpd_mctp_iface_obj,
+    mctpd_mctp_iface_control_obj,
     mctpd_mctp_network_obj,
     mctpd_mctp_endpoint_common_obj,
     mctpd_mctp_endpoint_control_obj,
     mctpd_service_readiness_obj,
     mctpd_mctp_base_iface_obj,
 )
-from mctpenv import Endpoint, MCTPSockAddr, MCTPControlCommand, MctpdWrapper
+from mctpenv import (
+    Endpoint,
+    MCTPSockAddr,
+    MCTPControlCommand,
+    MctpdWrapper,
+    VDMType,
+    PhysicalBinding,
+)
 
 # DBus constant symbol suffixes:
 #
@@ -125,7 +133,7 @@ async def test_setup_endpoint(dbus, mctpd):
     assert neigh.lladdr == ep.lladdr
     assert neigh.eid == ep.eid
 
-    # we should have a route for the new endpoint
+    # we should have a route for the new endpoint too
     assert len(mctpd.system.routes) == 1
 
 
@@ -154,6 +162,65 @@ async def test_setup_endpoint_conflict(dbus, mctpd):
 
     (eid2, _, _, _) = await mctp.call_setup_endpoint(ep2.lladdr)
     assert eid1 != eid2
+
+
+class CommandUnimplementedEndpoint(Endpoint):
+    """An endpoint where one command (specified via opcode) reports as
+    unimplemented.
+    """
+
+    def __init__(self, opcode, *args, **kwargs):
+        self.unimplemented_opcode = opcode
+        super().__init__(*args, **kwargs)
+
+    async def handle_mctp_control(self, sock, src_addr, msg):
+        flags, opcode = msg[0:2]
+        if opcode != self.unimplemented_opcode:
+            return await super().handle_mctp_control(sock, src_addr, msg)
+        # report not implemented
+        data = bytes([flags & 0x1F, opcode, 0x05])
+        dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+        await sock.send(dst_addr, data)
+
+
+async def test_setup_endpoint_no_get_msg_types(dbus, mctpd):
+    """Test that endpoint enumeration fails if the endpoint does not
+    support the (mandatory) Get Message Type Support command.
+    """
+    iface = mctpd.system.interfaces[0]
+    ep = CommandUnimplementedEndpoint(0x05, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    with pytest.raises(asyncdbus.errors.DBusError):
+        await mctp.call_setup_endpoint(ep.lladdr)
+
+
+async def test_setup_endpoint_no_get_vdm_types(dbus, mctpd):
+    """Test that we can enumerate an endpoint where the (optional)
+    Get Vendor Defined Message Support command is not implemented
+    """
+    iface = mctpd.system.interfaces[0]
+    ep = CommandUnimplementedEndpoint(0x06, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    assert eid == ep.eid
+
+
+async def test_setup_endpoint_no_get_uuid(dbus, mctpd):
+    """Test that we can enumerate an endpoint where the (optional)
+    Get Endpoint UUID command is not implemented
+    """
+
+    iface = mctpd.system.interfaces[0]
+    ep = CommandUnimplementedEndpoint(0x03, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    assert eid == ep.eid
 
 
 async def test_remove_endpoint(dbus, mctpd):
@@ -512,6 +579,123 @@ async def test_assign_endpoint_static_varies(dbus, mctpd):
     assert str(ex.value) == "Already assigned a different EID"
 
 
+async def test_assign_bridge_static(dbus, mctpd):
+    """Test that AssignBridgeStatic assigns the requested EID and pool to a
+    bridge endpoint, and marks it as new on first call.
+    """
+    iface = mctpd.system.interfaces[0]
+    dev = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 12
+    pool_size = 3
+    pool_start = static_eid + 1
+
+    for _ in range(pool_size):
+        dev.add_bridged_ep(Endpoint(iface, bytes()))
+
+    (eid, pool_start_out, _, _, new) = await mctp.call_assign_bridge_static(
+        dev.lladdr, static_eid, pool_start, pool_size
+    )
+
+    assert eid == static_eid
+    assert pool_start_out == pool_start
+    assert new
+
+
+async def test_assign_bridge_static_zero_start(dbus, mctpd):
+    """Test that AssignBridgeStatic sets pool start EID to bridge-eid+1
+    when pool_start is passed as zero.
+    """
+    iface = mctpd.system.interfaces[0]
+    dev = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    static_eid = 12
+    pool_size = 3
+    pool_start = 0
+    expected_pool_start = static_eid + 1
+
+    for _ in range(pool_size):
+        dev.add_bridged_ep(Endpoint(iface, bytes()))
+
+    (eid, pool_start_out, _, _, new) = await mctp.call_assign_bridge_static(
+        dev.lladdr, static_eid, pool_start, pool_size
+    )
+
+    assert eid == static_eid
+    assert pool_start_out == expected_pool_start
+    assert new
+
+
+async def test_assign_bridge_static_conflict(dbus, mctpd):
+    """Test that AssignBridgeStatic rejects an EID that is already in use by
+    a different endpoint.
+    """
+    iface = mctpd.system.interfaces[0]
+    dev1 = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    dev2 = Endpoint(iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(dev2)
+
+    static_eid = 12
+    pool_size = 3
+    pool_start = static_eid + 1
+
+    for _ in range(pool_size):
+        dev2.add_bridged_ep(Endpoint(iface, bytes()))
+
+    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
+        dev1.lladdr, static_eid
+    )
+    assert eid == static_eid
+    assert new
+
+    # try to assign dev2 the same EID — must fail
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await mctp.call_assign_bridge_static(
+            dev2.lladdr, static_eid, pool_start, pool_size
+        )
+
+    assert str(ex.value) == "Address in use"
+
+
+async def test_assign_bridge_static_pool_conflict(dbus, mctpd):
+    """Test that AssignBridgeStatic rejects assigning a pool range that
+    conflicts with an existing endpoint's EID, even if the bridge EID itself
+    does not conflict.
+    """
+    iface = mctpd.system.interfaces[0]
+    dev1 = mctpd.network.endpoints[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    dev2 = Endpoint(iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(dev2)
+
+    # dev1 is a single endpoint assigned EID 13
+    dev1_eid = 13
+    (eid1, _, _, new1) = await mctp.call_assign_endpoint_static(
+        dev1.lladdr, dev1_eid
+    )
+    assert eid1 == dev1_eid
+    assert new1
+
+    # dev2 is a bridge endpoint with EID 11, pool size 3 (pool start 12, range 12-14)
+    dev2_eid = 11
+    pool_size = 3
+    pool_start = dev2_eid + 1
+
+    for _ in range(pool_size):
+        dev2.add_bridged_ep(Endpoint(iface, bytes()))
+
+    # try to assign dev2 — must fail due to pool conflict at EID 13
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await mctp.call_assign_bridge_static(
+            dev2.lladdr, dev2_eid, pool_start, pool_size
+        )
+
+    assert str(ex.value) == "Ran out of EIDs"
+
+
 async def test_get_endpoint_id(dbus, mctpd, routed_ep):
     """Test that the mctpd control protocol responder support has support for a
     basic Get Endpoint ID command
@@ -724,6 +908,160 @@ async def test_query_message_types(dbus, mctpd):
     query_types.sort()
 
     assert ep_types == query_types
+
+
+async def test_query_vdm_types(dbus, mctpd):
+    """Test that VendorDefinedMessageTypes is queried and populated."""
+    iface = mctpd.system.interfaces[0]
+    vdm_types = [
+        VDMType(VDMType.TYPE_PCI, 0x1234, 0x5678),
+        VDMType(VDMType.TYPE_IANA, 0xABCDEF12, 0x3456),
+    ]
+    ep = Endpoint(iface, bytes([0x1E]), eid=15, vdm_msg_types=vdm_types)
+    mctpd.network.add_endpoint(ep)
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, net, path, new) = await mctp.call_learn_endpoint(ep.lladdr)
+
+    assert eid == ep.eid
+
+    ep_obj = await mctpd_mctp_endpoint_common_obj(dbus, path)
+
+    r = await ep_obj.get_vendor_defined_message_types()
+    ret_vdm_types = VDMType.parse_dbus(r)
+    assert set(vdm_types) == set(ret_vdm_types)
+
+
+async def test_query_vdm_types_no_control(dbus, mctpd):
+    """Test that we query VDM types if *only* a VDM type is reported in the
+    non-vendor Message Type Support response
+    """
+    iface = mctpd.system.interfaces[0]
+    vdm_types = [
+        VDMType(VDMType.TYPE_PCI, 0x1234, 0x5678),
+    ]
+    # only include the VDM type
+    ep = Endpoint(
+        iface,
+        bytes([0x1E]),
+        eid=15,
+        types=[VDMType.TYPE_PCI],
+        vdm_msg_types=vdm_types,
+    )
+    mctpd.network.add_endpoint(ep)
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, net, path, new) = await mctp.call_learn_endpoint(ep.lladdr)
+
+    assert eid == ep.eid
+
+    ep_obj = await mctpd_mctp_endpoint_common_obj(dbus, path)
+
+    # Query VendorDefinedMessageTypes property
+    vdm_types = list(await ep_obj.get_vendor_defined_message_types())
+
+    assert len(vdm_types) == 1
+
+
+class InvalidVDMEndpointBase(Endpoint):
+    async def handle_mctp_control(self, sock, addr, data):
+        flags, opcode = data[0:2]
+        if opcode != 0x06:
+            return await super().handle_mctp_control(sock, addr, data)
+        iid = flags & 0x1F
+        raddr = MCTPSockAddr.for_ep_resp(self, addr, sock.addr_ext)
+        hdr = [iid, opcode]
+        resp = hdr + [0x00, 0xFF] + self.get_invalid_vdm_data()
+        await sock.send(raddr, bytes(resp))
+
+    def get_invalid_vdm_data(self):
+        raise NotImplementedError
+
+
+class InvalidPCIeLengthEndpoint(InvalidVDMEndpointBase):
+    def get_invalid_vdm_data(self):
+        # Format 0 (PCIe) but send 1 bytes for vendor_id (invalid)
+        return [0, 0x12, 0x78, 0x90]
+
+
+class InvalidIANALengthEndpoint(InvalidVDMEndpointBase):
+    def get_invalid_vdm_data(self):
+        # Format 1 (IANA) but send 3 bytes for vendor_id (invalid)
+        return [1, 0xAB, 0xCD, 0xEF, 0x34, 0x56]
+
+
+class InvalidFormatEndpoint(InvalidVDMEndpointBase):
+    def get_invalid_vdm_data(self):
+        # Format 2 (invalid - only 0 and 1 are valid)
+        return [2, 0x12, 0x34, 0x56, 0x78]
+
+
+async def _assert_vdm_types_empty(dbus, mctp, ep):
+    (eid, _, path, _) = await mctp.call_learn_endpoint(ep.lladdr)
+    assert eid == ep.eid
+    ep_obj = await mctpd_mctp_endpoint_common_obj(dbus, path)
+    vdm_types = list(await ep_obj.get_vendor_defined_message_types())
+    assert len(vdm_types) == 0
+
+
+async def test_query_vdm_types_invalid_pcie_length(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    ep = InvalidPCIeLengthEndpoint(iface, bytes([0x1E]), eid=15)
+    mctpd.network.add_endpoint(ep)
+    await _assert_vdm_types_empty(dbus, mctp, ep)
+
+
+async def test_query_vdm_types_invalid_iana_length(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    ep = InvalidIANALengthEndpoint(iface, bytes([0x1F]), eid=16)
+    mctpd.network.add_endpoint(ep)
+    await _assert_vdm_types_empty(dbus, mctp, ep)
+
+
+async def test_query_vdm_types_invalid_format(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    ep = InvalidFormatEndpoint(iface, bytes([0x20]), eid=17)
+    mctpd.network.add_endpoint(ep)
+    await _assert_vdm_types_empty(dbus, mctp, ep)
+
+
+async def test_query_vdm_types_unsupported(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    ep = Endpoint(iface, bytes([0x21]), eid=18, vdm_msg_types=None)
+    mctpd.network.add_endpoint(ep)
+    await _assert_vdm_types_empty(dbus, mctp, ep)
+
+
+async def test_query_vdm_types_repeating(dbus, mctpd):
+    """Test that we need to be increasing the VDM set selector: otherwise
+    a peer may send infinite VDM types
+    """
+
+    class RepeatingVDMEndpoint(Endpoint):
+        async def handle_mctp_control(self, sock, addr, data):
+            flags, opcode = data[0:2]
+            if opcode != 0x06:
+                return await super().handle_mctp_control(sock, addr, data)
+            iid = flags & 0x1F
+            raddr = MCTPSockAddr.for_ep_resp(self, addr, sock.addr_ext)
+            hdr = [iid, opcode]
+            # always report a next selector of 1
+            resp = hdr + [0x00, 0x01, 0x00, 0xAA, 0xBB, 0xCC, 0xDD]
+            await sock.send(raddr, bytes(resp))
+
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    ep = RepeatingVDMEndpoint(iface, bytes([0x21]), eid=18, vdm_msg_types=None)
+    mctpd.network.add_endpoint(ep)
+    await _assert_vdm_types_empty(dbus, mctp, ep)
 
 
 async def test_network_local_eids_single(dbus, mctpd):
@@ -2550,6 +2888,54 @@ async def test_query_peer_properties_retry_timeout(nursery, dbus, sysnet):
     assert res == 0
 
 
+async def test_query_peer_properties_same_iid_on_retry(nursery, dbus, sysnet):
+    """Verify that retries for query_peer_properties reuse the same IID.
+
+    Per DSP0237 Table 9, a retry is a retransmission of the same MCTP control
+    message and must use the same instance ID (IID) within MT4.
+    """
+
+    class IIDTrackingEndpoint(Endpoint):
+        """Drop the first Get Message Type Support request, record all IIDs seen."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.seen_iids = []
+            self.drop_next = True
+
+        async def handle_mctp_control(self, sock, addr, data):
+            rq = data[0] & 0x80
+            opcode = data[1]
+            iid = data[0] & 0x1F
+            if rq and opcode == 0x05:  # Get Message Type Support
+                self.seen_iids.append(iid)
+                if self.drop_next:
+                    self.drop_next = False
+                    return  # simulate timeout
+            return await super().handle_mctp_control(sock, addr, data)
+
+    mctpd = MctpdWrapper(dbus, sysnet)
+    await mctpd.start_mctpd(nursery)
+
+    iface = mctpd.system.interfaces[0]
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    ep = IIDTrackingEndpoint(iface, bytes([0x1A]), eid=15, types=[0, 1, 2])
+    mctpd.network.add_endpoint(ep)
+
+    await mctp.call_setup_endpoint(ep.lladdr)
+
+    # Two Get Message Type Support requests: initial + one retry
+    assert len(ep.seen_iids) == 2
+    # Both must carry the same IID
+    assert ep.seen_iids[0] == ep.seen_iids[1], (
+        f"IID changed across retry: {ep.seen_iids[0]:#04x} -> {ep.seen_iids[1]:#04x}"
+    )
+
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
 async def test_bridged_endpoint_poll(dbus, sysnet, nursery, autojump_clock):
     """Test that we use endpoint poll interval from the config and
     that we discover bridged endpoints via polling
@@ -2762,6 +3148,144 @@ async def test_bridged_endpoint_poll_continue(
     # Wait more to see if poll count increments
     await trio.sleep(1)
     assert poll_count > poll_count_before
+
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_none(dbus, sysnet, nursery):
+    """Test that our interface config tests are functional"""
+    config = """
+    role = "unknown"
+    """
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    role = await iface.get_role()
+    assert role == "Unknown"
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_match_all(dbus, sysnet, nursery):
+    """Test that our interface config tests are functional"""
+    config = """
+    role = "unknown"
+    [[interface]]
+    match = "all"
+    role = "bus-owner"
+    """
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    role = await iface.get_role()
+    assert role == "BusOwner"
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_match_phys_binding(dbus, sysnet, nursery):
+    """Test that we can match an interface from a phys binding type"""
+    config = """
+    role = "unknown"
+    [[interface]]
+    match = { phys-type = "i2c" }
+    role = "bus-owner"
+    """
+
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    iface = mctpd.system.interfaces[0]
+    iface.phys_binding = PhysicalBinding.SMBUS
+
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, iface)
+    role = await iface.get_role()
+    assert role == "BusOwner"
+
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_match_path_exact(dbus, sysnet, nursery):
+    """Test that we can match an interface from an exact path"""
+    config = """
+    role = "unknown"
+    [[interface]]
+    match = { path = "/devices/virtual/mctp0" }
+    role = "bus-owner"
+    """
+
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    role = await iface.get_role()
+    assert role == "BusOwner"
+
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_nomatch_path(dbus, sysnet, nursery):
+    """Test that we do not match an interface from an exact (non-matching)
+    path
+    """
+    config = """
+    role = "unknown"
+    [[interface]]
+    match = { path = "/devices/virtual/mctp1" }
+    role = "bus-owner"
+    """
+
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    role = await iface.get_role()
+    assert role == "Unknown"
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_match_path_glob(dbus, sysnet, nursery):
+    """Test that we can match an interface from a globbed path"""
+    config = """
+    role = "unknown"
+    [[interface]]
+    match = { path = "/devices/virtual/mctp*" }
+    role = "bus-owner"
+    """
+
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    role = await iface.get_role()
+    assert role == "BusOwner"
+
+    res = await mctpd.stop_mctpd()
+    assert res == 0
+
+
+async def test_iface_config_match_path_none(dbus, sysnet, nursery):
+    """Test that we can handle a missing sysfs path, not matching anything"""
+    config = """
+    role = "unknown"
+    [[interface]]
+    match = { path = "*" }
+    role = "bus-owner"
+    """
+
+    mctpd = MctpdWrapper(dbus, sysnet, config=config)
+    mctpd.system.interfaces[0].sysfs_path = None
+    await mctpd.start_mctpd(nursery)
+
+    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    role = await iface.get_role()
+    assert role != "BusOwner"
 
     res = await mctpd.stop_mctpd()
     assert res == 0

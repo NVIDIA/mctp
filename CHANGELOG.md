@@ -4,7 +4,63 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [2.6] - 2026-07-21
+
+### Added
+
+1. `mctpd` now queries endpoints for their vendor-defined message support,
+   and publishes as the newly-specced `VendorDefinedMessageTypes` dbus property.
+
+2. `mctp`'s verbose mode will now decode `IFLA_MCTP` attributes in netlink
+   message data
+
+3. `mctpd` now supports configuration on individual links, without having
+   to perform dbus property updates. Links may be matched on physical transport
+   binding type, or by sysfs paths, allowing individual interface roles to be
+   specified by the configuration file.
+
+4. `mctpd` now allows static bridge peer assignments through the new
+   `AssignBridgeStatic` dbus method.
+
+### Fixes
+
+1. mctpd's interface objects now expose the BusOwner1 interface when set
+   as a BusOwner via the Role property
+
+2. `mctpd`'s responses to an unsupported Endpoint Discovery message were
+   invalid, having a zeroed control message header. These are now properly
+   populated
+
+3. `mctpd` will no longer (incorrectly) reject SetupEndpoint / AssignEndpoint
+   calls for endpoints that do not implement the optional Get Endpoint UUID
+   and Get Vendor Defined Message Support commands.
+
+### Changed
+
+1. `mctpd`'s `mode` configuration (setting bus owner vs. endpoint roles) is
+   now called `role`. Configuration parsing will still allow the `mode` setting,
+   but this will be deprecated in a later release.
+
+2. `mctpd`'s command submission logic has been reworked, allowing us to
+   re-use outgoing control protocol instance IDs (IIDs) when we re-send
+   commands. More instances of commands now have retry logic too.
+
+3. When running in endpoint mode, `mctpd` will now issue responses to incoming
+   Set Endpoint ID commands before performing enumeration on the (bus-owner)
+   peer.
+
+4. `mctpd` now requires remote endpoints to implement the Get Message Type
+   Support command, as it is mandatory according to DSP0236. Peers not
+   implementing this will not be published, as enumeration will fail.
+
+5. `mctp`'s command-line help is now more complete, and consistent in its usage
+   of metavariables.
+
+6. `mctpd` is now capable of running as a non-root user, with two extra
+   capabilities: `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, which is now
+   reflected in the example dbus & systemd configuration. If libcap is
+   available, `mctpd` will drop the `BIND_SERVICE` capability after establishing
+   its MCTP control socket.
 
 ## [2.5] - 2026-02-17
 

@@ -132,9 +132,6 @@ represents the bus-owner side of a transport.
 
 ```
 NAME                                 TYPE      SIGNATURE RESULT/VALUE FLAGS
-au.com.codeconstruct.MCTP.Interface1 interface -         -            -
-.NetworkId                           property  u         1            emits-change
-.Role                                property  s         "BusOwner"   emits-change writable
 au.com.codeconstruct.MCTP.BusOwner1  interface -         -            -
 .AssignEndpoint                      method    ay        yisb         -
 .AssignEndpointStatic                method    ayyay      yisb         -
@@ -214,6 +211,37 @@ This call will fail if the endpoint already has an EID, and that EID is
 different from `static-EID`, or if `static-EID` is already assigned to another
 endpoint.
 
+#### `.AssignBridgeStatic`: `ayyyy` → `yyisb`
+
+This method performs a static assignment with bridge EID pool allocation.
+
+Similar to AssignEndpointStatic, but takes an additional pool-start-EID
+and pool-size argument:
+
+```
+AssignBridgeStatic <hwaddr> <static-EID> <pool-start-EID> <pool-size>
+```
+
+`<pool-start-EID>`: The starting EID for the range of EIDs being allocated.
+This EID must be contiguous with the bridge’s own EID, to comply with the
+current MCTP 1.3.x specification. In future releases, this restriction
+may be relaxed.
+If passed as 0, mctpd will automatically choose a pool start EID.
+
+`<pool-size>`: The number of EIDs to be allocated to the bridge's EID pool.
+
+Returns:
+```
+eid        (byte)
+poolstart  (byte)
+net        (integer)
+path       (string)
+new        (bool) - true if a new EID was assigned
+```
+
+Where `eid` is the assigned EID, `poolstart` is the starting EID of the allocated
+bridge EID pool, and the remaining fields are the same as the methods above.
+
 #### `.LearnEndpoint`: `ay` → `yisb`
 
 Like SetupEndpoint but will not assign EIDs, will only query endpoints for a
@@ -252,7 +280,7 @@ interface    (string) - Interface name where error occurred
 This signal allows applications to monitor and log transport errors for
 diagnostic purposes.
 
-## Network objects: `/au/com/codeconstruct/networks/<net>`
+## Network objects: `/au/com/codeconstruct/mctp1/networks/<net>`
 
 These objects represent MCTP networks which have been added use `mctp link`
 commands. These will be 1:1 with the MCTP networks on the system.
@@ -383,16 +411,23 @@ The configuration file has a global section, plus function-specific sections.
 
 These apply to all modes of `mctpd` operation. One top-level setting is defined:
 
-#### `mode`: mctpd mode of operation
+#### `role`: local MCTP device role
 
-* type: string enum: `bus-owner` or `endpoint`
+* type: string enum: `bus-owner`, `endpoint` or `unknown`
 * default: `bus-owner`
 
-This sets the overall mode of `mctpd`, either as a Bus Owner (`mode =
-"bus-owner"`) or Endpoint (`mode = "endpoint"`). In bus owner mode, mctpd will
+This sets the overall role of `mctpd`, either as a Bus Owner (`role =
+"bus-owner"`) or Endpoint (`role = "endpoint"`). In bus owner mode, mctpd will
 assume responsibility for allocating addresses to other endpoints. In endpoint
 mode, mctpd will not allocate addresses, but instead accept allocations from an
 external bus owner.
+
+A value of `unknown` allows per-interface settings; the dbus interface's
+`au.com.codeconstruct.MCTP.Interface1.Role` property may be written to set
+a specific role for each interface.
+
+Previous versions of `mctpd` used `mode` for this configuration, both `role`
+and `mode` are accepted.
 
 ### `[mctp]` section
 
@@ -466,3 +501,81 @@ space. Value should be between [```0.5 * TRECLAIM (5)```- ```10```] seconds.
 Such periodic polling is common for all the briged endpoints among allocated
 pool space [`.PoolStart` - `.PoolEnd`] of the bridge.
 Polling could be provisioned to be disabled via setting the value as ```0```.
+
+### `[[interface]]`: per-interface configuration
+
+The `[[interface]]` table allows configuration to be applied to specific
+interfaces. Each `[[interface]]` entry contains a "match" definition, which
+determines which MCTP interfaces the table applies to.
+
+Matches are processed in the order they appear in the configuration file;
+the first `[[interface]]` section that matches is applied.
+
+Other content of the interface table is configuration to be applied. The
+only setting currently supported is `role`, to set mctpd's role as
+either bus-owner or endpoint on this interface.
+
+For example, to apply a `bus-owner` role globally, with interface-specific
+`endpoint` roles for all i2c devices, and one particular (USB) device:
+
+```toml
+role = "bus-owner"
+
+[[interface]]
+match = { phys-type = "i2c" }
+role = "endpoint"
+
+[[interface]]
+match = { path = "/devices/pci0000:00/0000:00:08.3/usb10/10-0:1.0" }
+role = "endpoint"
+```
+
+#### Match types
+
+Match on all interfaces:
+
+```toml
+# match all interfaces
+[[interface]]
+match = "all"
+```
+
+Match on a physical transport binding type:
+
+```toml
+# match only MCTP-over-i2c interfaces
+[[interface]]
+match = { phys-type = "i2c" }
+```
+
+Available binding types are: `SMBus` / `I2C`, `PCIe`, `USB`, `KCS`, `serial`,
+`I3C`, `MMBI`, or `UCIE`. Matches are case-insensitive.
+
+Match on a sysfs device path:
+
+```toml
+# match on sysfs path
+[[interface]]
+match = { path = "/devices/pci0000:00/0000:00:08.3/usb10/10-0:1.0" }
+```
+
+Paths may use glob expressions:
+
+```toml
+# match on globbed sysfs path
+[[interface]]
+match = { path = "/devices/pci0000:00/0000:00:08.3/*" }
+```
+
+Paths have the `/sys` prefix stripped.
+
+## Capabilities
+
+`mctpd` requires the `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN` capabilites to run.
+If the service is not running as root these should be added to the `AmbientCapabilities`
+setting in the service's config.
+If the target platform has the `libcap` library available,
+the `mctpd` process will drop `CAP_NET_BIND_SERVICE` when it is no longer needed.
+
+Because `mctpd` may be exposed to potentially hostile inputs,
+it shouldn't be given more capabilities than necessary.

@@ -44,23 +44,26 @@ Use `mctp help` for the list of available commands:
     mctp link
     mctp link show [ifname]
     mctp link set <ifname> [up|down] [mtu <mtu>] [network <net>] [bus-owner <physaddr>]
+    mctp link serial <device>
 
     mctp address
-    mctp address show [IFNAME]
-    mctp address add <eid> dev <IFNAME>
-    mctp address del <eid> dev <IFNAME>
+    mctp address show [ifname]
+    mctp address add <eid> dev <ifname>
+    mctp address del <eid> dev <ifname>
 
     mctp route
     mctp route show [net <network>]
-    mctp route add <eid>[-<eid>] via <dev> [mtu <mtu>]
+    mctp route add <eid>[-<eid>] via <ifname> [mtu <mtu>]
     mctp route add <eid>[-<eid>] gw <eid> [net <net>] [mtu <mtu>]
-    mctp route del <eid>[-<eid>] via <dev>
+    mctp route del <eid>[-<eid>] via <ifname>
     mctp route del <eid>[-<eid>] gw <eid> [net <net>]
 
     mctp neigh
     mctp neigh show [dev <network>]
-    mctp neigh add <eid> dev <device> lladdr <physaddr>
-    mctp neigh del <eid> dev <device>
+    mctp neigh add <eid> dev <ifname> lladdr <physaddr>
+    mctp neigh del <eid> dev <ifname>
+
+    mctp monitor
 
 `mctpd` Usage
 -------------
@@ -109,6 +112,12 @@ where `mctpd` exposes three dbus interfaces for each:
 
  - `au.com.codeconstruct.MCTP1.Endpoint1`: Additional control methods for the
    endpoint - for example, `Remove`
+
+Contributing
+------------
+
+We have some guidance for contributing in the [`CONTRIBUTING`](CONTRIBUTING.md)
+document.
 
 Testing
 -------

@@ -158,13 +158,82 @@ static const char *rtattr_name(enum attrgroup group, unsigned int type)
 	return attrnames[group].names[type];
 }
 
+static void dump_print_u32(void *val, size_t len, const char *attr_name,
+			   uint32_t attr_type, const char *prefix)
+{
+	printf("%sattr %s (0x%x): ", prefix, attr_name, attr_type);
+
+	uint32_t v;
+	if (len == sizeof(v)) {
+		memcpy(&v, val, sizeof(v));
+		printf("%u\n", v);
+	} else {
+		printf("Bad value\n");
+	}
+}
+
+static void dump_print_u8(void *val, size_t len, const char *attr_name,
+			  uint32_t attr_type, const char *prefix)
+{
+	printf("%sattr %s (0x%x): ", prefix, attr_name, attr_type);
+
+	uint8_t v;
+	if (len == sizeof(v)) {
+		memcpy(&v, val, sizeof(v));
+		printf("%u\n", v);
+	} else {
+		printf("Bad value\n");
+	}
+}
+
+static void dump_ifla_af_mctp(struct rtattr *rta, size_t len)
+{
+	for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+		switch (rta->rta_type) {
+		case IFLA_MCTP_NET:
+			dump_print_u32(RTA_DATA(rta), RTA_PAYLOAD(rta),
+				       "IFLA_MCTP_NET", IFLA_MCTP_NET, "    ");
+			break;
+		case IFLA_MCTP_PHYS_BINDING:
+			dump_print_u8(RTA_DATA(rta), RTA_PAYLOAD(rta),
+				      "IFLA_MCTP_PHYS_BINDING",
+				      IFLA_MCTP_PHYS_BINDING, "    ");
+			break;
+		default:
+			printf("    Unknown MCTP link attribute 0x%x\n",
+			       rta->rta_type);
+			mctp_hexdump(RTA_DATA(rta), RTA_PAYLOAD(rta), "    ");
+		}
+	}
+}
+
+static void dump_ifla_af_spec(struct rtattr *rta, size_t len)
+{
+	for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+		if (rta->rta_type == AF_MCTP) {
+			printf("  family %d AF_MCTP:\n", rta->rta_type);
+			dump_ifla_af_mctp(RTA_DATA(rta), RTA_PAYLOAD(rta));
+		} else {
+			printf("  family %d:\n", rta->rta_type);
+			mctp_hexdump(RTA_DATA(rta), RTA_PAYLOAD(rta), "  ");
+		}
+	}
+}
+
 static void dump_rtnlmsg_attrs(enum attrgroup group, struct rtattr *rta,
 			       size_t len)
 {
 	for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
 		printf("attr %s (0x%x)\n", rtattr_name(group, rta->rta_type),
 		       rta->rta_type);
-		mctp_hexdump(RTA_DATA(rta), RTA_PAYLOAD(rta), "  ");
+		switch (rta->rta_type) {
+		case IFLA_AF_SPEC:
+			dump_ifla_af_spec(RTA_DATA(rta), RTA_PAYLOAD(rta));
+			break;
+		default:
+			mctp_hexdump(RTA_DATA(rta), RTA_PAYLOAD(rta), "  ");
+			break;
+		}
 	}
 }
 
@@ -826,10 +895,10 @@ static int cmd_addr(struct ctx *ctx, int argc, const char **argv)
 	const char *subcmd;
 	if (argc == 2 && !strcmp(argv[1], "help")) {
 		fprintf(stderr, "%s address\n", ctx->top_cmd);
-		fprintf(stderr, "%s address show [IFNAME]\n", ctx->top_cmd);
-		fprintf(stderr, "%s address add <eid> dev <IFNAME>\n",
+		fprintf(stderr, "%s address show [ifname]\n", ctx->top_cmd);
+		fprintf(stderr, "%s address add <eid> dev <ifname>\n",
 			ctx->top_cmd);
-		fprintf(stderr, "%s address del <eid> dev <IFNAME>\n",
+		fprintf(stderr, "%s address del <eid> dev <ifname>\n",
 			ctx->top_cmd);
 		return 255;
 	}
@@ -1057,12 +1126,12 @@ static int cmd_route(struct ctx *ctx, int argc, const char **argv)
 		fprintf(stderr, "%s route show [net <network>]\n",
 			ctx->top_cmd);
 		fprintf(stderr,
-			"%s route add <eid>[-<eid>] via <dev> [mtu <mtu>]\n",
+			"%s route add <eid>[-<eid>] via <ifname> [mtu <mtu>]\n",
 			ctx->top_cmd);
 		fprintf(stderr,
 			"%s route add <eid>[-<eid>] gw <eid> [net <net>] [mtu <mtu>]\n",
 			ctx->top_cmd);
-		fprintf(stderr, "%s route del <eid>[-<eid>] via <dev>\n",
+		fprintf(stderr, "%s route del <eid>[-<eid>] via <ifname>\n",
 			ctx->top_cmd);
 		fprintf(stderr,
 			"%s route del <eid>[-<eid>] gw <eid> [net <net>]\n",
@@ -1267,11 +1336,11 @@ static int cmd_neigh(struct ctx *ctx, int argc, const char **argv)
 		fprintf(stderr, "%s neigh show [dev <network>]\n",
 			ctx->top_cmd);
 		fprintf(stderr,
-			"%s neigh add <eid> dev <device> lladdr <physaddr>\n",
+			"%s neigh add <eid> dev <ifname> lladdr <physaddr>\n",
 			ctx->top_cmd);
 		fprintf(stderr,
 			"        <physaddr> syntax is for example \"1d\" or \"aa:bb:cc:11:22:33\"\n");
-		fprintf(stderr, "%s neigh del <eid> dev <device>\n",
+		fprintf(stderr, "%s neigh del <eid> dev <ifname>\n",
 			ctx->top_cmd);
 		return 255;
 	}
