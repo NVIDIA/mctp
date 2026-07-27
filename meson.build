@@ -149,7 +149,7 @@ if libsystemd.found()
             'tests/mctp-ops-fault.c',
         ] + netlink_sources + util_sources,
         include_directories: include_directories('src'),
-        dependencies: [libsystemd, toml_dep],
+        dependencies: [libsystemd, toml_dep, libcap],
         c_args: ['-DOPS_SD_EVENT=1'],
     )
 endif
