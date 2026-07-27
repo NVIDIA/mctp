@@ -373,19 +373,19 @@ static void test_get_role_all(void)
     rc = get_role("", &r);
     ASSERT_EQ(rc, -1);
 
-    /* Also cover parse_config_mode variants here to avoid a separate
+    /* Also cover parse_config_role variants here to avoid a separate
      * near-identical test scaffold. */
-    ASSERT_EQ(parse_config_mode(&ctx, "bus-owner"), 0);
+    ASSERT_EQ(parse_config_role("bus-owner", &ctx.default_role), 0);
     ASSERT_EQ(ctx.default_role, ENDPOINT_ROLE_BUS_OWNER);
 
-    ASSERT_EQ(parse_config_mode(&ctx, "endpoint"), 0);
+    ASSERT_EQ(parse_config_role("endpoint", &ctx.default_role), 0);
     ASSERT_EQ(ctx.default_role, ENDPOINT_ROLE_ENDPOINT);
 
-    ASSERT_EQ(parse_config_mode(&ctx, "unknown"), 0);
+    ASSERT_EQ(parse_config_role("unknown", &ctx.default_role), 0);
     ASSERT_EQ(ctx.default_role, ENDPOINT_ROLE_UNKNOWN);
 
-    ASSERT_EQ(parse_config_mode(&ctx, "invalid"), -1);
-    ASSERT_EQ(parse_config_mode(&ctx, ""), -1);
+    ASSERT_EQ(parse_config_role("invalid", &ctx.default_role), -1);
+    ASSERT_EQ(parse_config_role("", &ctx.default_role), -1);
 
     TEST_PASS();
 }
@@ -728,50 +728,66 @@ static void test_mctp_ctrl_validate_response(void)
 
     /* exp_size too small */
     uint8_t buf1[16] = { 0 };
-    rc = mctp_ctrl_validate_response(buf1, 16, sizeof(struct mctp_ctrl_resp),
-				     "test", 0, 0x02, &addr, false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf1, .resp_len = 16,
+				     .resp_addr = addr, .suppress_logs = false },
+	    sizeof(struct mctp_ctrl_resp), "test", 0, 0x02);
     ASSERT_NE(rc, 0);
 
     /* rsp_size too short for error response */
     uint8_t buf2[2] = { 0 };
-    rc = mctp_ctrl_validate_response(buf2, 2, sizeof(struct mctp_ctrl_resp) + 1,
-				     "test", 0, 0x02, &addr, false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf2, .resp_len = 2,
+				     .resp_addr = addr, .suppress_logs = false },
+	    sizeof(struct mctp_ctrl_resp) + 1, "test", 0, 0x02);
     ASSERT_NE(rc, 0);
 
     /* Wrong IID */
     uint8_t buf3[8] = { 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf3, 8, sizeof(struct mctp_ctrl_resp) + 1,
-				     "test", 0x05, 0x02, &addr, false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf3, .resp_len = 8,
+				     .resp_addr = addr, .suppress_logs = false },
+	    sizeof(struct mctp_ctrl_resp) + 1, "test", 0x05, 0x02);
     ASSERT_NE(rc, 0);
 
     /* Wrong opcode */
     uint8_t buf4[8] = { 0x05, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf4, 8, sizeof(struct mctp_ctrl_resp) + 1,
-				     "test", 0x05, 0x02, &addr, false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf4, .resp_len = 8,
+				     .resp_addr = addr, .suppress_logs = false },
+	    sizeof(struct mctp_ctrl_resp) + 1, "test", 0x05, 0x02);
     ASSERT_NE(rc, 0);
 
     /* Non-zero completion code (UNSUPPORTED) */
     uint8_t buf5[8] = { 0x05, 0x02, MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD };
-    rc = mctp_ctrl_validate_response(buf5, 8, sizeof(struct mctp_ctrl_resp) + 1,
-				     "test", 0x05, 0x02, &addr, false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf5, .resp_len = 8,
+				     .resp_addr = addr, .suppress_logs = false },
+	    sizeof(struct mctp_ctrl_resp) + 1, "test", 0x05, 0x02);
     ASSERT_EQ(rc, -ENOTSUP);
 
     /* Non-zero completion code (generic error) */
     uint8_t buf6[8] = { 0x05, 0x02, 0x01 }; /* CC_ERROR */
-    rc = mctp_ctrl_validate_response(buf6, 8, sizeof(struct mctp_ctrl_resp) + 1,
-				     "test", 0x05, 0x02, &addr, false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf6, .resp_len = 8,
+				     .resp_addr = addr, .suppress_logs = false },
+	    sizeof(struct mctp_ctrl_resp) + 1, "test", 0x05, 0x02);
     ASSERT_EQ(rc, -ECONNREFUSED);
 
     /* Success but response too short for full message */
     uint8_t buf7[4] = { 0x05, 0x02, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf7, 4, 8, "test", 0x05, 0x02, &addr,
-				     false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf7, .resp_len = 4,
+				     .resp_addr = addr, .suppress_logs = false },
+	    8, "test", 0x05, 0x02);
     ASSERT_NE(rc, 0);
 
     /* Success - full size */
     uint8_t buf8[8] = { 0x05, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    rc = mctp_ctrl_validate_response(buf8, 8, 8, "test", 0x05, 0x02, &addr,
-				     false);
+    rc = mctp_ctrl_validate_response(
+	    &(struct mctp_ctrl_cmd){ .resp = buf8, .resp_len = 8,
+				     .resp_addr = addr, .suppress_logs = false },
+	    8, "test", 0x05, 0x02);
     ASSERT_EQ(rc, 0);
 
     TEST_PASS();
@@ -825,29 +841,41 @@ static void test_suppress_logs_branches(void)
 	{
 		uint8_t wrong_iid[8] = { 0x01, 0x02, 0x00 };
 		rc = mctp_ctrl_validate_response(
-			wrong_iid, sizeof(wrong_iid),
-			sizeof(struct mctp_ctrl_resp) + 1, "peer", 0x05, 0x02,
-			&addr, true);
+			&(struct mctp_ctrl_cmd){ .resp = wrong_iid,
+						 .resp_len = sizeof(wrong_iid),
+						 .resp_addr = addr,
+						 .suppress_logs = true },
+			sizeof(struct mctp_ctrl_resp) + 1, "peer", 0x05, 0x02);
 		ASSERT_EQ(rc, -ENOMSG);
 	}
     {
         uint8_t wrong_opcode[8] = { 0x05, 0x03, 0x00 };
-	rc = mctp_ctrl_validate_response(wrong_opcode, sizeof(wrong_opcode),
-					 sizeof(struct mctp_ctrl_resp) + 1,
-					 "peer", 0x05, 0x02, &addr, true);
+	rc = mctp_ctrl_validate_response(
+		&(struct mctp_ctrl_cmd){ .resp = wrong_opcode,
+					 .resp_len = sizeof(wrong_opcode),
+					 .resp_addr = addr,
+					 .suppress_logs = true },
+		sizeof(struct mctp_ctrl_resp) + 1, "peer", 0x05, 0x02);
 	ASSERT_EQ(rc, -ENOMSG);
     }
     {
         uint8_t err_cc[8] = { 0x05, 0x02, 0x01 };
-	rc = mctp_ctrl_validate_response(err_cc, sizeof(err_cc),
-					 sizeof(struct mctp_ctrl_resp) + 1,
-					 "peer", 0x05, 0x02, &addr, true);
+	rc = mctp_ctrl_validate_response(
+		&(struct mctp_ctrl_cmd){ .resp = err_cc,
+					 .resp_len = sizeof(err_cc),
+					 .resp_addr = addr,
+					 .suppress_logs = true },
+		sizeof(struct mctp_ctrl_resp) + 1, "peer", 0x05, 0x02);
 	ASSERT_EQ(rc, -ECONNREFUSED);
     }
     {
         uint8_t short_rsp[4] = { 0x05, 0x02, 0x00, 0x00 };
-	rc = mctp_ctrl_validate_response(short_rsp, sizeof(short_rsp), 8,
-					 "peer", 0x05, 0x02, &addr, true);
+	rc = mctp_ctrl_validate_response(
+		&(struct mctp_ctrl_cmd){ .resp = short_rsp,
+					 .resp_len = sizeof(short_rsp),
+					 .resp_addr = addr,
+					 .suppress_logs = true },
+		8, "peer", 0x05, 0x02);
 	ASSERT_EQ(rc, -ENOMSG);
     }
 
@@ -1334,15 +1362,12 @@ static void test_endpoint_query_addr_socket_fail(void)
     struct sockaddr_mctp_ext req_addr = { 0 };
     req_addr.smctp_base.smctp_addr.s_addr = 10;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
     fault_mctp_socket_errno = ENOMEM;
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-				 &resp, &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, &cmd);
     ASSERT_NE(rc, 0);
-    ASSERT_NULL(resp);
+    ASSERT_NULL(cmd.resp);
 
     TEST_PASS();
 }
@@ -1355,13 +1380,10 @@ static void test_endpoint_query_addr_setsockopt_fail(void)
     struct sockaddr_mctp_ext req_addr = { 0 };
     req_addr.smctp_base.smctp_addr.s_addr = 10;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
     fault_mctp_setsockopt_errno = ENOPROTOOPT;
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-				 &resp, &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, &cmd);
     ASSERT_NE(rc, 0);
 
     TEST_PASS();
@@ -1378,13 +1400,10 @@ static void test_endpoint_query_addr_sendto_fail(void)
     req_addr.smctp_base.smctp_addr.s_addr = 10;
     req_addr.smctp_base.smctp_type = MCTP_CTRL_HDR_MSG_TYPE;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
     fault_mctp_sendto_errno = EHOSTUNREACH;
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-				 &resp, &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, &cmd);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
@@ -1396,12 +1415,9 @@ static void test_endpoint_query_addr_zero_len(void)
     struct ctx ctx = { 0 };
     struct sockaddr_mctp_ext req_addr = { 0 };
     uint8_t req[1] = { 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = 0 };
 
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, 0, &resp,
-				 &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, &cmd);
     ASSERT_NE(rc, 0);
 
     TEST_PASS();
@@ -1414,12 +1430,9 @@ static void test_endpoint_query_peer_local(void)
     struct ctx ctx = { 0 };
     struct peer p = { .state = LOCAL, .ctx = &ctx };
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
-    int rc = endpoint_query_peer(&p, MCTP_CTRL_HDR_MSG_TYPE,
-                                 req, sizeof(req), &resp, &resp_len, &addr);
+    int rc = endpoint_query_peer(&p, &cmd);
     ASSERT_EQ(rc, -EPROTO);
 
     TEST_PASS();
@@ -1844,13 +1857,10 @@ static void test_endpoint_query_addr_ext(void)
     req_addr.smctp_halen = 1;
     req_addr.smctp_haddr[0] = 0xAA;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
     /* ext_addr=true; sendto succeeds, wait_fd_timeout will timeout */
-    int rc = endpoint_query_addr(&ctx, &req_addr, true, req, sizeof(req), &resp,
-				 &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, true, &cmd);
     /* Should fail (timeout or bad fd) */
     ASSERT_NE(rc, 0);
     TEST_PASS();
@@ -2095,12 +2105,9 @@ static void test_endpoint_query_addr_timeout(void)
     struct sockaddr_mctp_ext req_addr = { 0 };
     req_addr.smctp_base.smctp_addr.s_addr = 10;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-				 &resp, &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, &cmd);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
@@ -2146,16 +2153,13 @@ static void test_endpoint_query_addr_setsockopt2_fail(void)
     struct sockaddr_mctp_ext req_addr = { 0 };
     req_addr.smctp_base.smctp_addr.s_addr = 10;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
     /* First setsockopt (ADDR_EXT) succeeds, second (ERRQUEUE) fails (non-fatal) */
     /* We need to make the second setsockopt call fail. Since our mock always
        succeeds, this test just exercises the normal path which already covers
        the non-failure branch of the errqueue setsockopt. */
-    int rc = endpoint_query_addr(&ctx, &req_addr, false, req, sizeof(req),
-				 &resp, &resp_len, &resp_addr, false);
+    int rc = endpoint_query_addr(&ctx, &req_addr, false, &cmd);
     /* Will fail at wait_fd_timeout or later, that's fine */
     ASSERT_EQ(rc, -110);
     TEST_PASS();
@@ -2298,7 +2302,8 @@ static void test_query_get_endpoint_id_fail(void)
     d.hwaddr[0] = 0xAA;
 
     /* Will fail at endpoint_query_phys (sendto succeeds, no response -> timeout) */
-    int rc = query_get_endpoint_id(&ctx, &d, &eid, &ep_type, &medium, NULL);
+    int rc = query_get_endpoint_id(&ctx, &d, &eid, &ep_type, &medium,
+				   /*peer=*/NULL, /*retry=*/true);
     ASSERT_NE(rc, 0);
 
     TEST_PASS();
@@ -2628,14 +2633,11 @@ static void test_endpoint_query_phys_fail(void)
     dest_phys d = { .ifindex = 1, .hwaddr_len = 1 };
     d.hwaddr[0] = 0xAA;
     uint8_t req[4] = { 0x80, 0x02, 0, 0 };
-    uint8_t *resp = NULL;
-    size_t resp_len = 0;
-    struct sockaddr_mctp_ext resp_addr = { 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
 
     /* sendto fails */
     fault_mctp_sendto_errno = EHOSTUNREACH;
-    int rc = endpoint_query_phys(&ctx, &d, MCTP_CTRL_HDR_MSG_TYPE,
-                                 req, sizeof(req), &resp, &resp_len, &resp_addr);
+    int rc = endpoint_query_phys(&ctx, &d, &cmd);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
