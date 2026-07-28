@@ -1662,8 +1662,17 @@ static int cb_listen_control_msg(sd_event_source *s, int sd, uint32_t revents,
 	if (rc < 0)
 		goto out;
 
-	if (buf_size == 0)
-		errx(EXIT_FAILURE, "Control socket returned EOF");
+	if (buf_size == 0) {
+		/* AF_MCTP is SOCK_DGRAM: a zero-length read is an empty
+		 * datagram, not EOF. Drop it and keep serving rather than
+		 * aborting the daemon on peer-supplied input (remote DoS).
+		 * buf is NULL here, so the free(buf) at out: is safe. */
+		if (ctx->verbose)
+			warnx("Ignoring empty control datagram from %s",
+			      ext_addr_tostr(&addr));
+		rc = 0;
+		goto out;
+	}
 
 	if (addr.smctp_base.smctp_type != MCTP_CTRL_HDR_MSG_TYPE) {
 		bug_warn("Wrong message type for listen socket");
