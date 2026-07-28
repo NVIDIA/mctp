@@ -3488,6 +3488,34 @@ static void test_cb_listen_control_msg_edges(void)
     TEST_PASS();
 }
 
+static void test_security_rs2_06_empty_control_datagram(void)
+{
+    TEST_START("security RS2-06: empty control datagram");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+    ctx.verbose = true;
+    setup_config_defaults(&ctx);
+
+    /*
+     * A zero-length AF_MCTP control datagram: the MSG_PEEK recvfrom in
+     * read_message() returns 0, so cb_listen_control_msg() reaches the
+     * buf_size == 0 branch.
+     *
+     * Pre-fix that branch called errx(EXIT_FAILURE, "Control socket
+     * returned EOF"), aborting the (root) daemon on peer-supplied input --
+     * a remote DoS -- which would terminate this process before TEST_PASS().
+     * Fixed: the empty datagram is dropped and the callback returns 0.
+     */
+    fault_mctp_recvfrom_peek_len = 0;
+    int rc = cb_listen_control_msg(NULL, 3, EPOLLIN, &ctx);
+    ASSERT_EQ(rc, 0);
+    fault_mctp_recvfrom_peek_len = -1; /* reset the injector */
+
+    TEST_PASS();
+}
+
 static void test_process_error_queue_basic_paths(void)
 {
     TEST_START("process_error_queue basic paths");
@@ -5218,6 +5246,7 @@ int main(void)
     test_handle_routing_info_update_no_dbus_matrix();
     test_handle_discovery_notify_branches();
     test_cb_listen_control_msg_edges();
+    test_security_rs2_06_empty_control_datagram();
     test_process_error_queue_basic_paths();
     test_process_error_queue_peer_and_binding_matrix();
     test_endpoint_send_set_eid_fail();
