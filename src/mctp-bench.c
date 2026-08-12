@@ -423,9 +423,6 @@ static int mctp_bench_send(struct mctp_bench_send_args send_args)
 
 		sequence++;
 	}
-	free(buf);
-	close(sd);
-	return 0;
 }
 
 static void usage(void)
@@ -746,5 +743,6 @@ static int command(mctp_eid_t eid, int net, enum command command,
 
 	free(req);
 	free(resp);
+	close(sd);
 	return resp_body.status;
 }

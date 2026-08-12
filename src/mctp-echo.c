@@ -53,6 +53,18 @@ int main(void)
 			continue;
 		}
 
+		if (len == 0) {
+			/* Dequeue the zero-length datagram so MSG_PEEK doesn't
+			 * loop forever on the same packet. */
+			addrlen = sizeof(addr);
+			ssize_t drop = recvfrom(sd, NULL, 0, 0,
+						(struct sockaddr *)&addr,
+						&addrlen);
+			if (drop < 0)
+				warn("recvfrom(zero-length)");
+			continue;
+		}
+
 		if ((size_t)len > buflen) {
 			buflen = len;
 			buf = realloc(buf, buflen);

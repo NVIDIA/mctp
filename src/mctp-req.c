@@ -125,6 +125,8 @@ static int mctp_req(unsigned int net, mctp_eid_t eid, unsigned int ifindex,
 			     i, exp, buf[i]);
 	}
 
+	free(buf);
+	close(sd);
 	return 0;
 }
 

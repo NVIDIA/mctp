@@ -223,6 +223,7 @@ static void dump_ifla_af_spec(struct rtattr *rta, size_t len)
 static void dump_rtnlmsg_attrs(enum attrgroup group, struct rtattr *rta,
 			       size_t len)
 {
+	/* coverity[audit_speculative_execution_data_leak] */
 	for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
 		printf("attr %s (0x%x)\n", rtattr_name(group, rta->rta_type),
 		       rta->rta_type);
@@ -765,6 +766,7 @@ static int cmd_link_serial(struct ctx *ctx, int argc, const char **argv)
 
 	pause();
 
+	close(fd);
 	return 0;
 }
 

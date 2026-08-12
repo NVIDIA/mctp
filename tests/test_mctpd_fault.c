@@ -54,12 +54,14 @@ static uint8_t recvmsg_stub_dest_eid = 0;
 static uint8_t recvmsg_stub_msg_type = MCTP_CTRL_HDR_MSG_TYPE;
 static uint8_t recvmsg_stub_cmd = MCTP_CTRL_CMD_GET_ENDPOINT_ID;
 static int route_add_stub_rc = INT32_MIN;
+static int route_add_stub_calls = 0;
 int mctp_nl_route_add(struct mctp_nl *nl, uint8_t eid, unsigned int extent,
                       int ifindex, const struct mctp_fq_addr *gw, uint32_t mtu);
 
 int mctpd_test_route_add(mctp_nl *nl, uint8_t eid, unsigned int extent,
                          int ifindex, const struct mctp_fq_addr *gw, uint32_t mtu)
 {
+    route_add_stub_calls++;
     if (route_add_stub_rc != INT32_MIN) {
         return route_add_stub_rc;
     }
@@ -1143,6 +1145,263 @@ static void cleanup_ctx(struct ctx *ctx)
     free(ctx->nets);
     ctx->nets = NULL;
     ctx->num_nets = 0;
+}
+
+static void test_security_v9_routing_table_response_guard(void)
+{
+    TEST_START("security V9: routing-table response guard");
+    struct sockaddr_mctp_ext addr = { 0 };
+    const size_t base =
+        offsetof(struct mctp_ctrl_resp_get_routing_table, routing_entries);
+    int rc;
+
+    {
+        uint8_t respbuf[64] = { 0 };
+        struct mctp_ctrl_resp_get_routing_table *resp =
+            (struct mctp_ctrl_resp_get_routing_table *)respbuf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)resp->routing_entries;
+
+        resp->ctrl_hdr.rq_dgram_inst = 0x05;
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 2;
+        entry[0].starting_eid = 10;
+        entry[0].phys_address_size = 0;
+        entry[1].starting_eid = 11;
+        entry[1].phys_address_size = 0;
+
+        rc = mctp_ctrl_validate_get_routing_table_response(
+            respbuf, base + 2 * sizeof(*entry), "peer", 0x05, &addr,
+            false);
+        ASSERT_EQ(rc, 0);
+    }
+
+    {
+        uint8_t respbuf[64] = { 0 };
+        struct mctp_ctrl_resp_get_routing_table *resp =
+            (struct mctp_ctrl_resp_get_routing_table *)respbuf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)resp->routing_entries;
+
+        resp->ctrl_hdr.rq_dgram_inst = 0x05;
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 2;
+        entry[0].starting_eid = 10;
+        entry[0].phys_address_size = 0;
+
+        rc = mctp_ctrl_validate_get_routing_table_response(
+            respbuf, base + sizeof(*entry), "peer", 0x05, &addr, false);
+        ASSERT_EQ(rc, -ENOMSG);
+    }
+
+    {
+        uint8_t respbuf[64] = { 0 };
+        struct mctp_ctrl_resp_get_routing_table *resp =
+            (struct mctp_ctrl_resp_get_routing_table *)respbuf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)resp->routing_entries;
+
+        resp->ctrl_hdr.rq_dgram_inst = 0x05;
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 1;
+        entry->starting_eid = 10;
+        entry->phys_address_size = 4;
+
+        rc = mctp_ctrl_validate_get_routing_table_response(
+            respbuf, base + sizeof(*entry) + 3, "peer", 0x05, &addr,
+            false);
+        ASSERT_EQ(rc, -ENOMSG);
+    }
+
+    TEST_PASS();
+}
+
+static void test_security_v1_routing_table_entry_stride(void)
+{
+    TEST_START("security V1: routing-table entry stride");
+    uint8_t entry_buf[sizeof(struct get_routing_table_entry) + 8] = { 0 };
+    struct get_routing_table_entry *entry =
+        (struct get_routing_table_entry *)entry_buf;
+    const struct get_routing_table_entry *next;
+    size_t entry_len = 0;
+    int rc;
+
+    entry->starting_eid = 10;
+    entry->phys_address_size = 3;
+
+    rc = routing_table_entry_len(entry, sizeof(entry_buf), &entry_len);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(entry_len, sizeof(*entry) + 3);
+
+    next = routing_table_entry_next(entry);
+    if ((const uint8_t *)next != entry_buf + sizeof(*entry) + 3)
+        TEST_FAIL("routing table entry stride did not include phys tail");
+
+    entry->phys_address_size = sizeof(entry_buf);
+    rc = routing_table_entry_len(entry, sizeof(entry_buf), &entry_len);
+    ASSERT_EQ(rc, -ENOMSG);
+
+    TEST_PASS();
+}
+
+static void test_security_v2_routing_info_update_bounds(void)
+{
+    TEST_START("security V2: routing-info-update bounds");
+    uint8_t msg[16] = { 0 };
+    struct mctp_ctrl_cmd_routing_info_update *rtu = (void *)msg;
+    const struct routing_info_entry *entry = NULL;
+    size_t entry_size = 0;
+    size_t phyaddr_size = 0;
+    const size_t base =
+        offsetof(struct mctp_ctrl_cmd_routing_info_update, entries);
+    int rc;
+
+    rtu->number_of_entries = 1;
+    rtu->entries[0] = 0;
+    rtu->entries[1] = 1;
+    rtu->entries[2] = 22;
+    rtu->entries[3] = 0xaa;
+    rtu->entries[4] = 0xbb;
+    rc = routing_info_update_get_single_entry(
+        rtu, base + routing_info_entry_size_from_phys(2), &entry,
+        &entry_size, &phyaddr_size);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(entry_size, routing_info_entry_size_from_phys(2));
+    ASSERT_EQ(phyaddr_size, 2);
+
+    rtu->number_of_entries = 2;
+    rc = routing_info_update_get_single_entry(
+        rtu, base + routing_info_entry_size_from_phys(0), &entry,
+        &entry_size, &phyaddr_size);
+    ASSERT_EQ(rc, -EINVAL);
+
+    rtu->number_of_entries = 1;
+    rc = routing_info_update_get_single_entry(rtu, base + 2, &entry,
+                                              &entry_size, &phyaddr_size);
+    ASSERT_EQ(rc, -ENOMSG);
+
+    TEST_PASS();
+}
+
+static void test_security_v5_control_demux_request_gate(void)
+{
+    TEST_START("security V5: control demux request gate");
+    struct mctp_ctrl_msg_hdr hdr = { 0 };
+
+    hdr.rq_dgram_inst = RQDI_REQ | 0x03;
+    hdr.command_code = MCTP_CTRL_CMD_DISCOVERY_NOTIFY;
+    ASSERT_EQ(mctp_ctrl_msg_is_request(&hdr), 1);
+
+    hdr.rq_dgram_inst = 0x03;
+    ASSERT_EQ(mctp_ctrl_msg_is_request(&hdr), 0);
+
+    TEST_PASS();
+}
+
+static void test_security_v6_set_eid_rejects_before_route_add(void)
+{
+    TEST_START("security V6: Set EID rejects before route add");
+    queue_single_mctp_link_dump(1, "mctpi2c0", 1);
+    mctp_nl *nl = mctp_nl_new(false);
+    if (!nl) { TEST_PASS(); return; }
+
+    struct ctx ctx = { 0 };
+    struct link link = { 0 };
+    struct sockaddr_mctp_ext addr = { 0 };
+    struct mctp_ctrl_cmd_set_eid req = { 0 };
+
+    setup_config_defaults(&ctx);
+    ctx.nl = nl;
+    link.role = ENDPOINT_ROLE_ENDPOINT;
+    link.ctx = &ctx;
+    link.ifindex = 1;
+    mctp_nl_set_link_userdata(ctx.nl, 1, &link);
+
+    addr.smctp_base.smctp_addr.s_addr = 10;
+    addr.smctp_base.smctp_network = 1;
+    addr.smctp_ifindex = 1;
+    req.ctrl_hdr.rq_dgram_inst = RQDI_REQ;
+    req.ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    req.operation = MCTP_SET_EID_SET;
+    req.eid = 7;
+
+    route_add_stub_calls = 0;
+    route_add_stub_rc = -EPERM;
+    (void)handle_control_set_endpoint_id(&ctx, -1, &addr, (uint8_t *)&req,
+                                         sizeof(req));
+    ASSERT_EQ(route_add_stub_calls, 0);
+    route_add_stub_rc = INT32_MIN;
+
+    mctp_nl_set_link_userdata(ctx.nl, 1, NULL);
+    mctp_nl_close(nl);
+    TEST_PASS();
+}
+
+static void test_security_v7_2_pool_route_range_guard(void)
+{
+    TEST_START("security V7.2: pool route range guard");
+    struct peer peer = { 0 };
+
+    ASSERT_EQ(eid_pool_range_is_valid(8, 247), 1);
+    ASSERT_EQ(eid_pool_range_is_valid(8, 248), 0);
+    ASSERT_EQ(eid_pool_range_is_valid(250, 10), 0);
+
+    peer.eid = 32;
+    peer.pool_start = 250;
+    peer.pool_size = 10;
+    ASSERT_EQ(walk_pool_gw_routes(&peer, true), -EINVAL);
+
+    TEST_PASS();
+}
+
+static void test_security_v8_allocate_eid_wrap_guard(void)
+{
+    TEST_START("security V8: allocate_eid wrap guard");
+    struct ctx ctx;
+    struct net n;
+    struct peer blocker = { 0 };
+    struct eid_allocation alloc = { 0 };
+
+    make_ctx_with_net(&ctx, &n, 1);
+    ctx.dyn_eid_min = 8;
+    ctx.dyn_eid_max = 10;
+    blocker.pool_size = UINT8_MAX;
+    n.peers[8] = &blocker;
+
+    ASSERT_NE(allocate_eid(&ctx, &n, 1, &alloc), 0);
+
+    n.peers[8] = NULL;
+    cleanup_ctx(&ctx);
+    TEST_PASS();
+}
+
+static void test_security_v10_static_pool_bounds(void)
+{
+    TEST_START("security V10: static pool bounds");
+    struct peer peer = { 0 };
+
+    ASSERT_EQ(eid_pool_range_is_valid(eid_alloc_min,
+                                      eid_alloc_max - eid_alloc_min + 1),
+              1);
+    ASSERT_EQ(eid_pool_range_is_valid(eid_alloc_min, eid_alloc_max), 0);
+
+    ASSERT_EQ(peer_alloc_static_pool_eids(&peer), 0);
+    peer_static_pool_mark_eid(&peer, eid_alloc_max);
+    ASSERT_EQ(peer_static_pool_has_eid(&peer, eid_alloc_max), 1);
+
+    peer_static_pool_mark_eid(&peer, UINT8_MAX);
+    ASSERT_EQ(peer_static_pool_has_eid(&peer, UINT8_MAX), 0);
+    peer_static_pool_mark_eid(&peer, 0);
+    ASSERT_EQ(peer_static_pool_has_eid(&peer, 0), 0);
+
+    free(peer.static_pool_eids);
+    TEST_PASS();
 }
 
 /* Test: add_peer - all branches                                      */
@@ -3231,6 +3490,34 @@ static void test_cb_listen_control_msg_edges(void)
     TEST_PASS();
 }
 
+static void test_security_rs2_06_empty_control_datagram(void)
+{
+    TEST_START("security RS2-06: empty control datagram");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+    ctx.verbose = true;
+    setup_config_defaults(&ctx);
+
+    /*
+     * A zero-length AF_MCTP control datagram: the MSG_PEEK recvfrom in
+     * read_message() returns 0, so cb_listen_control_msg() reaches the
+     * buf_size == 0 branch.
+     *
+     * Pre-fix that branch called errx(EXIT_FAILURE, "Control socket
+     * returned EOF"), aborting the (root) daemon on peer-supplied input --
+     * a remote DoS -- which would terminate this process before TEST_PASS().
+     * Fixed: the empty datagram is dropped and the callback returns 0.
+     */
+    fault_mctp_recvfrom_peek_len = 0;
+    int rc = cb_listen_control_msg(NULL, 3, EPOLLIN, &ctx);
+    ASSERT_EQ(rc, 0);
+    fault_mctp_recvfrom_peek_len = -1; /* reset the injector */
+
+    TEST_PASS();
+}
+
 static void test_process_error_queue_basic_paths(void)
 {
     TEST_START("process_error_queue basic paths");
@@ -4886,6 +5173,14 @@ int main(void)
     test_check_peer_struct();
     test_peer_set_uuid();
     test_mctp_ctrl_validate_response();
+    test_security_v9_routing_table_response_guard();
+    test_security_v1_routing_table_entry_stride();
+    test_security_v2_routing_info_update_bounds();
+        test_security_v5_control_demux_request_gate();
+    test_security_v6_set_eid_rejects_before_route_add();
+        test_security_v7_2_pool_route_range_guard();
+    test_security_v8_allocate_eid_wrap_guard();
+    test_security_v10_static_pool_bounds();
     test_wait_fd_timeout();
     test_wait_fd_timeout_success();
     test_suppress_logs_branches();
@@ -4953,6 +5248,7 @@ int main(void)
     test_handle_routing_info_update_no_dbus_matrix();
     test_handle_discovery_notify_branches();
     test_cb_listen_control_msg_edges();
+    test_security_rs2_06_empty_control_datagram();
     test_process_error_queue_basic_paths();
     test_process_error_queue_peer_and_binding_matrix();
     test_endpoint_send_set_eid_fail();
