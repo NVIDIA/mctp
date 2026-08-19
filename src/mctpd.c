@@ -461,6 +461,7 @@ static int query_routing_table(struct peer *peer);
 static bool should_ignore_eid(const struct peer *peer, mctp_eid_t eid);
 static int add_pool_gw_routes_ignore_aware(struct peer *peer);
 static int del_pool_gw_routes_ignore_aware(struct peer *peer);
+static int del_static_pool_gw_routes(struct peer *peer);
 static bool mctp_ctrl_msg_is_request(const struct mctp_ctrl_msg_hdr *ctrl_msg);
 static int endpoint_send_routing_info_update(struct peer *peer,
 					     mctp_eid_t first_eid,
@@ -2599,17 +2600,19 @@ static bool mctp_ctrl_msg_is_request(const struct mctp_ctrl_msg_hdr *ctrl_msg)
 static bool is_eid_in_bridge_pool(const struct net *n, const struct ctx *ctx,
 				  mctp_eid_t eid, struct peer **pool_owner_peer)
 {
-	for (int i = ctx->dyn_eid_min; i <= eid; i++) {
+	for (int i = eid_alloc_min; i <= eid_alloc_max; i++) {
 		struct peer *peer = n->peers[i];
-		if (peer && peer->pool_size > 0) {
-			if (peer->eid == eid) {
-				continue;
+		if (!peer || peer->eid == eid)
+			continue;
+		if (peer->static_pool_eids) {
+			if (peer_static_pool_has_eid(peer, eid)) {
+				if (pool_owner_peer)
+					*pool_owner_peer = peer;
+				return true;
 			}
-			if (peer->static_pool_eids) {
-				// This is static pool bridge, no point in checking here as any eid
-				// could be part of its pool space [8-254], simply avoid this.
-				continue;
-			}
+			continue;
+		}
+		if (peer->pool_size > 0) {
 			if (eid >= peer->pool_start &&
 			    eid < peer->pool_start + peer->pool_size) {
 				if (pool_owner_peer)
@@ -5672,6 +5675,11 @@ static int peer_route_update(struct peer *peer, uint16_t type)
 				      peer->pool_start,
 				      peer->pool_start + peer->pool_size - 1,
 				      strerror(-rc));
+		} else if (peer->static_pool_eids) {
+			int rc = del_static_pool_gw_routes(peer);
+			if (rc < 0)
+				warnx("failed to delete static pool gateway routes for bridge EID %d: %s",
+				      peer->eid, strerror(-rc));
 		}
 		if (!mctp_nl_if_exists(peer->ctx->nl, peer->phys.ifindex)) {
 			return -ENODEV;
@@ -9173,6 +9181,19 @@ static int query_routing_table(struct peer *peer)
 					if (is_static_pool_bridge) {
 						peer_static_pool_mark_eid(
 							peer, eid);
+						/* Gateway route must be in place
+						 * before setup_added_peer contacts
+						 * the downstream endpoint. */
+						struct mctp_fq_addr gw_addr = { 0 };
+						gw_addr.net = peer->net;
+						gw_addr.eid = peer->eid;
+						int gw_rc = mctp_nl_route_add(
+							peer->ctx->nl, (uint8_t)eid,
+							0, 0, &gw_addr, peer->mtu);
+						if (gw_rc < 0 && gw_rc != -EEXIST)
+							warnx("Failed to add gateway route for static pool EID %d via %d: %s",
+							      eid, peer->eid,
+							      strerror(-gw_rc));
 					}
 					allocated_peer->pool_owner_eid =
 						peer->eid;
@@ -9236,6 +9257,20 @@ static int query_routing_table(struct peer *peer)
 							fprintf(stderr,
 								"inactive endpoint, removing %d\n",
 								eid);
+						}
+						if (is_static_pool_bridge) {
+							struct mctp_fq_addr gw_addr = { 0 };
+							gw_addr.net = peer->net;
+							gw_addr.eid = peer->eid;
+							int gw_rc = mctp_nl_route_del(
+								peer->ctx->nl,
+								(uint8_t)eid, 0,
+								0, &gw_addr);
+							if (gw_rc < 0)
+								warnx("Failed to remove gateway route for static pool EID %d via %d: %s",
+								      eid, peer->eid,
+								      strerror(-gw_rc));
+							peer->static_pool_eids[eid] = 0;
 						}
 						rc = remove_peer(existing_peer);
 						if (rc < 0) {
@@ -9388,6 +9423,59 @@ static int add_pool_gw_routes_ignore_aware(struct peer *peer)
 static int del_pool_gw_routes_ignore_aware(struct peer *peer)
 {
 	return walk_pool_gw_routes(peer, false);
+}
+
+/* Install or remove gateway routes for all EIDs marked in a static pool
+ * bridge's static_pool_eids set. Used when HMC (zero pool-size) bridges
+ * are involved: the downstream EID set is discovered from the routing table
+ * rather than allocated, so the set is sparse and tracked per-EID. */
+static int walk_static_pool_gw_routes(struct peer *peer, bool adding)
+{
+	if (!peer->static_pool_eids)
+		return 0;
+
+	struct mctp_fq_addr gw_addr = { 0 };
+	gw_addr.net = peer->net;
+	gw_addr.eid = peer->eid;
+
+	int first_err = 0;
+	for (unsigned int eid = eid_alloc_min; eid <= eid_alloc_max; eid++) {
+		if (!peer_static_pool_has_eid(peer, (mctp_eid_t)eid))
+			continue;
+		if (should_ignore_eid(peer, (mctp_eid_t)eid))
+			continue;
+
+		int rc;
+		if (adding) {
+			rc = mctp_nl_route_add(peer->ctx->nl, (uint8_t)eid, 0,
+					       0, &gw_addr, peer->mtu);
+			if (rc < 0 && rc != -EEXIST) {
+				warnx("Failed to add static pool gateway route for EID %d via %d: %s",
+				      eid, gw_addr.eid, strerror(-rc));
+				return rc;
+			}
+		} else {
+			rc = mctp_nl_route_del(peer->ctx->nl, (uint8_t)eid, 0,
+					       0, &gw_addr);
+			if (rc < 0) {
+				warnx("Failed to delete static pool gateway route for EID %d via %d: %s",
+				      eid, gw_addr.eid, strerror(-rc));
+				if (!first_err)
+					first_err = rc;
+			}
+		}
+		if (peer->ctx->verbose)
+			fprintf(stderr,
+				"%s static pool gateway route EID %d via %d (net %d)\n",
+				adding ? "added" : "deleted", eid, gw_addr.eid,
+				gw_addr.net);
+	}
+	return first_err;
+}
+
+static int del_static_pool_gw_routes(struct peer *peer)
+{
+	return walk_static_pool_gw_routes(peer, false);
 }
 
 static int endpoint_send_routing_info_update(struct peer *peer,
