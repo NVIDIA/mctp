@@ -644,8 +644,10 @@ async def test_assign_bridge_static_conflict(dbus, mctpd):
     for _ in range(pool_size):
         dev2.add_bridged_ep(Endpoint(iface, bytes()))
 
+    ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
     (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev1.lladdr, static_eid
+        dev1.lladdr, static_eid, static_eid + 1, ignore_eids, ignore_message_types
     )
     assert eid == static_eid
     assert new
@@ -673,8 +675,10 @@ async def test_assign_bridge_static_pool_conflict(dbus, mctpd):
 
     # dev1 is a single endpoint assigned EID 13
     dev1_eid = 13
+    ignore_eids = b''  # Empty array - no EIDs to ignore
+    ignore_message_types = b''  # Empty array - no Message types to ignore
     (eid1, _, _, new1) = await mctp.call_assign_endpoint_static(
-        dev1.lladdr, dev1_eid
+        dev1.lladdr, dev1_eid, dev1_eid + 1, ignore_eids, ignore_message_types
     )
     assert eid1 == dev1_eid
     assert new1
