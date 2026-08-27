@@ -2856,7 +2856,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 			       const struct sockaddr_mctp_ext *req_addr,
 			       bool ext_addr, struct mctp_ctrl_cmd *cmd)
 {
-	unsigned int max_retries = 4;
+	unsigned int max_retries = 2;
 	size_t req_addr_len;
 	unsigned int retry;
 	int sd = -1, val;
@@ -5189,7 +5189,7 @@ out:
 static int query_peer_properties(struct peer *peer)
 {
 	struct peer *pool_owner_peer = NULL;
-	const unsigned int max_retries = 4;
+	const unsigned int max_retries = 2;
 	uint8_t uuid[16] = { 0 };
 	struct net *n = NULL;
 	bool supports_vdm = false;
@@ -5344,7 +5344,7 @@ static int query_peer_properties(struct peer *peer)
 
 out:
 	// TODO: emit property changed? Though currently they are all const.
-	return 0;
+	return rc;
 }
 
 static int peer_neigh_update(struct peer *peer, uint16_t type)
