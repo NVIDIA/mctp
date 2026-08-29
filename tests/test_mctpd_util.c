@@ -86,8 +86,8 @@ static void test_get_binding_from_ifname(void)
     CHECK_STR(get_binding_from_ifname("mctpusb0"), "USB");
     /* spi branch */
     CHECK_STR(get_binding_from_ifname("mctpspi0"), "SPI");
-    /* pcie branch */
-    CHECK_STR(get_binding_from_ifname("mctppcie0"), "PCIe");
+    /* pci branch */
+    CHECK_STR(get_binding_from_ifname("mctppci0"), "PCIe");
     /* irot branch */
     CHECK_STR(get_binding_from_ifname("mctpirot0"), "VDM");
     /* vrot branch */

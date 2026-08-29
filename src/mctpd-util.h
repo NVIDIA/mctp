@@ -192,7 +192,7 @@ const char *get_binding_from_ifname(const char *ifname)
 		return "USB";
 	if (strstr(ifname, "spi"))
 		return "SPI";
-	if (strstr(ifname, "pcie"))
+	if (strstr(ifname, "pci"))
 		return "PCIe";
 	if (strstr(ifname, "irot"))
 		return "VDM";
