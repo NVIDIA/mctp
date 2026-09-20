@@ -5755,7 +5755,7 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 			 * queried when the peer was first set up, so
 			 * publishing here re-registers the full interface
 			 * set. */
-			rc = publish_peer(peer);
+			rc = publish_peer(peer, true);
 			if (rc < 0) {
 				goto reschedule;
 			}
