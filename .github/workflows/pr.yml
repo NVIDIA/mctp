@@ -1,102 +1,101 @@
 name: pull-request-ci
 on: [push, pull_request]
 jobs:
-  default:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    default:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 
-      - name: Install system build dependencies
-        run: >
-          sudo apt-get update &&
-          sudo apt-get install libsystemd-dev ninja-build
+            - name: Install system build dependencies
+              run: >
+                  sudo apt-get update && sudo apt-get install libsystemd-dev
+                  ninja-build
 
-      - name: Install meson
-        run: pip install --user meson
+            - name: Install meson
+              run: pip install --user meson
 
-      - name: Install python dependencies for mctp tests
-        run: pip install --user -r tests/requirements.txt
+            - name: Install python dependencies for mctp tests
+              run: pip install --user -r tests/requirements.txt
 
-      - name: Configure mctp build
-        run: meson setup build -Db_sanitize=address,undefined
+            - name: Configure mctp build
+              run: meson setup build -Db_sanitize=address,undefined
 
-      - name: Build mctp
-        run: meson compile -C build
+            - name: Build mctp
+              run: meson compile -C build
 
-      - name: Check formatting
-        run: ninja -C build clang-format-check
+            - name: Check formatting
+              run: ninja -C build clang-format-check
 
-      - name: Test mctp
-        run: meson test -C build --verbose
+            - name: Test mctp
+              run: meson test -C build --verbose
 
-      - name: Check python tests
-        run: ruff check tests/
+            - name: Check python tests
+              run: ruff check tests/
 
-      - name: Format python tests
-        run: ruff format --diff tests/
+            - name: Format python tests
+              run: ruff format --diff tests/
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: default-meson-testlog
-          path: build/meson-logs/testlog.txt
+            - uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: default-meson-testlog
+                  path: build/meson-logs/testlog.txt
 
-  no-libsystemd:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    no-libsystemd:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 
-      - name: Install system build dependencies
-        run: >
-          sudo apt-get update &&
-          sudo apt-get install ninja-build
+            - name: Install system build dependencies
+              run: >
+                  sudo apt-get update && sudo apt-get install ninja-build
 
-      - name: Install meson
-        run: pip install --user meson
+            - name: Install meson
+              run: pip install --user meson
 
-      - name: Install python dependencies for mctp tests
-        run: pip install --user -r tests/requirements.txt
+            - name: Install python dependencies for mctp tests
+              run: pip install --user -r tests/requirements.txt
 
-      - name: Configure mctp build
-        run: meson setup build -Db_sanitize=address,undefined
+            - name: Configure mctp build
+              run: meson setup build -Db_sanitize=address,undefined
 
-      - name: Build mctp
-        run: meson compile -C build
+            - name: Build mctp
+              run: meson compile -C build
 
-      - name: Test mctp
-        run: meson test -C build --verbose
+            - name: Test mctp
+              run: meson test -C build --verbose
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: no-libsystemd-meson-testlog
-          path: build/meson-logs/testlog.txt
+            - uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: no-libsystemd-meson-testlog
+                  path: build/meson-logs/testlog.txt
 
-  musl:
-    runs-on: ubuntu-latest
-    container: alpine:latest
-    steps:
-      - name: Install system build dependencies
-        run: >
-          apk add --no-cache
-          build-base linux-headers meson ninja git py3-pip
+    musl:
+        runs-on: ubuntu-latest
+        container: alpine:latest
+        steps:
+            - name: Install system build dependencies
+              run: >
+                  apk add --no-cache build-base linux-headers meson ninja git
+                  py3-pip
 
-      - uses: actions/checkout@v4
+            - uses: actions/checkout@v4
 
-      - name: Install python dependencies for mctp tests
-        run: pip install --break-system-packages -r tests/requirements.txt
+            - name: Install python dependencies for mctp tests
+              run: pip install --break-system-packages -r tests/requirements.txt
 
-      - name: Configure mctp build
-        run: meson setup build
+            - name: Configure mctp build
+              run: meson setup build
 
-      - name: Build mctp
-        run: meson compile -C build
+            - name: Build mctp
+              run: meson compile -C build
 
-      - name: Test mctp
-        run: meson test -C build --verbose
+            - name: Test mctp
+              run: meson test -C build --verbose
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: musl-meson-testlog
-          path: build/meson-logs/testlog.txt
+            - uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: musl-meson-testlog
+                  path: build/meson-logs/testlog.txt

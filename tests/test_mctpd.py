@@ -1,24 +1,23 @@
+import asyncdbus
 import pytest
 import trio
-import asyncdbus
-
 from mctp_test_utils import (
-    mctpd_mctp_iface_obj,
-    mctpd_mctp_iface_control_obj,
-    mctpd_mctp_network_obj,
+    mctpd_mctp_base_iface_obj,
     mctpd_mctp_endpoint_common_obj,
     mctpd_mctp_endpoint_control_obj,
-    mctpd_service_readiness_obj,
     mctpd_mctp_endpoint_obj,
-    mctpd_mctp_base_iface_obj,
+    mctpd_mctp_iface_control_obj,
+    mctpd_mctp_iface_obj,
+    mctpd_mctp_network_obj,
+    mctpd_service_readiness_obj,
 )
 from mctpenv import (
     Endpoint,
-    MCTPSockAddr,
     MCTPControlCommand,
     MctpdWrapper,
-    VDMType,
+    MCTPSockAddr,
     PhysicalBinding,
+    VDMType,
 )
 
 # DBus constant symbol suffixes:
@@ -26,19 +25,21 @@ from mctpenv import (
 # - C: Connection
 # - P: Path
 # - I: Interface
-MCTPD_C = 'au.com.codeconstruct.MCTP1'
-MCTPD_MCTP_P = '/au/com/codeconstruct/mctp1'
-MCTPD_MCTP_I = 'au.com.codeconstruct.MCTP.BusOwner1'
-MCTPD_ENDPOINT_I = 'au.com.codeconstruct.MCTP.Endpoint1'
-MCTPD_ENDPOINT_BRIDGE_I = 'au.com.codeconstruct.MCTP.Bridge1'
-DBUS_OBJECT_MANAGER_I = 'org.freedesktop.DBus.ObjectManager'
-DBUS_PROPERTIES_I = 'org.freedesktop.DBus.Properties'
+MCTPD_C = "au.com.codeconstruct.MCTP1"
+MCTPD_MCTP_P = "/au/com/codeconstruct/mctp1"
+MCTPD_MCTP_I = "au.com.codeconstruct.MCTP.BusOwner1"
+MCTPD_ENDPOINT_I = "au.com.codeconstruct.MCTP.Endpoint1"
+MCTPD_ENDPOINT_BRIDGE_I = "au.com.codeconstruct.MCTP.Bridge1"
+DBUS_OBJECT_MANAGER_I = "org.freedesktop.DBus.ObjectManager"
+DBUS_PROPERTIES_I = "org.freedesktop.DBus.Properties"
 
 # Service readiness interface constants
-OPENBMC_SERVICE_READINESS_I = 'xyz.openbmc_project.State.ServiceReady'
-SERVICE_STATE_STARTING = 'xyz.openbmc_project.State.ServiceReady.States.Starting'
-SERVICE_STATE_ENABLED = 'xyz.openbmc_project.State.ServiceReady.States.Enabled'
-SERVICE_TYPE_MCTP = 'xyz.openbmc_project.State.ServiceReady.ServiceTypes.MCTP'
+OPENBMC_SERVICE_READINESS_I = "xyz.openbmc_project.State.ServiceReady"
+SERVICE_STATE_STARTING = (
+    "xyz.openbmc_project.State.ServiceReady.States.Starting"
+)
+SERVICE_STATE_ENABLED = "xyz.openbmc_project.State.ServiceReady.States.Enabled"
+SERVICE_TYPE_MCTP = "xyz.openbmc_project.State.ServiceReady.ServiceTypes.MCTP"
 
 MCTPD_TRECLAIM = 5
 
@@ -47,16 +48,16 @@ async def _introspect_path_recursive(dbus, path, node_set):
     node_set.add(path)
     dups = set()
 
-    obj = await dbus.get_proxy_object('au.com.codeconstruct.MCTP1', path)
-    iface = await obj.get_interface('org.freedesktop.DBus.Introspectable')
+    obj = await dbus.get_proxy_object("au.com.codeconstruct.MCTP1", path)
+    iface = await obj.get_interface("org.freedesktop.DBus.Introspectable")
     data = await iface.call_introspect()
     node = asyncdbus.introspection.Node.parse(data)
 
     for subnode in node.nodes:
-        if path == '/':
-            subnode_path = '/' + subnode.name
+        if path == "/":
+            subnode_path = "/" + subnode.name
         else:
-            subnode_path = path + '/' + subnode.name
+            subnode_path = path + "/" + subnode.name
 
         if subnode_path in node_set:
             dups.add(subnode_path)
@@ -71,7 +72,7 @@ async def test_enumerate(dbus, mctpd):
     """Test that the dbus object tree is sensible: we can introspect all
     objects, and that there are no duplicates
     """
-    dups = await _introspect_path_recursive(dbus, '/', set())
+    dups = await _introspect_path_recursive(dbus, "/", set())
     assert not dups
 
 
@@ -122,7 +123,7 @@ async def test_setup_endpoint(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
     # call SetupEndpoint. This will raise an exception on any dbus error.
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     # ep.eid will be updated (through the Set Endpoint ID message); this
     # should match the returned EID
@@ -155,13 +156,13 @@ async def test_setup_endpoint_conflict(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
     ep1 = mctpd.network.endpoints[0]
-    (eid1, _, _, _) = await mctp.call_setup_endpoint(ep1.lladdr)
+    eid1, _, _, _ = await mctp.call_setup_endpoint(ep1.lladdr)
 
     # endpoint configured with eid1 already
     ep2 = Endpoint(iface, bytes([0x1E]), eid=eid1)
     mctpd.network.add_endpoint(ep2)
 
-    (eid2, _, _, _) = await mctp.call_setup_endpoint(ep2.lladdr)
+    eid2, _, _, _ = await mctp.call_setup_endpoint(ep2.lladdr)
     assert eid1 != eid2
 
 
@@ -206,7 +207,7 @@ async def test_setup_endpoint_no_get_vdm_types(dbus, mctpd):
     mctpd.network.add_endpoint(ep)
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
     assert eid == ep.eid
 
 
@@ -220,7 +221,7 @@ async def test_setup_endpoint_no_get_uuid(dbus, mctpd):
     mctpd.network.add_endpoint(ep)
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
     assert eid == ep.eid
 
 
@@ -233,7 +234,7 @@ async def test_setup_endpoint_mtu(dbus, mctpd):
     assert iface.min_mtu != 0
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     assert len(mctpd.system.routes) == 1
     route = mctpd.system.routes[0]
@@ -246,7 +247,7 @@ async def test_remove_endpoint(dbus, mctpd):
     ep1 = mctpd.network.endpoints[0]
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (_, _, path, _) = await mctp.call_setup_endpoint(ep1.lladdr)
+    _, _, path, _ = await mctp.call_setup_endpoint(ep1.lladdr)
 
     assert len(mctpd.system.neighbours) == 1
 
@@ -260,7 +261,7 @@ async def test_recover_endpoint_present(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     dev = mctpd.network.endpoints[0]
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp.call_setup_endpoint(dev.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(dev.lladdr)
 
     ep = await dbus.get_proxy_object(MCTPD_C, path)
     ep_props = await ep.get_interface(DBUS_PROPERTIES_I)
@@ -268,8 +269,8 @@ async def test_recover_endpoint_present(dbus, mctpd):
     recovered = trio.Semaphore(initial_value=0)
 
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
-            if 'Available' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Available" == changed["Connectivity"].value:
                 recovered.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
@@ -290,7 +291,7 @@ async def test_recover_endpoint_removed(dbus, mctpd, autojump_clock):
     dev = mctpd.network.endpoints[0]
     mctp = await dbus.get_proxy_object(MCTPD_C, MCTPD_MCTP_P)
     mctp_iface = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp_iface.call_setup_endpoint(dev.lladdr)
+    eid, net, path, new = await mctp_iface.call_setup_endpoint(dev.lladdr)
 
     ep = await dbus.get_proxy_object(MCTPD_C, path)
     ep_props = await ep.get_interface(DBUS_PROPERTIES_I)
@@ -298,8 +299,8 @@ async def test_recover_endpoint_removed(dbus, mctpd, autojump_clock):
     degraded = trio.Semaphore(initial_value=0)
 
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
-            if 'Degraded' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Degraded" == changed["Connectivity"].value:
                 degraded.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
@@ -329,7 +330,7 @@ async def test_recover_endpoint_reset(dbus, mctpd, autojump_clock):
     iface = mctpd.system.interfaces[0]
     dev = mctpd.network.endpoints[0]
     mctp_iface = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp_iface.call_setup_endpoint(dev.lladdr)
+    eid, net, path, new = await mctp_iface.call_setup_endpoint(dev.lladdr)
 
     ep = await dbus.get_proxy_object(MCTPD_C, path)
     ep_props = await ep.get_interface(DBUS_PROPERTIES_I)
@@ -337,8 +338,8 @@ async def test_recover_endpoint_reset(dbus, mctpd, autojump_clock):
     recovered = trio.Semaphore(initial_value=0)
 
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
-            if 'Available' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Available" == changed["Connectivity"].value:
                 recovered.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
@@ -368,7 +369,7 @@ async def test_recover_endpoint_exchange(dbus, mctpd, autojump_clock):
     dev = mctpd.network.endpoints[0]
     mctp = await dbus.get_proxy_object(MCTPD_C, MCTPD_MCTP_P)
     mctp_iface = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp_iface.call_setup_endpoint(dev.lladdr)
+    eid, net, path, new = await mctp_iface.call_setup_endpoint(dev.lladdr)
 
     ep = await dbus.get_proxy_object(MCTPD_C, path)
     ep_props = await ep.get_interface(DBUS_PROPERTIES_I)
@@ -376,8 +377,8 @@ async def test_recover_endpoint_exchange(dbus, mctpd, autojump_clock):
     degraded = trio.Semaphore(initial_value=0)
 
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
-            if 'Degraded' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Degraded" == changed["Connectivity"].value:
                 degraded.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
@@ -410,7 +411,9 @@ async def test_recover_endpoint_exchange(dbus, mctpd, autojump_clock):
     await trio.sleep(1)
 
     # Add a new the endpoint device at the same physical address (different UUID)
-    mctpd.network.add_endpoint(Endpoint(dev.iface, dev.lladdr, types=dev.types))
+    mctpd.network.add_endpoint(
+        Endpoint(dev.iface, dev.lladdr, types=dev.types)
+    )
 
     with trio.move_on_after(2 * MCTPD_TRECLAIM) as expected:
         await added.acquire()
@@ -429,15 +432,11 @@ async def test_assign_endpoint_static(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
     start_eid = 13
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
 
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
@@ -458,22 +457,18 @@ async def test_recover_endpoint_without_uuid_keeps_eid(dbus, mctpd):
                 return await super().handle_mctp_control(sock, src_addr, msg)
 
             dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
-            rsp_flags = flags & 0x1f
+            rsp_flags = flags & 0x1F
             await sock.send(dst_addr, bytes([rsp_flags, opcode, 0x05]))
 
     iface = mctpd.system.interfaces[0]
-    dev = NoUuidEndpoint(iface, bytes([0x1d]))
+    dev = NoUuidEndpoint(iface, bytes([0x1D]))
     mctpd.network.endpoints[0] = dev
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 210
     start_eid = 0
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        b'',
-        b''
+    eid, _, path, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, b"", b""
     )
 
     assert eid == static_eid
@@ -486,8 +481,8 @@ async def test_recover_endpoint_without_uuid_keeps_eid(dbus, mctpd):
     recovered = trio.Semaphore(initial_value=0)
 
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
-            if 'Available' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Available" == changed["Connectivity"].value:
                 recovered.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
@@ -515,27 +510,19 @@ async def test_assign_endpoint_static_allocated(dbus, mctpd):
     dev = mctpd.network.endpoints[0]
     static_eid = 12
     start_eid = 13
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
 
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
     assert new
 
     # repeat, same EID
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
@@ -552,17 +539,19 @@ async def test_assign_endpoint_static_conflict(dbus, mctpd):
     mctpd.network.add_endpoint(dev2)
 
     # dynamic EID assigment for dev1
-    (eid, _, _, new) = await mctp.call_assign_endpoint(
+    eid, _, _, new = await mctp.call_assign_endpoint(
         dev1.lladdr,
     )
 
     assert new
 
     # try to assign dev2 with the dev1's existing EID
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev2.lladdr, eid, 14, ignore_eids, ignore_message_types)
+        await mctp.call_assign_endpoint_static(
+            dev2.lladdr, eid, 14, ignore_eids, ignore_message_types
+        )
 
     assert str(ex.value) == "Address in use"
 
@@ -576,22 +565,20 @@ async def test_assign_endpoint_static_varies(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
     start_eid = 13
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
 
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
     assert new
 
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctp.call_assign_endpoint_static(dev.lladdr, 13, 14, ignore_eids, ignore_message_types)
+        await mctp.call_assign_endpoint_static(
+            dev.lladdr, 13, 14, ignore_eids, ignore_message_types
+        )
 
     assert str(ex.value) == "Already assigned a different EID"
 
@@ -610,7 +597,7 @@ async def test_assign_bridge_static(dbus, mctpd):
     for _ in range(pool_size):
         dev.add_bridged_ep(Endpoint(iface, bytes()))
 
-    (eid, pool_start_out, _, _, new) = await mctp.call_assign_bridge_static(
+    eid, pool_start_out, _, _, new = await mctp.call_assign_bridge_static(
         dev.lladdr, static_eid, pool_start, pool_size
     )
 
@@ -634,7 +621,7 @@ async def test_assign_bridge_static_zero_start(dbus, mctpd):
     for _ in range(pool_size):
         dev.add_bridged_ep(Endpoint(iface, bytes()))
 
-    (eid, pool_start_out, _, _, new) = await mctp.call_assign_bridge_static(
+    eid, pool_start_out, _, _, new = await mctp.call_assign_bridge_static(
         dev.lladdr, static_eid, pool_start, pool_size
     )
 
@@ -661,10 +648,14 @@ async def test_assign_bridge_static_conflict(dbus, mctpd):
     for _ in range(pool_size):
         dev2.add_bridged_ep(Endpoint(iface, bytes()))
 
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev1.lladdr, static_eid, static_eid + 1, ignore_eids, ignore_message_types
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        dev1.lladdr,
+        static_eid,
+        static_eid + 1,
+        ignore_eids,
+        ignore_message_types,
     )
     assert eid == static_eid
     assert new
@@ -692,9 +683,9 @@ async def test_assign_bridge_static_pool_conflict(dbus, mctpd):
 
     # dev1 is a single endpoint assigned EID 13
     dev1_eid = 13
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
-    (eid1, _, _, new1) = await mctp.call_assign_endpoint_static(
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
+    eid1, _, _, new1 = await mctp.call_assign_endpoint_static(
         dev1.lladdr, dev1_eid, dev1_eid + 1, ignore_eids, ignore_message_types
     )
     assert eid1 == dev1_eid
@@ -837,7 +828,7 @@ async def test_setup_endpoint_vary_set_eid_response(dbus, mctpd):
     mctpd.network.add_endpoint(ep)
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     assert eid == ep.eid
 
@@ -915,7 +906,7 @@ async def test_setup_endpoint_conflicting_set_eid_response(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep1 = mctpd.network.endpoints[0]
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid1, _, _, _) = await mctp.call_setup_endpoint(ep1.lladdr)
+    eid1, _, _, _ = await mctp.call_setup_endpoint(ep1.lladdr)
     assert eid1 == ep1.eid
 
     ep2 = ConflictingEndpoint(iface, bytes([0x1F]), ep1.eid)
@@ -958,7 +949,7 @@ async def test_query_message_types(dbus, mctpd):
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     assert eid == ep.eid
 
@@ -982,7 +973,7 @@ async def test_query_vdm_types(dbus, mctpd):
     mctpd.network.add_endpoint(ep)
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp.call_learn_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_learn_endpoint(ep.lladdr)
 
     assert eid == ep.eid
 
@@ -1012,7 +1003,7 @@ async def test_query_vdm_types_no_control(dbus, mctpd):
     mctpd.network.add_endpoint(ep)
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp.call_learn_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_learn_endpoint(ep.lladdr)
 
     assert eid == ep.eid
 
@@ -1058,7 +1049,7 @@ class InvalidFormatEndpoint(InvalidVDMEndpointBase):
 
 
 async def _assert_vdm_types_empty(dbus, mctp, ep):
-    (eid, _, path, _) = await mctp.call_learn_endpoint(ep.lladdr)
+    eid, _, path, _ = await mctp.call_learn_endpoint(ep.lladdr)
     assert eid == ep.eid
     ep_obj = await mctpd_mctp_endpoint_common_obj(dbus, path)
     vdm_types = list(await ep_obj.get_vendor_defined_message_types())
@@ -1165,7 +1156,7 @@ async def test_concurrent_recovery_setup(dbus, mctpd, autojump_clock):
     for i in range(split):
         pep = Endpoint(iface, bytes([0x1E + i]))
         mctpd.network.add_endpoint(pep)
-        (_, _, path, _) = await mctp_i.call_setup_endpoint(pep.lladdr)
+        _, _, path, _ = await mctp_i.call_setup_endpoint(pep.lladdr)
 
     # Grab the DBus path for an endpoint that we will cause to be removed from
     # the network through the recovery path. Arbitrarily use the most recent
@@ -1178,8 +1169,8 @@ async def test_concurrent_recovery_setup(dbus, mctpd, autojump_clock):
     degraded = trio.Semaphore(initial_value=0)
 
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and 'Connectivity' in changed:
-            if 'Degraded' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Degraded" == changed["Connectivity"].value:
                 degraded.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
@@ -1214,7 +1205,7 @@ async def test_concurrent_recovery_setup(dbus, mctpd, autojump_clock):
     # peer, which will invalidate the recovering peer's pointer
     pep = Endpoint(iface, bytes([0x1E + split]))
     mctpd.network.add_endpoint(pep)
-    (_, _, _, new) = await mctp_i.call_setup_endpoint(pep.lladdr)
+    _, _, _, new = await mctp_i.call_setup_endpoint(pep.lladdr)
     assert new
 
     # Verify the recovery process completed gracefully with removal of the
@@ -1239,10 +1230,10 @@ async def test_bridged_learn_endpoint(dbus, mctpd):
     )
 
     net = await mctpd_mctp_network_obj(dbus, iface.net)
-    (path, new) = await net.call_learn_endpoint(br_ep.eid)
+    path, new = await net.call_learn_endpoint(br_ep.eid)
 
     assert (
-        path == f'/au/com/codeconstruct/mctp1/networks/1/endpoints/{br_ep.eid}'
+        path == f"/au/com/codeconstruct/mctp1/networks/1/endpoints/{br_ep.eid}"
     )
     assert new
 
@@ -1281,7 +1272,7 @@ async def test_change_network(dbus, mctpd):
 
     # endpoint should be present under 2/
     ep = await mctpd_mctp_endpoint_common_obj(
-        dbus, '/au/com/codeconstruct/mctp1/networks/2/endpoints/8'
+        dbus, "/au/com/codeconstruct/mctp1/networks/2/endpoints/8"
     )
     assert ep is not None
 
@@ -1304,7 +1295,7 @@ async def test_del_interface_with_peers(dbus, mctpd):
     """Delete an interface with peers attached, ensure all are gone"""
     net = mctpd.system.interfaces[0].net
     iface = mctpd.system.Interface(
-        'mctp1',
+        "mctp1",
         2,
         net,
         bytes([0x10]),
@@ -1325,7 +1316,7 @@ async def test_del_interface_with_peers(dbus, mctpd):
     paths = []
     for ep in eps:
         mctpd.network.add_endpoint(ep)
-        (eid, _, path, _) = await mctp.call_setup_endpoint(ep.lladdr)
+        eid, _, path, _ = await mctp.call_setup_endpoint(ep.lladdr)
         assert eid == ep.eid
         paths.append(path)
 
@@ -1348,12 +1339,14 @@ async def test_del_interface_with_peers(dbus, mctpd):
 async def test_add_interface(dbus, mctpd):
     """Remove and re-add an interface"""
     net = 1
-    #dummy eid to start with
+    # dummy eid to start with
     start_eid = 10
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
     # Create a new netdevice
-    iface = mctpd.system.Interface('mctpnew', 10, net, bytes([]), 68, 254, True)
+    iface = mctpd.system.Interface(
+        "mctpnew", 10, net, bytes([]), 68, 254, True
+    )
     await mctpd.system.add_interface(iface)
     await mctpd.system.add_address(mctpd.system.Address(iface, 88))
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
@@ -1362,12 +1355,8 @@ async def test_add_interface(dbus, mctpd):
     mctpd.network.add_endpoint(Endpoint(iface, bytes([]), types=[0, 1]))
 
     static_eid = 30
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        bytes([]),
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        bytes([]), static_eid, start_eid, ignore_eids, ignore_message_types
     )
     assert eid == static_eid
     assert new
@@ -1382,7 +1371,9 @@ async def test_add_interface(dbus, mctpd):
     assert mctpd.system.lookup_route(net, static_eid) is None
 
     # Re-add the same interface name again, with a new ifindex 11
-    iface = mctpd.system.Interface('mctpnew', 11, net, bytes([]), 68, 254, True)
+    iface = mctpd.system.Interface(
+        "mctpnew", 11, net, bytes([]), 68, 254, True
+    )
     await mctpd.system.add_interface(iface)
     await mctpd.system.add_address(mctpd.system.Address(iface, 89))
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
@@ -1394,12 +1385,8 @@ async def test_add_interface(dbus, mctpd):
     assert mctpd.system.lookup_route(net, static_eid) is None
 
     static_eid = 40
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        bytes([]),
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        bytes([]), static_eid, start_eid, ignore_eids, ignore_message_types
     )
     assert eid == static_eid
     assert new
@@ -1427,7 +1414,7 @@ async def test_interface_rename_with_peers(dbus, mctpd):
     assert iface_obj.path.endswith(iface.name)
 
     # access the endpoint object before rename
-    (_, _, ep_path, _) = await iface_obj.call_setup_endpoint(ep.lladdr)
+    _, _, ep_path, _ = await iface_obj.call_setup_endpoint(ep.lladdr)
     ep_obj = await dbus.get_proxy_object(MCTPD_C, ep_path)
 
     new_name = "newmctp0"
@@ -1441,7 +1428,10 @@ async def test_interface_rename_with_peers(dbus, mctpd):
     ep_obj = await dbus.get_proxy_object(MCTPD_C, ep_path)
     assert ep_obj is not None
 
+
 """ Test that we allocate Eids to MCTP Bridge Endpoints"""
+
+
 async def test_endpoint_allocate_eid(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     bridge = mctpd.network.endpoints[0]
@@ -1450,26 +1440,26 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     pool_size = 2
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
 
     # mimicing MCTP Bridge by adding Bridg's Endpoints to same network and physcial address
     for eid in range(start_eid, start_eid + pool_size):
-        br_ep = Endpoint(iface, bytes(), types = [0,1,2,eid], eid= eid)	
+        br_ep = Endpoint(iface, bytes(), types=[0, 1, 2, eid], eid=eid)
         bridge.add_bridged_ep(br_ep)
         mctpd.network.add_endpoint(br_ep)
-        await mctpd.system.add_route(mctpd.system.Route(br_ep.eid, 1, iface = iface))
-        await mctpd.system.add_neighbour(mctpd.system.Neighbour(iface, bridge.lladdr, br_ep.eid))
+        await mctpd.system.add_route(
+            mctpd.system.Route(br_ep.eid, 1, iface=iface)
+        )
+        await mctpd.system.add_neighbour(
+            mctpd.system.Neighbour(iface, bridge.lladdr, br_ep.eid)
+        )
 
     # first assign enpoint to MCTP Bridge and later involk allocate endpoint ids
     # this will add Brige's enpoints routes and neigh and update dbus
     mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
-    (eid, _, path, _) = await mctp.call_assign_endpoint_static(
-        bridge.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, path, _ = await mctp.call_assign_endpoint_static(
+        bridge.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     # non blocking sleep for Allocate Eid timer expiry
@@ -1488,13 +1478,16 @@ async def test_endpoint_allocate_eid(dbus, mctpd):
     assert neigh.eid == start_eid + 1
 
     # check one of Bridge's endpoint types per dbus property
-    path = path.rsplit('/endpoints', 1)[0]
+    path = path.rsplit("/endpoints", 1)[0]
     path = path + f"/endpoints/{mctpd.network.endpoints[1].eid}"
     ep = await mctpd_mctp_endpoint_common_obj(dbus, path)
     query_types = list(await ep.get_supported_message_types())
-    assert (query_types == mctpd.network.endpoints[1].types)
+    assert query_types == mctpd.network.endpoints[1].types
+
 
 """ Test that ignore_eids parameter works correctly """
+
+
 async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     dev = mctpd.network.endpoints[0]
@@ -1502,14 +1495,10 @@ async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
     static_eid = 12
     start_eid = 13
     ignore_eids = bytes([20, 21, 22])  # EIDs to ignore
-    ignore_message_types = b''  # Message types to ignore
+    ignore_message_types = b""  # Message types to ignore
 
-    (eid, _, _, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, _, _, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
@@ -1521,8 +1510,11 @@ async def test_assign_endpoint_static_with_ignore_eids(dbus, mctpd):
     assert neigh.eid == static_eid
     assert len(mctpd.system.routes) == 1
 
+
 """ Bridge pool: gateway routes are installed per-EID with extent 0 for every
 pool EID *except* those in ignore_eids, and use the bridge's own EID as gw."""
+
+
 async def test_pool_gw_routes_skip_ignore_eids(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     bridge = mctpd.network.endpoints[0]
@@ -1532,13 +1524,13 @@ async def test_pool_gw_routes_skip_ignore_eids(dbus, mctpd):
     pool_start = 13
     pool_size = 5
     ignore_eids = bytes([14, 16])
-    ignore_message_types = b''
+    ignore_message_types = b""
 
     for _ in range(pool_size):
         bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
 
     mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
-    (eid, _, _, _) = await mctp.call_assign_endpoint_static(
+    eid, _, _, _ = await mctp.call_assign_endpoint_static(
         bridge.lladdr,
         bridge_eid,
         pool_start,
@@ -1572,12 +1564,14 @@ async def test_pool_gw_routes_skip_ignore_eids(dbus, mctpd):
             f"installed gw routes: {sorted(gw_routes)}"
         )
 
-    assert set(gw_routes) == expected_gw_eids, (
-        f"gw route set {sorted(gw_routes)} != expected {sorted(expected_gw_eids)}"
-    )
+    assert (
+        set(gw_routes) == expected_gw_eids
+    ), f"gw route set {sorted(gw_routes)} != expected {sorted(expected_gw_eids)}"
 
-async def _setup_bridge_with_pool(dbus, mctpd, bridge_eid, pool_start,
-                                  pool_size, ignore_eids):
+
+async def _setup_bridge_with_pool(
+    dbus, mctpd, bridge_eid, pool_start, pool_size, ignore_eids
+):
     iface = mctpd.system.interfaces[0]
     bridge = mctpd.network.endpoints[0]
     bridge.types = [0, 1, 5]
@@ -1586,15 +1580,16 @@ async def _setup_bridge_with_pool(dbus, mctpd, bridge_eid, pool_start,
         bridge.add_bridged_ep(Endpoint(iface, bytes(), types=[0]))
 
     mctp = await mctpd_mctp_iface_obj(dbus, bridge.iface)
-    (eid, _, path, _) = await mctp.call_assign_endpoint_static(
+    eid, _, path, _ = await mctp.call_assign_endpoint_static(
         bridge.lladdr,
         bridge_eid,
         pool_start,
         ignore_eids,
-        b'',
+        b"",
     )
     assert eid == bridge_eid
     return bridge, path
+
 
 def _pool_gw_route_eids(routes, bridge_eid):
     found = {}
@@ -1607,20 +1602,26 @@ def _pool_gw_route_eids(routes, bridge_eid):
             found[rt.start_eid] = rt
     return found
 
+
 """ Empty ignore_eids: every pool EID must still get its own per-EID gw route
 (extent 0). Regression guard against falling back to a single range route. """
+
+
 async def test_pool_gw_routes_empty_ignore_list(dbus, mctpd):
     bridge_eid, pool_start, pool_size = 12, 13, 4
     _, _ = await _setup_bridge_with_pool(
-        dbus, mctpd, bridge_eid, pool_start, pool_size, b''
+        dbus, mctpd, bridge_eid, pool_start, pool_size, b""
     )
 
     gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
     assert set(gw_routes) == set(range(pool_start, pool_start + pool_size))
 
+
 """ Whole pool in ignore list: walker must iterate every EID through the
 should_ignore_eid() continue branch and install zero gw routes, without
 errors. """
+
+
 async def test_pool_gw_routes_whole_pool_ignored(dbus, mctpd):
     bridge_eid, pool_start, pool_size = 12, 13, 3
     ignore_eids = bytes(range(pool_start, pool_start + pool_size))
@@ -1629,13 +1630,16 @@ async def test_pool_gw_routes_whole_pool_ignored(dbus, mctpd):
     )
 
     gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
-    assert gw_routes == {}, (
-        f"expected no gw routes when whole pool is ignored, got {sorted(gw_routes)}"
-    )
+    assert (
+        gw_routes == {}
+    ), f"expected no gw routes when whole pool is ignored, got {sorted(gw_routes)}"
+
 
 """ Ignore list disjoint from pool: should_ignore_eid() never matches, so
 every pool EID gets a gw route. Catches a bug where the ignore lookup
 matched by index rather than EID value. """
+
+
 async def test_pool_gw_routes_disjoint_ignore_list(dbus, mctpd):
     bridge_eid, pool_start, pool_size = 12, 13, 4
     ignore_eids = bytes([200, 201, 202])
@@ -1646,10 +1650,13 @@ async def test_pool_gw_routes_disjoint_ignore_list(dbus, mctpd):
     gw_routes = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
     assert set(gw_routes) == set(range(pool_start, pool_start + pool_size))
 
+
 """ Delete path: removing the bridge peer must drop every gw route that the
 add path installed, exercising del_pool_gw_routes_ignore_aware (the
 adding=false branch of walk_pool_gw_routes). Ignored EIDs were never
 installed and must not be requested for deletion. """
+
+
 async def test_pool_gw_routes_delete_path_honors_ignore(dbus, mctpd):
     bridge_eid, pool_start, pool_size = 12, 13, 5
     ignore_eids = bytes([14, 16])
@@ -1658,7 +1665,9 @@ async def test_pool_gw_routes_delete_path_honors_ignore(dbus, mctpd):
     )
 
     before = _pool_gw_route_eids(mctpd.system.routes, bridge_eid)
-    expected_installed = set(range(pool_start, pool_start + pool_size)) - set(ignore_eids)
+    expected_installed = set(range(pool_start, pool_start + pool_size)) - set(
+        ignore_eids
+    )
     assert set(before) == expected_installed, (
         f"precondition: gw routes after add = {sorted(before)}, "
         f"expected {sorted(expected_installed)}"
@@ -1673,10 +1682,13 @@ async def test_pool_gw_routes_delete_path_honors_ignore(dbus, mctpd):
         f"(should be empty)"
     )
 
+
 """ Test that we use the minimum EID from the dynamic_eid_range config """
+
+
 async def test_config_dyn_eid_range_min(nursery, dbus, sysnet):
     """Test that we use the minimum EID from the dynamic_eid_range config"""
-    (min_dyn_eid, max_dyn_eid) = (20, 254)
+    min_dyn_eid, max_dyn_eid = (20, 254)
     config = f"""
     [bus-owner]
     dynamic_eid_range = [{min_dyn_eid}, {max_dyn_eid}]
@@ -1691,7 +1703,7 @@ async def test_config_dyn_eid_range_min(nursery, dbus, sysnet):
     ep = mctpd.network.endpoints[0]
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
     assert eid == min_dyn_eid
     assert ep.eid == eid
 
@@ -1701,7 +1713,7 @@ async def test_config_dyn_eid_range_min(nursery, dbus, sysnet):
 
 async def test_config_dyn_eid_range_max(nursery, dbus, sysnet):
     """Test that we use the maximum EID from the dynamic_eid_range config"""
-    (min_dyn_eid, max_dyn_eid) = (20, 21)
+    min_dyn_eid, max_dyn_eid = (20, 21)
     config = f"""
     [bus-owner]
     dynamic_eid_range = [{min_dyn_eid}, {max_dyn_eid}]
@@ -1718,13 +1730,13 @@ async def test_config_dyn_eid_range_max(nursery, dbus, sysnet):
 
     for i in range(0, 2):
         ep = mctpd.network.endpoints[i]
-        (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+        eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
         assert eid >= 20 and eid <= 21
 
     # we should have run out of EIDs
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
         ep = mctpd.network.endpoints[2]
-        (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+        eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     assert str(ex.value) == "Ran out of EIDs"
     assert mctpd.network.endpoints[2].eid == 0
@@ -1732,118 +1744,127 @@ async def test_config_dyn_eid_range_max(nursery, dbus, sysnet):
     res = await mctpd.stop_mctpd()
     assert res == 0
 
+
 """ Test that the service readiness interface is present and has correct initial state """
+
+
 async def test_service_readiness_interface_present(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
-    
+
     # Get the service readiness interface object
     service_readiness = await mctpd_service_readiness_obj(dbus, iface)
-    
+
     # Verify ServiceType property is correct and constant
     service_type = await service_readiness.get_service_type()
     assert service_type == SERVICE_TYPE_MCTP
-    
+
     # Verify initial State property is "Starting"
     state = await service_readiness.get_state()
     assert state == SERVICE_STATE_STARTING
 
 
 """ Test that service readiness state changes from Starting to Enabled after endpoint discovery """
+
+
 async def test_service_readiness_state_transition(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = mctpd.network.endpoints[0]
-    
+
     # Get the interface object for SetupEndpoint call
     iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
-    
+
     # Get the service readiness interface object
     service_readiness = await mctpd_service_readiness_obj(dbus, iface)
-    
+
     # Verify initial state is Starting
     initial_state = await service_readiness.get_state()
     assert initial_state == SERVICE_STATE_STARTING
-    
+
     # Set up signal monitoring for state change
     state_changed = trio.Semaphore(initial_value=0)
+
     def on_state_changed(iface, changed, invalidated):
-        if iface == OPENBMC_SERVICE_READINESS_I and 'State' in changed:
-            if changed['State'].value == SERVICE_STATE_ENABLED:
+        if iface == OPENBMC_SERVICE_READINESS_I and "State" in changed:
+            if changed["State"].value == SERVICE_STATE_ENABLED:
                 state_changed.release()
-    
+
     # Get the interface object to monitor properties
     iface_monitor_obj = await dbus.get_proxy_object(
-        'au.com.codeconstruct.MCTP1',
-        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+        "au.com.codeconstruct.MCTP1",
+        "/au/com/codeconstruct/mctp1/interfaces/" + iface.name,
     )
     props = await iface_monitor_obj.get_interface(DBUS_PROPERTIES_I)
     await props.on_properties_changed(on_state_changed)
-    
+
     # Call SetupEndpoint to trigger discovery completion
-    (eid, net, path, new) = await iface_obj.call_setup_endpoint(ep.lladdr)
-    
+    eid, net, path, new = await iface_obj.call_setup_endpoint(ep.lladdr)
+
     # Wait for the state to change to Enabled
     with trio.move_on_after(5) as expected:
         await state_changed.acquire()
-    
-    assert not expected.cancelled_caught, "Service readiness state did not transition to Enabled"
-    
+
+    assert (
+        not expected.cancelled_caught
+    ), "Service readiness state did not transition to Enabled"
+
     # Verify the state is now Enabled
     final_state = await service_readiness.get_state()
     assert final_state == SERVICE_STATE_ENABLED
 
 
 """ Test that service readiness state changes for bridge endpoints after routing table processing """
+
+
 async def test_service_readiness_bridge_state_transition(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     bridge = mctpd.network.endpoints[0]
     static_eid = 12
     start_eid = 13
-    ignore_eids = b''  # Empty array - no EIDs to ignore
-    ignore_message_types = b''  # Empty array - no Message types to ignore
-    
+    ignore_eids = b""  # Empty array - no EIDs to ignore
+    ignore_message_types = b""  # Empty array - no Message types to ignore
+
     # Get the interface object for AssignEndpoint call
     iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
-    
+
     # Get the service readiness interface object
     service_readiness = await mctpd_service_readiness_obj(dbus, iface)
-    
+
     # Verify initial state is Starting
     initial_state = await service_readiness.get_state()
     assert initial_state == SERVICE_STATE_STARTING
-    
+
     # Set up signal monitoring for state change
     state_changed = trio.Semaphore(initial_value=0)
+
     def on_state_changed(iface, changed, invalidated):
-        if iface == OPENBMC_SERVICE_READINESS_I and 'State' in changed:
-            if changed['State'].value == SERVICE_STATE_ENABLED:
+        if iface == OPENBMC_SERVICE_READINESS_I and "State" in changed:
+            if changed["State"].value == SERVICE_STATE_ENABLED:
                 state_changed.release()
-    
+
     # Get the interface object to monitor properties
     iface_monitor_obj = await dbus.get_proxy_object(
-        'au.com.codeconstruct.MCTP1',
-        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+        "au.com.codeconstruct.MCTP1",
+        "/au/com/codeconstruct/mctp1/interfaces/" + iface.name,
     )
     props = await iface_monitor_obj.get_interface(DBUS_PROPERTIES_I)
     await props.on_properties_changed(on_state_changed)
-    
-    (eid, _, _, _) = await iface_obj.call_assign_endpoint_static(
-        bridge.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+
+    eid, _, _, _ = await iface_obj.call_assign_endpoint_static(
+        bridge.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     # non blocking sleep for Allocate Eid timer expiry
     await trio.sleep(5)
     assert eid == static_eid
-    
+
     # Wait for the state to change to Enabled (may take longer for bridges)
     with trio.move_on_after(10) as expected:
         await state_changed.acquire()
-    
-    assert not expected.cancelled_caught, "Bridge service readiness state did not transition to Enabled"
-    
+
+    assert (
+        not expected.cancelled_caught
+    ), "Bridge service readiness state did not transition to Enabled"
+
     # Verify the state is now Enabled
     # TODO: The test infra does not have full bridge and routing table support
     # yet. So this does not quite take the intended path. When we merge the
@@ -1852,122 +1873,139 @@ async def test_service_readiness_bridge_state_transition(dbus, mctpd):
     final_state = await service_readiness.get_state()
     assert final_state == SERVICE_STATE_ENABLED
 
+
 """ Test that service readiness interface is available on all network interfaces """
+
+
 async def test_service_readiness_all_interfaces(dbus, mctpd):
     # Test with the default interface
     iface = mctpd.system.interfaces[0]
     service_readiness = await mctpd_service_readiness_obj(dbus, iface)
-    
+
     # Verify service readiness interface exists
     assert service_readiness is not None
-    
+
     # Test with a newly added interface
     net = 2
     start_eid = 10
-    new_iface = mctpd.system.Interface('mctptest', 20, net, bytes([]), 68, 254, True)
+    new_iface = mctpd.system.Interface(
+        "mctptest", 20, net, bytes([]), 68, 254, True
+    )
     await mctpd.system.add_interface(new_iface)
     await mctpd.system.add_address(mctpd.system.Address(new_iface, 90))
-    
+
     new_service_readiness = await mctpd_service_readiness_obj(dbus, new_iface)
-    
+
     # Verify service readiness interface exists on new interface too
     assert new_service_readiness is not None
-    
+
     # Verify both interfaces start with Starting state
     state1 = await service_readiness.get_state()
     state2 = await new_service_readiness.get_state()
     assert state1 == SERVICE_STATE_STARTING
     assert state2 == SERVICE_STATE_STARTING
-    
+
     # Clean up
     await mctpd.system.del_interface(new_iface)
 
 
 """ Test that service readiness state persists across interface renames """
+
+
 async def test_service_readiness_rename_persistence(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
-    
+
     # Get initial service readiness state
     service_readiness = await mctpd_service_readiness_obj(dbus, iface)
     initial_state = await service_readiness.get_state()
     assert initial_state == SERVICE_STATE_STARTING
-    
+
     # Rename the interface
     new_name = "renamedmctp0"
     iface.name = new_name
     await mctpd.system.notify_interface(iface)
-    
+
     # Get the renamed interface object
     renamed_service_readiness = await mctpd_service_readiness_obj(dbus, iface)
-    
+
     # Verify the service readiness interface still exists and has the same state
     renamed_state = await renamed_service_readiness.get_state()
     assert renamed_state == SERVICE_STATE_STARTING
-    
+
     # Verify ServiceType is still correct
     service_type = await renamed_service_readiness.get_service_type()
     assert service_type == SERVICE_TYPE_MCTP
 
 
 """ Test comprehensive service readiness behavior including signal emission """
+
+
 async def test_service_readiness_comprehensive(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = mctpd.network.endpoints[0]
-    
+
     # Get the service readiness interface object
     service_readiness = await mctpd_service_readiness_obj(dbus, iface)
-    
+
     # Verify initial state
     initial_state = await service_readiness.get_state()
     assert initial_state == SERVICE_STATE_STARTING
-    
+
     # Verify ServiceType is constant
     service_type = await service_readiness.get_service_type()
     assert service_type == SERVICE_TYPE_MCTP
-    
+
     # Set up signal monitoring for state changes
     state_changes = []
+
     def on_state_changed(iface, changed, invalidated):
-        if iface == OPENBMC_SERVICE_READINESS_I and 'State' in changed:
-            state_changes.append(changed['State'].value)
-    
+        if iface == OPENBMC_SERVICE_READINESS_I and "State" in changed:
+            state_changes.append(changed["State"].value)
+
     # Get the interface object to monitor properties
     iface_monitor_obj = await dbus.get_proxy_object(
-        'au.com.codeconstruct.MCTP1',
-        '/au/com/codeconstruct/mctp1/interfaces/' + iface.name
+        "au.com.codeconstruct.MCTP1",
+        "/au/com/codeconstruct/mctp1/interfaces/" + iface.name,
     )
     props = await iface_monitor_obj.get_interface(DBUS_PROPERTIES_I)
     await props.on_properties_changed(on_state_changed)
-    
+
     # Get the interface object for SetupEndpoint call
     iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
-    
+
     # Call SetupEndpoint to trigger discovery completion
-    (eid, net, path, new) = await iface_obj.call_setup_endpoint(ep.lladdr)
-    
+    eid, net, path, new = await iface_obj.call_setup_endpoint(ep.lladdr)
+
     # Wait a bit for the signal to be processed
     await trio.sleep(0.5)
-    
+
     # Verify that the state change signal was emitted
     assert len(state_changes) > 0, "No state change signals were emitted"
-    assert SERVICE_STATE_ENABLED in state_changes, f"Expected state change to {SERVICE_STATE_ENABLED}, got {state_changes}"
-    
+    assert (
+        SERVICE_STATE_ENABLED in state_changes
+    ), f"Expected state change to {SERVICE_STATE_ENABLED}, got {state_changes}"
+
     # Verify the final state is Enabled
     final_state = await service_readiness.get_state()
     assert final_state == SERVICE_STATE_ENABLED
-    
+
     # Verify that the state only changed once (from Starting to Enabled)
-    assert len(state_changes) == 1, f"Expected exactly one state change, got {len(state_changes)}: {state_changes}"
+    assert (
+        len(state_changes) == 1
+    ), f"Expected exactly one state change, got {len(state_changes)}: {state_changes}"
     assert state_changes[0] == SERVICE_STATE_ENABLED
 
+
 """ Test EndpointPing D-Bus method """
+
+
 async def test_endpoint_ping(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = mctpd.network.endpoints[0]
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
     # Set up the endpoint first
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     # Get Network interface
     net = await mctpd_mctp_network_obj(dbus, iface.net)
@@ -1976,7 +2014,10 @@ async def test_endpoint_ping(dbus, mctpd):
     # It should succeed and return nothing
     assert await net.call_endpoint_ping(eid) is None
 
+
 """ Test EndpointPing with non-existent EID """
+
+
 async def test_endpoint_ping_nonexistent(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
 
@@ -1992,31 +2033,34 @@ async def test_endpoint_ping_nonexistent(dbus, mctpd):
     # Should fail with "MCTP Endpoint did not respond"
     assert "MCTP Endpoint did not respond" in str(ex.value)
 
+
 """ Test that the already discovered endpoint emits a property
 change signal when the endpoint is learned """
+
+
 async def test_learn_endpoint_emit_prop_signal(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = mctpd.network.endpoints[0]
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
     # Set up endpoint first
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     ep_obj = await dbus.get_proxy_object(MCTPD_C, path)
     ep_props = await ep_obj.get_interface(DBUS_PROPERTIES_I)
 
     # Wait for connectivity change signal for discovered endpoint
-    learned = trio.Semaphore(initial_value = 0)
+    learned = trio.Semaphore(initial_value=0)
+
     def ep_connectivity_changed(iface, changed, invalidated):
-        if iface == MCTPD_ENDPOINT_I and \
-                'Connectivity' in changed:
-            if 'Available' == changed['Connectivity'].value:
+        if iface == MCTPD_ENDPOINT_I and "Connectivity" in changed:
+            if "Available" == changed["Connectivity"].value:
                 learned.release()
 
     await ep_props.on_properties_changed(ep_connectivity_changed)
 
     # Learn the endpoint
-    (_, _, learned_path, _) = await mctp.call_learn_endpoint(ep.lladdr)
+    _, _, learned_path, _ = await mctp.call_learn_endpoint(ep.lladdr)
     assert learned_path == path
     # Wait for the property change signal with timeout
     with trio.fail_after(5) as timeout:
@@ -2024,9 +2068,12 @@ async def test_learn_endpoint_emit_prop_signal(dbus, mctpd):
 
     assert not timeout.cancelled_caught
 
+
 """ Test EndpointPing with a device that returns a mismatched IID.
 This verifies that we ignore validation errors and treat any response as success.
 """
+
+
 async def test_endpoint_ping_bad_iid(dbus, mctpd):
     class BadIIDEndpoint(Endpoint):
         def __init__(self, *args, **kwargs):
@@ -2036,22 +2083,26 @@ async def test_endpoint_ping_bad_iid(dbus, mctpd):
         async def handle_mctp_control(self, sock, src_addr, msg):
             # Standard response handling, but we corrupt the IID in the response
             flags, opcode = msg[0:2]
-            
+
             # Only intercept Get Endpoint UUID (opcode 0x03) which Ping uses
             if self.inject_error and opcode == 0x03:
-                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
-                
+                dst_addr = MCTPSockAddr.for_ep_resp(
+                    self, src_addr, sock.addr_ext
+                )
+
                 # Construct a valid-looking response but with WRONG IID
                 # Request IID is in msg[0] & 0x1f. We'll use (IID + 1) % 32
-                req_iid = flags & 0x1f
+                req_iid = flags & 0x1F
                 bad_iid = (req_iid + 1) % 32
-                
-                resp_flags = (flags & ~0x1f) | bad_iid # Keep other flags, set bad IID
-                
+
+                resp_flags = (
+                    flags & ~0x1F
+                ) | bad_iid  # Keep other flags, set bad IID
+
                 # Response format: Header(2) + CC(1) + UUID(16)
                 # We can just send a dummy UUID
                 dummy_uuid = bytes([0xAA] * 16)
-                
+
                 resp = bytes([resp_flags, opcode, 0x00]) + dummy_uuid
                 await sock.send(dst_addr, resp)
                 return
@@ -2059,15 +2110,15 @@ async def test_endpoint_ping_bad_iid(dbus, mctpd):
             return await super().handle_mctp_control(sock, src_addr, msg)
 
     iface = mctpd.system.interfaces[0]
-    
+
     # Create our bad endpoint
-    ep = BadIIDEndpoint(iface, bytes([0x1e]))
+    ep = BadIIDEndpoint(iface, bytes([0x1E]))
     mctpd.network.add_endpoint(ep)
-    
+
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
     # Set up the endpoint first (standard setup)
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     # Enable error injection for Ping
     ep.inject_error = True
@@ -2079,9 +2130,12 @@ async def test_endpoint_ping_bad_iid(dbus, mctpd):
     # It SHOULD succeed despite the bad IID in the response
     assert await net.call_endpoint_ping(eid) is None
 
+
 """ Test EndpointPing with a device that returns wrong opcode.
 This verifies that we ignore validation errors and treat any response as success.
 """
+
+
 async def test_endpoint_ping_wrong_opcode(dbus, mctpd):
     class WrongOpcodeEndpoint(Endpoint):
         def __init__(self, *args, **kwargs):
@@ -2090,15 +2144,17 @@ async def test_endpoint_ping_wrong_opcode(dbus, mctpd):
 
         async def handle_mctp_control(self, sock, src_addr, msg):
             flags, opcode = msg[0:2]
-            
+
             # Only intercept Get Endpoint UUID (opcode 0x03)
             if self.inject_error and opcode == 0x03:
-                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
-                
+                dst_addr = MCTPSockAddr.for_ep_resp(
+                    self, src_addr, sock.addr_ext
+                )
+
                 # Send back a response with WRONG opcode (e.g., 0x05 instead of 0x03)
                 wrong_opcode = 0x05
                 dummy_uuid = bytes([0xBB] * 16)
-                
+
                 resp = bytes([flags, wrong_opcode, 0x00]) + dummy_uuid
                 await sock.send(dst_addr, resp)
                 return
@@ -2106,23 +2162,26 @@ async def test_endpoint_ping_wrong_opcode(dbus, mctpd):
             return await super().handle_mctp_control(sock, src_addr, msg)
 
     iface = mctpd.system.interfaces[0]
-    ep = WrongOpcodeEndpoint(iface, bytes([0x1f]))
+    ep = WrongOpcodeEndpoint(iface, bytes([0x1F]))
     mctpd.network.add_endpoint(ep)
-    
+
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     # Enable error injection for Ping
     ep.inject_error = True
 
     net = await mctpd_mctp_network_obj(dbus, iface.net)
-    
+
     # Should succeed despite wrong opcode
     assert await net.call_endpoint_ping(eid) is None
+
 
 """ Test EndpointPing with a device that returns an error completion code.
 This verifies that we treat error responses as successful pings.
 """
+
+
 async def test_endpoint_ping_error_completion_code(dbus, mctpd):
     class ErrorCompletionEndpoint(Endpoint):
         def __init__(self, *args, **kwargs):
@@ -2131,11 +2190,13 @@ async def test_endpoint_ping_error_completion_code(dbus, mctpd):
 
         async def handle_mctp_control(self, sock, src_addr, msg):
             flags, opcode = msg[0:2]
-            
+
             # Only intercept Get Endpoint UUID (opcode 0x03)
             if self.inject_error and opcode == 0x03:
-                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
-                
+                dst_addr = MCTPSockAddr.for_ep_resp(
+                    self, src_addr, sock.addr_ext
+                )
+
                 # Send back error response with completion code 0x05 (unsupported command)
                 # Format: flags, opcode, completion_code
                 resp = bytes([flags, opcode, 0x05])
@@ -2147,21 +2208,24 @@ async def test_endpoint_ping_error_completion_code(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = ErrorCompletionEndpoint(iface, bytes([0x20]))
     mctpd.network.add_endpoint(ep)
-    
+
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     # Enable error injection for Ping
     ep.inject_error = True
 
     net = await mctpd_mctp_network_obj(dbus, iface.net)
-    
+
     # Should succeed despite error completion code
     assert await net.call_endpoint_ping(eid) is None
+
 
 """ Test EndpointPing with a device that returns truncated/short response.
 This verifies that we treat short responses as successful pings.
 """
+
+
 async def test_endpoint_ping_short_response(dbus, mctpd):
     class ShortResponseEndpoint(Endpoint):
         def __init__(self, *args, **kwargs):
@@ -2170,11 +2234,13 @@ async def test_endpoint_ping_short_response(dbus, mctpd):
 
         async def handle_mctp_control(self, sock, src_addr, msg):
             flags, opcode = msg[0:2]
-            
+
             # Only intercept Get Endpoint UUID (opcode 0x03)
             if self.inject_error and opcode == 0x03:
-                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
-                
+                dst_addr = MCTPSockAddr.for_ep_resp(
+                    self, src_addr, sock.addr_ext
+                )
+
                 # Send back a response that's too short (missing UUID data)
                 # Normal response should be: flags + opcode + cc + 16-byte UUID = 19 bytes
                 # We send only 5 bytes
@@ -2187,21 +2253,24 @@ async def test_endpoint_ping_short_response(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = ShortResponseEndpoint(iface, bytes([0x21]))
     mctpd.network.add_endpoint(ep)
-    
+
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     # Enable error injection for Ping
     ep.inject_error = True
 
     net = await mctpd_mctp_network_obj(dbus, iface.net)
-    
+
     # Should succeed despite short response
     assert await net.call_endpoint_ping(eid) is None
+
 
 """ Test EndpointPing with a device that returns garbage data.
 This verifies that we treat any response as successful ping.
 """
+
+
 async def test_endpoint_ping_garbage_response(dbus, mctpd):
     class GarbageResponseEndpoint(Endpoint):
         def __init__(self, *args, **kwargs):
@@ -2210,11 +2279,13 @@ async def test_endpoint_ping_garbage_response(dbus, mctpd):
 
         async def handle_mctp_control(self, sock, src_addr, msg):
             flags, opcode = msg[0:2]
-            
+
             # Only intercept Get Endpoint UUID (opcode 0x03)
             if self.inject_error and opcode == 0x03:
-                dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
-                
+                dst_addr = MCTPSockAddr.for_ep_resp(
+                    self, src_addr, sock.addr_ext
+                )
+
                 # Send back completely garbage data
                 resp = bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
                 await sock.send(dst_addr, resp)
@@ -2225,21 +2296,23 @@ async def test_endpoint_ping_garbage_response(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     ep = GarbageResponseEndpoint(iface, bytes([0x22]))
     mctpd.network.add_endpoint(ep)
-    
+
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
-    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(ep.lladdr)
 
     # Enable error injection for Ping
     ep.inject_error = True
 
     net = await mctpd_mctp_network_obj(dbus, iface.net)
-    
+
     # Should succeed despite garbage response
     assert await net.call_endpoint_ping(eid) is None
 
 
 """ Test that ignore_message_types parameter correctly filters message types
 from the endpoint's supported message types list """
+
+
 async def test_ignore_message_types(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     dev = mctpd.network.endpoints[0]
@@ -2249,16 +2322,14 @@ async def test_ignore_message_types(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
     start_eid = 13
-    ignore_eids = b''  # No EIDs to ignore
-    ignore_message_types = bytes([1, 2, 126])  # Ignore message types 1, 2, and 126
+    ignore_eids = b""  # No EIDs to ignore
+    ignore_message_types = bytes(
+        [1, 2, 126]
+    )  # Ignore message types 1, 2, and 126
 
     # Assign endpoint with ignore_message_types
-    (eid, net, path, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, net, path, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
@@ -2274,12 +2345,15 @@ async def test_ignore_message_types(dbus, mctpd):
     query_types.sort()
     expected_types.sort()
 
-    assert query_types == expected_types, \
-        f"Expected message types {expected_types} but got {query_types}"
+    assert (
+        query_types == expected_types
+    ), f"Expected message types {expected_types} but got {query_types}"
 
 
 """ Test that the LocalEID property is correctly exposed on the endpoint
 D-Bus object after AssignEndpointStatic"""
+
+
 async def test_local_eid_exposed_on_endpoint(dbus, mctpd):
     iface = mctpd.system.interfaces[0]
     dev = mctpd.network.endpoints[0]
@@ -2287,15 +2361,11 @@ async def test_local_eid_exposed_on_endpoint(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
     static_eid = 12
     start_eid = 13
-    ignore_eids = b''
-    ignore_message_types = b''
+    ignore_eids = b""
+    ignore_message_types = b""
 
-    (eid, net, path, new) = await mctp.call_assign_endpoint_static(
-        dev.lladdr,
-        static_eid,
-        start_eid,
-        ignore_eids,
-        ignore_message_types
+    eid, net, path, new = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, start_eid, ignore_eids, ignore_message_types
     )
 
     assert eid == static_eid
@@ -2306,8 +2376,7 @@ async def test_local_eid_exposed_on_endpoint(dbus, mctpd):
     local_eid = await ep.get_local_eid()
 
     # The default system has local EID 8 assigned to the interface
-    assert local_eid == 8, \
-        f"Expected LocalEID 8 but got {local_eid}"
+    assert local_eid == 8, f"Expected LocalEID 8 but got {local_eid}"
 
 
 async def test_assign_dynamic_bridge_eid(dbus, mctpd):
@@ -2330,7 +2399,7 @@ async def test_assign_dynamic_bridge_eid(dbus, mctpd):
         mctpd.network.add_endpoint(br_ep)
 
     # dynamic EID assigment for dev1
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
 
     assert new
     assert ep.allocated_pool == (eid + 1, pool_size)
@@ -2350,7 +2419,7 @@ async def test_bridge_ep_conflict_static(dbus, mctpd):
         br_ep = Endpoint(iface, bytes())
         ep.add_bridged_ep(br_ep)
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert ep.allocated_pool == (eid + 1, n_bridged)
 
     # ensure no static assignment can be made from the bridged range
@@ -2359,15 +2428,15 @@ async def test_bridge_ep_conflict_static(dbus, mctpd):
         mctpd.network.add_endpoint(dev)
         with pytest.raises(asyncdbus.errors.DBusError):
             await mctp.call_assign_endpoint_static(
-                dev.lladdr, ep.eid + 1 + i, 0, b'', b''
+                dev.lladdr, ep.eid + 1 + i, 0, b"", b""
             )
 
     # ... but we're okay with the EID following
     dev = Endpoint(iface, bytes([0x30 + n_bridged]))
     mctpd.network.add_endpoint(dev)
     static_eid = ep.eid + 1 + n_bridged
-    (eid, _, _, _) = await mctp.call_assign_endpoint_static(
-        dev.lladdr, static_eid, 0, b'', b''
+    eid, _, _, _ = await mctp.call_assign_endpoint_static(
+        dev.lladdr, static_eid, 0, b"", b""
     )
 
     assert eid == static_eid
@@ -2387,7 +2456,7 @@ async def test_bridge_ep_conflict_learn(dbus, mctpd):
         br_ep = Endpoint(iface, bytes())
         ep.add_bridged_ep(br_ep)
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert ep.allocated_pool == (eid + 1, n_bridged)
 
     # ensure no learnt assignment can be made from the bridged range
@@ -2401,7 +2470,7 @@ async def test_bridge_ep_conflict_learn(dbus, mctpd):
     dev_eid = ep.eid + 1 + n_bridged
     dev = Endpoint(iface, bytes([0x30 + n_bridged]), eid=dev_eid)
     mctpd.network.add_endpoint(dev)
-    (eid, _, _, _) = await mctp.call_learn_endpoint(dev.lladdr)
+    eid, _, _, _ = await mctp.call_learn_endpoint(dev.lladdr)
 
     assert eid == dev_eid
 
@@ -2420,7 +2489,7 @@ async def test_bridge_ep_conflict_setup(dbus, mctpd):
         br_ep = Endpoint(iface, bytes())
         ep.add_bridged_ep(br_ep)
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert ep.allocated_pool == (eid + 1, n_bridged)
     pool_range = range(ep.allocated_pool[0], ep.allocated_pool[1] + 1)
 
@@ -2429,7 +2498,7 @@ async def test_bridge_ep_conflict_setup(dbus, mctpd):
     for i in range(n_bridged):
         dev = Endpoint(iface, bytes([0x30 + i]), eid=ep.eid + 1 + i)
         mctpd.network.add_endpoint(dev)
-        (eid, _, _, _) = await mctp.call_setup_endpoint(dev.lladdr)
+        eid, _, _, _ = await mctp.call_setup_endpoint(dev.lladdr)
         assert eid not in pool_range
 
 
@@ -2444,9 +2513,9 @@ async def test_bridge_setup_reassign(dbus, mctpd):
     ep = mctpd.network.endpoints[0]
     static_eid = 10
     start_eid = 11
-    ignore_eids = b''
-    ignore_message_types = b''
-    (eid, _, _, _) = await mctp.call_assign_endpoint_static(
+    ignore_eids = b""
+    ignore_message_types = b""
+    eid, _, _, _ = await mctp.call_assign_endpoint_static(
         ep.lladdr,
         static_eid,
         start_eid,
@@ -2462,7 +2531,7 @@ async def test_bridge_setup_reassign(dbus, mctpd):
     br.add_bridged_ep(Endpoint(iface, bytes()))
     mctpd.network.add_endpoint(br)
 
-    (eid, _, _, _) = await mctp.call_setup_endpoint(br.lladdr)
+    eid, _, _, _ = await mctp.call_setup_endpoint(br.lladdr)
     assert eid != conflict_eid
     assert br.allocated_pool is not None
     assert br.allocated_pool[0] == eid + 1
@@ -2492,7 +2561,7 @@ async def test_assign_dynamic_eid_limited_pool(nursery, dbus, sysnet):
         mctpd.network.add_endpoint(br_ep)
 
     # dynamic EID assigment for dev1
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
 
     assert new
 
@@ -2510,7 +2579,7 @@ async def test_bridge_pool_assign_limited(nursery, dbus, sysnet):
     """Test that a limited pool is assigned if we run out of space for a full
     allocation
     """
-    (min_dyn_eid, max_dyn_eid) = (8, 13)
+    min_dyn_eid, max_dyn_eid = (8, 13)
     config = f"""
     [bus-owner]
     dynamic_eid_range = [{min_dyn_eid}, {max_dyn_eid}]
@@ -2534,10 +2603,11 @@ async def test_bridge_pool_assign_limited(nursery, dbus, sysnet):
     dev2 = Endpoint(iface, bytes([0x09]))
     mctpd.network.add_endpoint(dev2)
     start_eid = 11
-    ignore_eids = b''
-    ignore_message_types = b''
-    (eid, _, path, new) = await mctp.call_assign_endpoint_static(
-        dev2.lladdr, 10,
+    ignore_eids = b""
+    ignore_message_types = b""
+    eid, _, path, new = await mctp.call_assign_endpoint_static(
+        dev2.lladdr,
+        10,
         start_eid,
         ignore_eids,
         ignore_message_types,
@@ -2545,7 +2615,7 @@ async def test_bridge_pool_assign_limited(nursery, dbus, sysnet):
     assert new
 
     # dynamic EID assigment for dev1
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert new
     assert ep.allocated_pool is not None
     # we should have the largest range possible; the 8,9-9 range is smaller
@@ -2591,7 +2661,7 @@ async def test_assign_dynamic_eid_allocation_failure(dbus, mctpd):
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
     # dynamic EID assigment for dev1
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert new
     # Interface should not be present for failed pool allocation
     with pytest.raises(asyncdbus.errors.InterfaceNotFoundError):
@@ -2603,7 +2673,7 @@ async def test_assign_without_bridge_range(dbus, sysnet, nursery):
     """Test assigning a non-bridge endpoint, when we don't have capacity for
     the speculatively-allocated bridge range
     """
-    (dyn_eid_min, dyn_eid_max) = (10, 20)
+    dyn_eid_min, dyn_eid_max = (10, 20)
     max_pool_size = (dyn_eid_max - dyn_eid_min) + 1
     config = f"""
     [bus-owner]
@@ -2619,7 +2689,7 @@ async def test_assign_without_bridge_range(dbus, sysnet, nursery):
 
     mctp = await mctpd_mctp_iface_obj(dbus, iface)
 
-    (eid, _, _, _) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, _, _ = await mctp.call_assign_endpoint(ep.lladdr)
 
     assert eid == dyn_eid_min
     res = await mctpd.stop_mctpd()
@@ -2636,7 +2706,7 @@ async def test_bridge_pool_range_limited(dbus, sysnet, nursery):
     #  11-13: bridge A pool
     #     14: bridge B
     #  15-17: bridge B pool
-    (dyn_eid_min, dyn_eid_max) = (10, 17)
+    dyn_eid_min, dyn_eid_max = (10, 17)
     bridge_downstreams = 3
     # max pool size would consume more than half of the range, so bridge B
     # cannot be allocated this max
@@ -2662,7 +2732,7 @@ async def test_bridge_pool_range_limited(dbus, sysnet, nursery):
 
     iface_obj = await mctpd_mctp_iface_obj(dbus, iface)
     for bridge in bridges:
-        (eid, _, _, _) = await iface_obj.call_assign_endpoint(bridge.lladdr)
+        eid, _, _, _ = await iface_obj.call_assign_endpoint(bridge.lladdr)
         assert bridge.allocated_pool is not None
         assert bridge.allocated_pool[1] == 3
 
@@ -2676,7 +2746,7 @@ async def test_get_message_types(dbus, mctpd, routed_ep):
     # Check default response when no responder registered
     cmd = MCTPControlCommand(True, 0, 0x05, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 05 00 01 00'
+    assert rsp.hex(" ") == "00 05 00 01 00"
 
     # Register spdm responder with a random version
     mctp = await mctpd_mctp_base_iface_obj(dbus)
@@ -2693,12 +2763,12 @@ async def test_get_message_types(dbus, mctpd, routed_ep):
     # Verify get message type response includes spdm
     cmd = MCTPControlCommand(True, 0, 0x05, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 05 00 02 00 05'
+    assert rsp.hex(" ") == "00 05 00 02 00 05"
 
     # Verify version passed in dbus call is responded back
     cmd = MCTPControlCommand(True, 0, 0x04, bytes([0x05]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 04 00 01 f4 f3 f2 f1'
+    assert rsp.hex(" ") == "00 04 00 01 f4 f3 f2 f1"
 
 
 async def test_register_vdm_type_support_empty(mctpd, routed_ep):
@@ -2708,7 +2778,7 @@ async def test_register_vdm_type_support_empty(mctpd, routed_ep):
     # Verify error response when no VDM is registered
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 02'
+    assert rsp.hex(" ") == "00 06 02"
 
 
 async def test_register_vdm_type_support_pcie_only(dbus, mctpd, routed_ep):
@@ -2717,23 +2787,23 @@ async def test_register_vdm_type_support_pcie_only(dbus, mctpd, routed_ep):
     mctp = await mctpd_mctp_base_iface_obj(dbus)
 
     # Register PCIe VDM: format=0x00, VID=0xABCD, command_set=0x0001
-    v_type = asyncdbus.Variant('q', 0xABCD)
+    v_type = asyncdbus.Variant("q", 0xABCD)
     await mctp.call_register_vdm_type_support(0x00, v_type, 0x0001)
 
     # Verify Get Message Type Support response includes PCI VDM type
     cmd = MCTPControlCommand(True, 0, 0x05, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 05 00 02 00 7e'
+    assert rsp.hex(" ") == "00 05 00 02 00 7e"
 
     # Verify PCIe VDM (selector 0)
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 00 ff 00 ab cd 00 01'
+    assert rsp.hex(" ") == "00 06 00 ff 00 ab cd 00 01"
 
     # Verify error with incorrect selector
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x05]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 02'
+    assert rsp.hex(" ") == "00 06 02"
 
 
 async def test_register_vdm_type_support_iana_only(dbus, mctpd, routed_ep):
@@ -2742,18 +2812,18 @@ async def test_register_vdm_type_support_iana_only(dbus, mctpd, routed_ep):
     mctp = await mctpd_mctp_base_iface_obj(dbus)
 
     # Register IANA VDM: format=0x01, VID=0x1234ABCD, command_set=0x5678
-    v_type = asyncdbus.Variant('u', 0x1234ABCD)
+    v_type = asyncdbus.Variant("u", 0x1234ABCD)
     await mctp.call_register_vdm_type_support(0x01, v_type, 0x5678)
 
     # Verify Get Message Type Support response includes IANA VDM type
     cmd = MCTPControlCommand(True, 0, 0x05, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 05 00 02 00 7f'
+    assert rsp.hex(" ") == "00 05 00 02 00 7f"
 
     # Verify IANA VDM (selector 0)
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 00 ff 01 12 34 ab cd 56 78'
+    assert rsp.hex(" ") == "00 06 00 ff 01 12 34 ab cd 56 78"
 
 
 async def test_register_vdm_type_support_both(dbus, mctpd, routed_ep):
@@ -2762,29 +2832,29 @@ async def test_register_vdm_type_support_both(dbus, mctpd, routed_ep):
     mctp = await mctpd_mctp_base_iface_obj(dbus)
 
     # Register IANA VDM: format=0x01, VID=0x1234ABCD, command_set=0x5678
-    v_type = asyncdbus.Variant('u', 0x1234ABCD)
+    v_type = asyncdbus.Variant("u", 0x1234ABCD)
     await mctp.call_register_vdm_type_support(0x01, v_type, 0x5678)
 
     # Register PCI VDM: format=0x00, VID=0xABCD, command_set=0x5678
-    v_type = asyncdbus.Variant('q', 0xABCD)
+    v_type = asyncdbus.Variant("q", 0xABCD)
     await mctp.call_register_vdm_type_support(0x00, v_type, 0x5678)
 
     # Verify Get Message Type Support response includes both VDM types
     cmd = MCTPControlCommand(True, 0, 0x05, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 05 00 03 00 7e 7f'
+    assert rsp.hex(" ") == "00 05 00 03 00 7e 7f"
 
     # we assume ordering of IANA vs PCI here, but current mctpd will
     # preserve that.
     # Verify IANA VDM (selector 0)
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 00 01 01 12 34 ab cd 56 78'
+    assert rsp.hex(" ") == "00 06 00 01 01 12 34 ab cd 56 78"
 
     # Verify PCI VDM (selector 1)
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x01]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 00 ff 00 ab cd 56 78'
+    assert rsp.hex(" ") == "00 06 00 ff 00 ab cd 56 78"
 
 
 async def test_register_vdm_type_support_dbus_disconnect(mctpd, routed_ep):
@@ -2794,29 +2864,29 @@ async def test_register_vdm_type_support_dbus_disconnect(mctpd, routed_ep):
     # Verify error response when no VDM is registered
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 02'
+    assert rsp.hex(" ") == "00 06 02"
 
     async with asyncdbus.MessageBus().connect() as temp_bus:
         mctp = await mctpd_mctp_base_iface_obj(temp_bus)
 
         # Register PCIe VDM: format=0x00, VID=0xABCD, command_set=1 and 2
-        v_type = asyncdbus.Variant('q', 0xABCD)
+        v_type = asyncdbus.Variant("q", 0xABCD)
         await mctp.call_register_vdm_type_support(0x00, v_type, 0x0001)
         await mctp.call_register_vdm_type_support(0x00, v_type, 0x0002)
 
         # Verify PCIe VDM (selector 0)
         cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
         rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-        assert rsp.hex(' ') == '00 06 00 01 00 ab cd 00 01'
+        assert rsp.hex(" ") == "00 06 00 01 00 ab cd 00 01"
         # Verify PCIe VDM (selector 1)
         cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x01]))
         rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-        assert rsp.hex(' ') == '00 06 00 ff 00 ab cd 00 02'
+        assert rsp.hex(" ") == "00 06 00 ff 00 ab cd 00 02"
 
         # Verify GetMsgType includes VDM
         cmd = MCTPControlCommand(True, 0, 0x05)
         rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-        assert rsp.hex(' ') == '00 05 00 02 00 7e'
+        assert rsp.hex(" ") == "00 05 00 02 00 7e"
 
     # Give mctpd a moment to process the disconnection
     await trio.sleep(0.1)
@@ -2824,12 +2894,12 @@ async def test_register_vdm_type_support_dbus_disconnect(mctpd, routed_ep):
     # Verify VDM type is removed after disconnect
     cmd = MCTPControlCommand(True, 0, 0x06, bytes([0x00]))
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 06 02'  # Should be error again
+    assert rsp.hex(" ") == "00 06 02"  # Should be error again
 
     # Verify GetMsgType has only control command
     cmd = MCTPControlCommand(True, 0, 0x05)
     rsp = await ep.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 05 00 01 00'
+    assert rsp.hex(" ") == "00 05 00 01 00"
 
 
 async def test_register_vdm_type_support_errors(dbus, mctpd):
@@ -2837,18 +2907,18 @@ async def test_register_vdm_type_support_errors(dbus, mctpd):
     mctp = await mctpd_mctp_base_iface_obj(dbus)
 
     # Verify DBus call fails with invalid format 0x02
-    v_type = asyncdbus.Variant('q', 0xABCD)
+    v_type = asyncdbus.Variant("q", 0xABCD)
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
         await mctp.call_register_vdm_type_support(0x02, v_type, 0x0001)
     assert "Unsupported VID format" in str(ex.value)
 
     # Verify incorrect VID type raises error
-    v_type = asyncdbus.Variant('u', 0xABCDEF12)
+    v_type = asyncdbus.Variant("u", 0xABCDEF12)
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
         await mctp.call_register_vdm_type_support(0x00, v_type, 0x0001)
     assert "Expected format is PCIe but variant contains" in str(ex.value)
 
-    v_type = asyncdbus.Variant('q', 0xABCD)
+    v_type = asyncdbus.Variant("q", 0xABCD)
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
         await mctp.call_register_vdm_type_support(0x01, v_type, 0x5678)
     assert "Expected format is IANA but variant contains" in str(ex.value)
@@ -2893,7 +2963,7 @@ async def test_query_peer_properties_retry_timeout(nursery, dbus, sysnet):
     mctpd.network.add_endpoint(ep)
 
     # call setup_endpoint on ep, which will allocate a object path for it
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     objep = await mctpd_mctp_endpoint_common_obj(dbus, path)
     objtypes = list(await objep.get_supported_message_types())
@@ -2904,7 +2974,7 @@ async def test_query_peer_properties_retry_timeout(nursery, dbus, sysnet):
     ep.timeout_count = 2  # timeout twice before responding
 
     # call setup_endpoint again, which will trigger query of peer properties
-    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    eid, net, path, new = await mctp.call_setup_endpoint(ep.lladdr)
 
     # timeout twice does not prevent us from getting the correct message types
     objep = await mctpd_mctp_endpoint_common_obj(dbus, path)
@@ -2917,14 +2987,15 @@ async def test_query_peer_properties_retry_timeout(nursery, dbus, sysnet):
 
     def _endpoint_paths(node_set):
         return {
-            p for p in node_set
-            if '/endpoints/' in p and p.rsplit('/endpoints/', 1)[1].isdigit()
+            p
+            for p in node_set
+            if "/endpoints/" in p and p.rsplit("/endpoints/", 1)[1].isdigit()
         }
 
     # Snapshot the published endpoints before the failing setup (this
     # includes the local EID endpoint plus 0x1A and 0x1B).
     before = set()
-    await _introspect_path_recursive(dbus, '/', before)
+    await _introspect_path_recursive(dbus, "/", before)
     before_eps = _endpoint_paths(before)
 
     # call setup_endpoint again, which will trigger query of peer properties.
@@ -2937,7 +3008,7 @@ async def test_query_peer_properties_retry_timeout(nursery, dbus, sysnet):
     # The failed setup must not have published (or left behind) any
     # endpoint object: the set of endpoints is unchanged.
     after = set()
-    await _introspect_path_recursive(dbus, '/', after)
+    await _introspect_path_recursive(dbus, "/", after)
     after_eps = _endpoint_paths(after)
     assert after_eps == before_eps, (
         "retry-exhausted 0x1C setup must not publish or leak an endpoint. "
@@ -2989,9 +3060,9 @@ async def test_query_peer_properties_same_iid_on_retry(nursery, dbus, sysnet):
     # Two Get Message Type Support requests: initial + one retry
     assert len(ep.seen_iids) == 2
     # Both must carry the same IID
-    assert ep.seen_iids[0] == ep.seen_iids[1], (
-        f"IID changed across retry: {ep.seen_iids[0]:#04x} -> {ep.seen_iids[1]:#04x}"
-    )
+    assert (
+        ep.seen_iids[0] == ep.seen_iids[1]
+    ), f"IID changed across retry: {ep.seen_iids[0]:#04x} -> {ep.seen_iids[1]:#04x}"
 
     res = await mctpd.stop_mctpd()
     assert res == 0
@@ -3037,7 +3108,7 @@ async def test_bridged_endpoint_poll(dbus, sysnet, nursery, autojump_clock):
             endpoint_added.release()
 
     await mctp_objmgr.on_interfaces_added(ep_added)
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert new
 
     # Wait for all expected bridged endpoints to be discovered
@@ -3046,9 +3117,9 @@ async def test_bridged_endpoint_poll(dbus, sysnet, nursery, autojump_clock):
             await endpoint_added.acquire()
 
     # Verify we found all expected bridged endpoints
-    assert not expected.cancelled_caught, (
-        "Timeout waiting for bridged endpoints"
-    )
+    assert (
+        not expected.cancelled_caught
+    ), "Timeout waiting for bridged endpoints"
     assert len(bridged_endpoints_found) == expected_bridged_eps
 
     res = await mctpd.stop_mctpd()
@@ -3081,7 +3152,7 @@ async def test_bridged_endpoint_remove(dbus, sysnet, nursery, autojump_clock):
         mctpd.network.add_endpoint(bep)
         ep.add_bridged_ep(bep)
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert new
 
     # Wait for the bridged endpoints to be discovered
@@ -3139,7 +3210,7 @@ async def test_bridged_endpoint_poll_stop(
     mctpd.network.add_endpoint(bridged_ep)
     ep.add_bridged_ep(bridged_ep)
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert new
 
     mctp_obj = await dbus.get_proxy_object(MCTPD_C, MCTPD_MCTP_P)
@@ -3199,7 +3270,7 @@ async def test_bridged_endpoint_poll_continue(
     mctpd.network.add_endpoint(bridged_ep)
     ep.add_bridged_ep(bridged_ep)
 
-    (eid, _, path, new) = await mctp.call_assign_endpoint(ep.lladdr)
+    eid, _, path, new = await mctp.call_assign_endpoint(ep.lladdr)
     assert new
 
     # Wait for sometime to continue polling
@@ -3222,7 +3293,9 @@ async def test_iface_config_none(dbus, sysnet, nursery):
     mctpd = MctpdWrapper(dbus, sysnet, config=config)
     await mctpd.start_mctpd(nursery)
 
-    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    iface = await mctpd_mctp_iface_control_obj(
+        dbus, mctpd.system.interfaces[0]
+    )
     role = await iface.get_role()
     assert role == "Unknown"
     res = await mctpd.stop_mctpd()
@@ -3240,7 +3313,9 @@ async def test_iface_config_match_all(dbus, sysnet, nursery):
     mctpd = MctpdWrapper(dbus, sysnet, config=config)
     await mctpd.start_mctpd(nursery)
 
-    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    iface = await mctpd_mctp_iface_control_obj(
+        dbus, mctpd.system.interfaces[0]
+    )
     role = await iface.get_role()
     assert role == "BusOwner"
     res = await mctpd.stop_mctpd()
@@ -3282,7 +3357,9 @@ async def test_iface_config_match_path_exact(dbus, sysnet, nursery):
     mctpd = MctpdWrapper(dbus, sysnet, config=config)
     await mctpd.start_mctpd(nursery)
 
-    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    iface = await mctpd_mctp_iface_control_obj(
+        dbus, mctpd.system.interfaces[0]
+    )
     role = await iface.get_role()
     assert role == "BusOwner"
 
@@ -3304,7 +3381,9 @@ async def test_iface_config_nomatch_path(dbus, sysnet, nursery):
     mctpd = MctpdWrapper(dbus, sysnet, config=config)
     await mctpd.start_mctpd(nursery)
 
-    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    iface = await mctpd_mctp_iface_control_obj(
+        dbus, mctpd.system.interfaces[0]
+    )
     role = await iface.get_role()
     assert role == "Unknown"
     res = await mctpd.stop_mctpd()
@@ -3323,7 +3402,9 @@ async def test_iface_config_match_path_glob(dbus, sysnet, nursery):
     mctpd = MctpdWrapper(dbus, sysnet, config=config)
     await mctpd.start_mctpd(nursery)
 
-    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    iface = await mctpd_mctp_iface_control_obj(
+        dbus, mctpd.system.interfaces[0]
+    )
     role = await iface.get_role()
     assert role == "BusOwner"
 
@@ -3344,7 +3425,9 @@ async def test_iface_config_match_path_none(dbus, sysnet, nursery):
     mctpd.system.interfaces[0].sysfs_path = None
     await mctpd.start_mctpd(nursery)
 
-    iface = await mctpd_mctp_iface_control_obj(dbus, mctpd.system.interfaces[0])
+    iface = await mctpd_mctp_iface_control_obj(
+        dbus, mctpd.system.interfaces[0]
+    )
     role = await iface.get_role()
     assert role != "BusOwner"
 

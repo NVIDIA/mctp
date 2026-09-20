@@ -35,8 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
    different EID than the one that had been set; we no longer omit conditional
    dbus properties that were missed due to the unpublish/publish cycle.
 
-   Support for these endpoints is not always guaranteed; this Set Endpoint
-   ID behaviour is a spec violation.
+   Support for these endpoints is not always guaranteed; this Set Endpoint ID
+   behaviour is a spec violation.
 
 3. A couple of compile-time fixes for building against older kernel header
    versions, and 32-bit arm.
@@ -48,14 +48,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-1. `mctpd` now queries endpoints for their vendor-defined message support,
-   and publishes as the newly-specced `VendorDefinedMessageTypes` dbus property.
+1. `mctpd` now queries endpoints for their vendor-defined message support, and
+   publishes as the newly-specced `VendorDefinedMessageTypes` dbus property.
 
 2. `mctp`'s verbose mode will now decode `IFLA_MCTP` attributes in netlink
    message data
 
-3. `mctpd` now supports configuration on individual links, without having
-   to perform dbus property updates. Links may be matched on physical transport
+3. `mctpd` now supports configuration on individual links, without having to
+   perform dbus property updates. Links may be matched on physical transport
    binding type, or by sysfs paths, allowing individual interface roles to be
    specified by the configuration file.
 
@@ -64,26 +64,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixes
 
-1. mctpd's interface objects now expose the BusOwner1 interface when set
-   as a BusOwner via the Role property
+1. mctpd's interface objects now expose the BusOwner1 interface when set as a
+   BusOwner via the Role property
 
 2. `mctpd`'s responses to an unsupported Endpoint Discovery message were
    invalid, having a zeroed control message header. These are now properly
    populated
 
 3. `mctpd` will no longer (incorrectly) reject SetupEndpoint / AssignEndpoint
-   calls for endpoints that do not implement the optional Get Endpoint UUID
-   and Get Vendor Defined Message Support commands.
+   calls for endpoints that do not implement the optional Get Endpoint UUID and
+   Get Vendor Defined Message Support commands.
 
 ### Changed
 
-1. `mctpd`'s `mode` configuration (setting bus owner vs. endpoint roles) is
-   now called `role`. Configuration parsing will still allow the `mode` setting,
-   but this will be deprecated in a later release.
+1. `mctpd`'s `mode` configuration (setting bus owner vs. endpoint roles) is now
+   called `role`. Configuration parsing will still allow the `mode` setting, but
+   this will be deprecated in a later release.
 
-2. `mctpd`'s command submission logic has been reworked, allowing us to
-   re-use outgoing control protocol instance IDs (IIDs) when we re-send
-   commands. More instances of commands now have retry logic too.
+2. `mctpd`'s command submission logic has been reworked, allowing us to re-use
+   outgoing control protocol instance IDs (IIDs) when we re-send commands. More
+   instances of commands now have retry logic too.
 
 3. When running in endpoint mode, `mctpd` will now issue responses to incoming
    Set Endpoint ID commands before performing enumeration on the (bus-owner)
@@ -124,9 +124,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-1. `mctpd`'s `RegisterTypeSupport` dbus method will no longer allow the
-   VDM messaging types (0x7e and 0x7f) to be registered, as these do not
-   make sense without a corresponding VDM type registration.
+1. `mctpd`'s `RegisterTypeSupport` dbus method will no longer allow the VDM
+   messaging types (0x7e and 0x7f) to be registered, as these do not make sense
+   without a corresponding VDM type registration.
 
    Registering a VDM type will automatically include the corresponding VDM type
    in the Get Message Type Support response.
@@ -162,21 +162,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 5. When in endpoint mode, `mctpd` now handles to Set Endpoint ID messages,
    assigning an EID to local interfaces.
 
-6. `mctpd` now handles downstream MCTP bridges, which may request an EID
-   pool from their Set Endpoint ID response. It will attempt an EID allocation
-   from the dynamic range, and pass this to the bridge using a subsequent
-   Allocate Endpoint IDs command.
+6. `mctpd` now handles downstream MCTP bridges, which may request an EID pool
+   from their Set Endpoint ID response. It will attempt an EID allocation from
+   the dynamic range, and pass this to the bridge using a subsequent Allocate
+   Endpoint IDs command.
 
-7. In endpoint mode, `mctpd` now supports the discovery process (Prepare
-   for Endpoint Discovery -> Endpoint Discovery), where permitted by transport
-   type.
+7. In endpoint mode, `mctpd` now supports the discovery process (Prepare for
+   Endpoint Discovery -> Endpoint Discovery), where permitted by transport type.
 
 8. `mctpd` now has a facility for applications to register support for MCTP
-   message types. Those types are reported in `mctpd`'s responses to
-   Get Message Type Support and Get MCTP Version support commands.
+   message types. Those types are reported in `mctpd`'s responses to Get Message
+   Type Support and Get MCTP Version support commands.
 
-9. `mctpd`'s Network1.LearnEndpoint method will now check for endpoint
-   presence before publishing an endpoint.
+9. `mctpd`'s Network1.LearnEndpoint method will now check for endpoint presence
+   before publishing an endpoint.
 
 ## [2.2] - 2025-07-28
 
@@ -184,14 +183,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 1. Fixed an issue where peer pointers are kept over a potential realloc()
 
-2. Netlink handling now handles interface deletion correctly; we no longer
-   lose sync with the internal linkmap
+2. Netlink handling now handles interface deletion correctly; we no longer lose
+   sync with the internal linkmap
 
 3. When operating as a responder, mctpd now uses the correct instance id (IID)
    in the control protocol header
 
-4. `mctpd` now correctly handles error responses that contain only the CC,
-   as permitted by the spec
+4. `mctpd` now correctly handles error responses that contain only the CC, as
+   permitted by the spec
 
 5. Ensure that `mctpd` error response data is initialised
 
@@ -201,10 +200,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
    messages between two processes.
 
 2. mctpd: Add `au.com.codeconstruct.MCTP.Network1` interface, including
-    - a `LocalEIDs` property, representing the local EIDs assigned on this
-      network
-    - a `LearnEndpoint` method, for enumerating endpoints that already have an
-      address assigned, and are routable
+   - a `LocalEIDs` property, representing the local EIDs assigned on this
+     network
+   - a `LearnEndpoint` method, for enumerating endpoints that already have an
+     address assigned, and are routable
 
 3. tests: the fake mctp environment can now be run standalone, allowing
    experimentation with different system and network configurations
@@ -213,9 +212,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
    `au.com.codecontruct.MCTP.Interface1` interface, allowing link-to-network
    lookups
 
-5. mctpd: Better handling of strange cases of Set Endpoint ID responses,
-   where the reported endpoint EID may either be different from expected,
-   or invalid
+5. mctpd: Better handling of strange cases of Set Endpoint ID responses, where
+   the reported endpoint EID may either be different from expected, or invalid
 
 6. New debug/test tool, `mctp-bench`, for performing basic requests to MCTP
    endpoints, and printing their responses
@@ -226,8 +224,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 9. In-tree tests now include coverage for the `mctp` utility
 
-10. `mctpd` now handles interface name changes, updating dbus objects to
-    reflect new interface names.
+10. `mctpd` now handles interface name changes, updating dbus objects to reflect
+    new interface names.
 
 ### Changed
 
@@ -246,7 +244,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
        (cd obj; python3 ../tests/mctpd/__init__.py)
 
-3. mctp-bench, mctp-req, mctp-echo: Message format has changed to use a
+2. mctp-bench, mctp-req, mctp-echo: Message format has changed to use a
    vendor-defined message type, rather than MCTP type 1.
 
 ## [2.1] - 2024-12-16
@@ -265,18 +263,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-1. We now enforce IID checks on MCTP control protocol responses; this
-   prevents odd behaviour from delayed or invalid responses.
+1. We now enforce IID checks on MCTP control protocol responses; this prevents
+   odd behaviour from delayed or invalid responses.
 
 2. In mctpd the initial route MTU for an endpoint is now set to the minimum MTU
-   of the interface. This allows better compatibility with devices that 
-   have a low initial allowed packet size and require application negotiation
-   to increase that packet size. Previously the initial MTU was left as the
-   interface default (normally the maximum MTU).
-   The .SetMTU method can be used to set the endpoint route MTU.
+   of the interface. This allows better compatibility with devices that have a
+   low initial allowed packet size and require application negotiation to
+   increase that packet size. Previously the initial MTU was left as the
+   interface default (normally the maximum MTU). The .SetMTU method can be used
+   to set the endpoint route MTU.
 
-3. Hardware address formatting has been improved in cases where the address
-   size is something other than a 1-byte value.
+3. Hardware address formatting has been improved in cases where the address size
+   is something other than a 1-byte value.
 
 ## [2.0] - 2024-09-19
 
@@ -292,8 +290,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-1. dbus interface: the NetworkID field is now a `u` rather than an `i`, to
-   match OpenBMC's MCTP endpoint specification
+1. dbus interface: the NetworkID field is now a `u` rather than an `i`, to match
+   OpenBMC's MCTP endpoint specification
 
 2. Use Github Actions for CI
 
@@ -304,15 +302,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 3. The `tests` option has changed type from `feature` to `boolean`. Tests are
    enabled by default.
 
-4. The dbus interface has undergone a major rework, using standard prefixes
-   and version interface, bus owner and entry-point object names. See
-   docs/mctpd.md for full details on the new interface.
+4. The dbus interface has undergone a major rework, using standard prefixes and
+   version interface, bus owner and entry-point object names. See docs/mctpd.md
+   for full details on the new interface.
 
 5. In line with the above, bus-owner related dbus methods (SetupEndpoint and
    friends) now exist on the MCTP interface objects, and only when those
-   interface objects have the bus owner role. Because those methods are
-   now associated with the interface object, they no longer take the
-   interface name as their first argument.
+   interface objects have the bus owner role. Because those methods are now
+   associated with the interface object, they no longer take the interface name
+   as their first argument.
 
 ### Fixed
 

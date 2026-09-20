@@ -22,12 +22,12 @@ Service au.com.codeconstruct.MCTP1:
               └─ /au/com/codeconstruct/mctp1/networks/1/endpoints/10
 ```
 
-
 ## Top-level object: `/au/com/codeconstruct/mctp1`
 
-This object serves as the global MCTP daemon namespace.
-It hosts `au.com.codeconstruct.MCTP1` dbus interface to modify properties of
-the MCTP stack, such as supported message types.
+This object serves as the global MCTP daemon namespace. It hosts
+`au.com.codeconstruct.MCTP1` dbus interface to modify properties of the MCTP
+stack, such as supported message types.
+
 ```
 NAME                                TYPE      SIGNATURE  RESULT/VALUE  FLAGS
 au.com.codeconstruct.MCTP1          interface -          -             -
@@ -46,12 +46,12 @@ this method will be used to respond to Get MCTP Version Support commands.
 
 If the message type is already registered, then dbus call will fail.
 
- - `<msg type>` Message type, as defined in DSP0239.
- - `<versions>` Versions supported for this message type formatted as uint32
-   integers as specified in DSP0236
+- `<msg type>` Message type, as defined in DSP0239.
+- `<versions>` Versions supported for this message type formatted as uint32
+  integers as specified in DSP0236
 
-The `msg_type` value must be a valid message type, and cannot be one of the
-VDM types (0x7e or 0x7f). Those VDM types are handled by the
+The `msg_type` value must be a valid message type, and cannot be one of the VDM
+types (0x7e or 0x7f). Those VDM types are handled by the
 `RegisterVDMTypeSupport` method instead.
 
 De-registration is automatic - the specified types (and versions) are registered
@@ -68,33 +68,34 @@ Support control commands will include this new VDM type.
 
 If the VDM type is already registered, then dbus call will fail.
 
- - `<vid format>` Vendor ID format:
-   - `0x00` - PCI/PCIe Vendor ID (16-bit)
-   - `0x01` - IANA Enterprise Number (32-bit)
- - `<vendor id>` Vendor identifier as a variant type:
-   - For PCIe format: 16-bit unsigned integer (`q`)
-   - For IANA format: 32-bit unsigned integer (`u`)
- - `<command set type>` Command set type (16-bit unsigned integer) as defined by the vendor
+- `<vid format>` Vendor ID format:
+  - `0x00` - PCI/PCIe Vendor ID (16-bit)
+  - `0x01` - IANA Enterprise Number (32-bit)
+- `<vendor id>` Vendor identifier as a variant type:
+  - For PCIe format: 16-bit unsigned integer (`q`)
+  - For IANA format: 32-bit unsigned integer (`u`)
+- `<command set type>` Command set type (16-bit unsigned integer) as defined by
+  the vendor
 
 Registering a VDM type will cause the corresponding VDM type value (0x7e or
 0x7f) to be returned in mctpd's Get Message Type Support response.
 
 De-registration is automatic - the specified VDM types are registered for as
-long as the dbus sender remains attached to the message bus, and are
-removed when the sender disconnects.
+long as the dbus sender remains attached to the message bus, and are removed
+when the sender disconnects.
 
 Also it hosts two trees of MCTP objects:
 
- * Interfaces: Local hardware transport bindings that connect us to a MCTP bus
- * Endpoints: MCTP endpoints that `mctpd` knows about, both remote and local
+- Interfaces: Local hardware transport bindings that connect us to a MCTP bus
+- Endpoints: MCTP endpoints that `mctpd` knows about, both remote and local
 
 This object implements the `org.freedesktop.DBus.ObjectManager` interface,
 allowing enumeration of managed networks, endpoints and interfaces.
 
 ## MCTP Interface objects: `/au/com/codeconstruct/interfaces/<name>`
 
-The interface objects represent a connection to a MCTP bus; these will be
-1:1 with the MCTP network interfaces on the system.
+The interface objects represent a connection to a MCTP bus; these will be 1:1
+with the MCTP network interfaces on the system.
 
 ### MCTP interface interface: `au.com.codeconstruct.MCTP.Interface1`
 
@@ -108,19 +109,19 @@ au.com.codeconstruct.MCTP.Interface1 interface -         -            -
 .Role                                property  s         "BusOwner"   emits-change writable
 ```
 
-The D-Bus interface includes the `Role` property which reports BMC roles
-in the link. The possible value of `Role` are:
+The D-Bus interface includes the `Role` property which reports BMC roles in the
+link. The possible value of `Role` are:
 
- * `BusOwner`: this link is the owner of the attached bus,
- * `Endpoint`: this link is not the owner of the attached bus; and
- * `Unknown`: not yet configured.
+- `BusOwner`: this link is the owner of the attached bus,
+- `Endpoint`: this link is not the owner of the attached bus; and
+- `Unknown`: not yet configured.
 
 The `Role` property is writable, but it can only be changed when the current
-configured value is `Unknown`. Other platform setup infrastructure may use
-this to configure the initial MCTP state of the platform.
+configured value is `Unknown`. Other platform setup infrastructure may use this
+to configure the initial MCTP state of the platform.
 
-When the interface `Role` is `BusOwner`, the MCTP interface object will
-also host the `BusOwner1` dbus interface:
+When the interface `Role` is `BusOwner`, the MCTP interface object will also
+host the `BusOwner1` dbus interface:
 
 The `NetworkId` property represents the network on which this interface is
 present.
@@ -153,6 +154,7 @@ added.
 `SetupEndpoint <hwaddr>`
 
 Returns
+
 ```
 eid  (byte)
 net  (integer)
@@ -164,7 +166,6 @@ new  (bool) - true if a new EID was assigned
 
 `<hwaddr>` depends on the transport type - for i2c it is a 1 byte client address
 (7-bit, the same as other Linux tools like `i2cdetect`).
-
 
 An example:
 
@@ -195,17 +196,16 @@ Similar to AssignEndpoint, but takes additional arguments:
 AssignEndpointStatic <hwaddr> <static-EID> <pool_start-EID> <ignore_eids>
 ```
 
-to assign `<static-EID>` to the endpoint with hardware address `hwaddr`.
-For MCTP Bridges `<pool_start-EID>` will be starting eid assigned for
-downstream devices. For non-bridge devices this argument value will be
-ignored.
+to assign `<static-EID>` to the endpoint with hardware address `hwaddr`. For
+MCTP Bridges `<pool_start-EID>` will be starting eid assigned for downstream
+devices. For non-bridge devices this argument value will be ignored.
 
 The `<ignore_eids>` parameter is an optional array of MCTP EIDs that should be
-ignored when processing the routing table from the MCTP bridge. If an EID in
-the routing table matches one in the ignore_eids array, it will be skipped
-during processing. This is useful for excluding certain EIDs that may be
-reserved or managed by other systems. The array can be empty (size 0) if no
-EIDs need to be ignored.
+ignored when processing the routing table from the MCTP bridge. If an EID in the
+routing table matches one in the ignore_eids array, it will be skipped during
+processing. This is useful for excluding certain EIDs that may be reserved or
+managed by other systems. The array can be empty (size 0) if no EIDs need to be
+ignored.
 
 This call will fail if the endpoint already has an EID, and that EID is
 different from `static-EID`, or if `static-EID` is already assigned to another
@@ -215,22 +215,22 @@ endpoint.
 
 This method performs a static assignment with bridge EID pool allocation.
 
-Similar to AssignEndpointStatic, but takes an additional pool-start-EID
-and pool-size argument:
+Similar to AssignEndpointStatic, but takes an additional pool-start-EID and
+pool-size argument:
 
 ```
 AssignBridgeStatic <hwaddr> <static-EID> <pool-start-EID> <pool-size>
 ```
 
-`<pool-start-EID>`: The starting EID for the range of EIDs being allocated.
-This EID must be contiguous with the bridge’s own EID, to comply with the
-current MCTP 1.3.x specification. In future releases, this restriction
-may be relaxed.
+`<pool-start-EID>`: The starting EID for the range of EIDs being allocated. This
+EID must be contiguous with the bridge’s own EID, to comply with the current
+MCTP 1.3.x specification. In future releases, this restriction may be relaxed.
 If passed as 0, mctpd will automatically choose a pool start EID.
 
 `<pool-size>`: The number of EIDs to be allocated to the bridge's EID pool.
 
 Returns:
+
 ```
 eid        (byte)
 poolstart  (byte)
@@ -239,8 +239,9 @@ path       (string)
 new        (bool) - true if a new EID was assigned
 ```
 
-Where `eid` is the assigned EID, `poolstart` is the starting EID of the allocated
-bridge EID pool, and the remaining fields are the same as the methods above.
+Where `eid` is the assigned EID, `poolstart` is the starting EID of the
+allocated bridge EID pool, and the remaining fields are the same as the methods
+above.
 
 #### `.LearnEndpoint`: `ay` → `yisb`
 
@@ -251,8 +252,8 @@ endpoint, or `true` when an endpoint's EID is newly discovered.
 Because we are not issuing a Set Endpoint ID as part of the LearnEndpoint call,
 we do not have any details of the endpoint's bridge pool range. So,
 LearnEndpoint is unsuitable for use with bridge endpoints - it cannot provide
-the bridge with its own EID pool. `mctpd` will warn if the device type
-reports as a bridge.
+the bridge with its own EID pool. `mctpd` will warn if the device type reports
+as a bridge.
 
 Bridge endpoints should be initialised with `AssignEndpoint` instead.
 
@@ -265,6 +266,7 @@ transmission or reception. It provides detailed information about the error to
 help with debugging and monitoring of MCTP communication issues.
 
 Signal parameters:
+
 ```
 error_code   (uint32) - Transport error code
 direction    (byte)   - Direction of message (0=RX, 1=TX)
@@ -302,16 +304,15 @@ au.com.codeconstruct.MCTP.Network1  interface -         -            -
 
 ### `.LearnEndpoint`: `y`
 
-The `LearnEndpoint` method allows a caller to perform enumeration of a
-static endpoint that we can already route to. This may be useful to discover
-bridged endpoints, where the EID assigment has already been handled by the
-bridge.
+The `LearnEndpoint` method allows a caller to perform enumeration of a static
+endpoint that we can already route to. This may be useful to discover bridged
+endpoints, where the EID assigment has already been handled by the bridge.
 
 `LearnEndpoint` takes an EID as its only argument, and returns the endpoint's
 path, and a boolean indicating whether the endpoint was newly discovered.
 
-The D-Bus interface includes the `LocalEIDs` property which reports BMC local EIDs
-in the network.
+The D-Bus interface includes the `LocalEIDs` property which reports BMC local
+EIDs in the network.
 
 ### `.EndpointPing`: `y`
 
@@ -322,6 +323,7 @@ Pings an endpoint by EID to check for responsiveness.
 Returns nothing on success, error if unreachable.
 
 An example:
+
 ```shell
 busctl call au.com.codeconstruct.MCTP1 \
     /au/com/codeconstruct/mctp1/networks/1 \
@@ -336,8 +338,7 @@ locally (typically: MCTP addresses assigned to the local stack), or remote
 interfaces discovered during device enumeration.
 
 These objects host the interface `xyz.openbmc_project.MCTP.Endpoint`, as per
-[OpenBMC
-documentation](https://github.com/openbmc/phosphor-dbus-interfaces/tree/master/yaml/xyz/openbmc_project/MCTP).
+[OpenBMC documentation](https://github.com/openbmc/phosphor-dbus-interfaces/tree/master/yaml/xyz/openbmc_project/MCTP).
 
 Each endpoint object has methods to configure it, through the
 `au.com.codeconstruct.MCTP.Endpoint1` interface on each endpoint.
@@ -362,16 +363,16 @@ busctl call au.com.codeconstruct.MCTP1 \
 
 ### `.Remove`
 
-Removes the MCTP endpoint from `mctpd`, and deletes routes and neighbour entries.
-If endpoint is a bridge (have EID pool allocated for downstream devices) removing
-it will cause removal of all downstream devices endpoint objects as well.
+Removes the MCTP endpoint from `mctpd`, and deletes routes and neighbour
+entries. If endpoint is a bridge (have EID pool allocated for downstream
+devices) removing it will cause removal of all downstream devices endpoint
+objects as well.
 
 ### MCTP bridge interface: `au.com.codeconstruct.MCTP.Bridge1` interface
 
-MCTP endpoints that are set up as a bridge device (and therefore have an
-EID pool allocated to them, for downstream devices) also carry the
-`MCTP.Bridge1` interface. This provides details of the allocated EID pool, via
-two properties:
+MCTP endpoints that are set up as a bridge device (and therefore have an EID
+pool allocated to them, for downstream devices) also carry the `MCTP.Bridge1`
+interface. This provides details of the allocated EID pool, via two properties:
 
 ### `.PoolStart`: `y`
 
@@ -384,6 +385,7 @@ A constant property representing the last EID in the range allocated for
 downstream endpoints.
 
 ### MCTP bridge interface: `au.com.codeconstruct.MCTP.Bridge1` interface
+
 For any endpoint which also happens to be an MCTP Bridge, if dynamic eid is
 assgined to it via d-bus method `.AssignEndpoint`, such endpoint's pool
 allocation details would be reflected into `au.com.codeconstruct.MCTP.Bridge1`
@@ -391,13 +393,13 @@ interface of bridge's endpoint object.
 
 ### `.PoolEnd`: `y`
 
-A constant property representing last EID in the contiguous range allocated
-for downstream endpoints.
+A constant property representing last EID in the contiguous range allocated for
+downstream endpoints.
 
 ### `.PoolStart`: `y`
 
-A constant property representing first EID in the contiguous range allocated
-for downstream endpoints.
+A constant property representing first EID in the contiguous range allocated for
+downstream endpoints.
 
 ## Configuration
 
@@ -413,21 +415,21 @@ These apply to all modes of `mctpd` operation. One top-level setting is defined:
 
 #### `role`: local MCTP device role
 
-* type: string enum: `bus-owner`, `endpoint` or `unknown`
-* default: `bus-owner`
+- type: string enum: `bus-owner`, `endpoint` or `unknown`
+- default: `bus-owner`
 
-This sets the overall role of `mctpd`, either as a Bus Owner (`role =
-"bus-owner"`) or Endpoint (`role = "endpoint"`). In bus owner mode, mctpd will
-assume responsibility for allocating addresses to other endpoints. In endpoint
-mode, mctpd will not allocate addresses, but instead accept allocations from an
-external bus owner.
+This sets the overall role of `mctpd`, either as a Bus Owner
+(`role = "bus-owner"`) or Endpoint (`role = "endpoint"`). In bus owner mode,
+mctpd will assume responsibility for allocating addresses to other endpoints. In
+endpoint mode, mctpd will not allocate addresses, but instead accept allocations
+from an external bus owner.
 
 A value of `unknown` allows per-interface settings; the dbus interface's
-`au.com.codeconstruct.MCTP.Interface1.Role` property may be written to set
-a specific role for each interface.
+`au.com.codeconstruct.MCTP.Interface1.Role` property may be written to set a
+specific role for each interface.
 
-Previous versions of `mctpd` used `mode` for this configuration, both `role`
-and `mode` are accepted.
+Previous versions of `mctpd` used `mode` for this configuration, both `role` and
+`mode` are accepted.
 
 ### `[mctp]` section
 
@@ -436,8 +438,8 @@ both bus-owner and endpoint modes.
 
 #### `message_timeout_ms`: global MCTP message timeout
 
-* type: integer, in milliseconds
-* default: 250
+- type: integer, in milliseconds
+- default: 250
 
 This sets the timeout for outgoing request messages. A message will be
 considered lost if no response is received within this timeout.
@@ -447,15 +449,15 @@ operations synchronously.
 
 #### `uuid`: endpoint UUID value
 
-* type: string, UUID format
-* default: queried from system
+- type: string, UUID format
+- default: queried from system
 
 This sets the UUID used to identify this endpoint to peers, as returned in the
 MCTP "Get Endpoint UUID" command.
 
 This is not typically needed; if no `uuid` configuration is specified, `mctpd`
-will use the system-wide UUID value, which has generally correct semantics
-for the MCTP endpoint UUID.
+will use the system-wide UUID value, which has generally correct semantics for
+the MCTP endpoint UUID.
 
 The UUID should be formatted as a RFC 4122 UUID string, for example:
 
@@ -469,11 +471,11 @@ This section affects behaviour when `mctpd` is running in bus owner mode
 
 #### `dynamic_eid_range`: Range for dynamic EID allocations
 
-* type: array of integers, 2 elements
-* default: `[ 8, 254 ]`
+- type: array of integers, 2 elements
+- default: `[ 8, 254 ]`
 
-This setting specifies the range of dynamic EIDs that `mctpd` will allocate
-new peers' EIDs from. Values are inclusive.
+This setting specifies the range of dynamic EIDs that `mctpd` will allocate new
+peers' EIDs from. Values are inclusive.
 
 Local interface EIDs and statically-allocated EIDs may fall outside this range;
 it is only used when a peer needs a new dynamic address.
@@ -483,8 +485,8 @@ allocations.
 
 #### `max_pool_size`: Maximum peer allocation pool size
 
-* type: integer
-* default: 15
+- type: integer
+- default: 15
 
 This setting determines the maximum EID pool size that a bridge peer may request
 via their Set Endpoint ID response. Requests larger than this size will be
@@ -492,15 +494,15 @@ truncated.
 
 #### `endpoint_poll_ms`: Periodic polling interval for briged peers.
 
-* type: integer, in milliseconds
-* default: 0
+- type: integer, in milliseconds
+- default: 0
 
 This is periodic polling interval time in milliseconds, which bus owner/bridge
 needs to perform to identify accessible bridged eid among the allocated pool
-space. Value should be between [```0.5 * TRECLAIM (5)```- ```10```] seconds.
-Such periodic polling is common for all the briged endpoints among allocated
-pool space [`.PoolStart` - `.PoolEnd`] of the bridge.
-Polling could be provisioned to be disabled via setting the value as ```0```.
+space. Value should be between [`0.5 * TRECLAIM (5)`- `10`] seconds. Such
+periodic polling is common for all the briged endpoints among allocated pool
+space [`.PoolStart` - `.PoolEnd`] of the bridge. Polling could be provisioned to
+be disabled via setting the value as `0`.
 
 ### `[[interface]]`: per-interface configuration
 
@@ -508,12 +510,12 @@ The `[[interface]]` table allows configuration to be applied to specific
 interfaces. Each `[[interface]]` entry contains a "match" definition, which
 determines which MCTP interfaces the table applies to.
 
-Matches are processed in the order they appear in the configuration file;
-the first `[[interface]]` section that matches is applied.
+Matches are processed in the order they appear in the configuration file; the
+first `[[interface]]` section that matches is applied.
 
-Other content of the interface table is configuration to be applied. The
-only setting currently supported is `role`, to set mctpd's role as
-either bus-owner or endpoint on this interface.
+Other content of the interface table is configuration to be applied. The only
+setting currently supported is `role`, to set mctpd's role as either bus-owner
+or endpoint on this interface.
 
 For example, to apply a `bus-owner` role globally, with interface-specific
 `endpoint` roles for all i2c devices, and one particular (USB) device:
@@ -571,11 +573,11 @@ Paths have the `/sys` prefix stripped.
 
 ## Capabilities
 
-`mctpd` requires the `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN` capabilites to run.
-If the service is not running as root these should be added to the `AmbientCapabilities`
-setting in the service's config.
-If the target platform has the `libcap` library available,
-the `mctpd` process will drop `CAP_NET_BIND_SERVICE` when it is no longer needed.
+`mctpd` requires the `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN` capabilites to
+run. If the service is not running as root these should be added to the
+`AmbientCapabilities` setting in the service's config. If the target platform
+has the `libcap` library available, the `mctpd` process will drop
+`CAP_NET_BIND_SERVICE` when it is no longer needed.
 
-Because `mctpd` may be exposed to potentially hostile inputs,
-it shouldn't be given more capabilities than necessary.
+Because `mctpd` may be exposed to potentially hostile inputs, it shouldn't be
+given more capabilities than necessary.

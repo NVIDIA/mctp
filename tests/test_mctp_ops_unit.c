@@ -22,7 +22,7 @@ static void call_bug_warn(const char *fmt, ...)
 
 int main(void)
 {
-	struct sockaddr_storage ss = {0};
+	struct sockaddr_storage ss = { 0 };
 	socklen_t slen = sizeof(ss);
 	char byte = 0;
 	int fd;

@@ -1,8 +1,7 @@
-import pytest
 import asyncdbus
-import trio.testing
-
 import mctpenv
+import pytest
+import trio.testing
 
 
 @pytest.fixture

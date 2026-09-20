@@ -1,6 +1,7 @@
 # Endpoint Recovery
 
 <!--toc:start-->
+
 - [Endpoint Recovery](#endpoint-recovery)
   - [References](#references)
   - [Relevant components](#relevant-components)
@@ -16,6 +17,7 @@
     - [`mctpd` behaviours over an endpoint recovery sequence](#mctpd-behaviours-over-an-endpoint-recovery-sequence)
   - [MCTP device lifecycle and consuming events from `mctpd` D-Bus objects](#mctp-device-lifecycle-and-consuming-events-from-mctpd-d-bus-objects)
     - [An example order of MCTP device events, consumed by `nvmesensor`](#an-example-order-of-mctp-device-events-consumed-by-nvmesensor)
+
 <!--toc:end-->
 
 Here we capture some reasoning around a design and implementation of device
@@ -23,14 +25,20 @@ presence detection and EID reclaim.
 
 ## References
 
-1. [DSP0236 - Management Component Transport Protocol (MCTP) Base Specification][dmtf-dsp0236]
-2. [DSP0237 - Management Component Transport Protocol (MCTP) SMBus/I2C Transport Binding Specification][dmtf-dsp0237]
-3. [DSP0239 - Management Component Transport Protocol (MCTP) IDs and Codes][dmtf-dsp0239]
-3. [Freedesktop: D-Bus Specification][dbus-spec]
+1. [DSP0236 - Management Component Transport Protocol (MCTP) Base
+   Specification][dmtf-dsp0236]
+2. [DSP0237 - Management Component Transport Protocol (MCTP) SMBus/I2C Transport
+   Binding Specification][dmtf-dsp0237]
+3. [DSP0239 - Management Component Transport Protocol (MCTP) IDs and
+   Codes][dmtf-dsp0239]
+4. [Freedesktop: D-Bus Specification][dbus-spec]
 
-[dmtf-dsp0236]: https://www.dmtf.org/sites/default/files/standards/documents/DSP0236_1.3.1.pdf
-[dmtf-dsp0237]: https://www.dmtf.org/sites/default/files/standards/documents/DSP0237_1.2.0.pdf
-[dmtf-dsp0239]: https://www.dmtf.org/sites/default/files/standards/documents/DSP0239_1.10.0.pdf
+[dmtf-dsp0236]:
+  https://www.dmtf.org/sites/default/files/standards/documents/DSP0236_1.3.1.pdf
+[dmtf-dsp0237]:
+  https://www.dmtf.org/sites/default/files/standards/documents/DSP0237_1.2.0.pdf
+[dmtf-dsp0239]:
+  https://www.dmtf.org/sites/default/files/standards/documents/DSP0239_1.10.0.pdf
 [dbus-spec]: https://dbus.freedesktop.org/doc/dbus-specification.html
 
 ## Relevant components
@@ -80,18 +88,18 @@ devices][dmtf-dsp0236] we have:
 >   specification for the medium used to access the endpoint).
 >
 > - Reclaimed EIDs shall only be reassigned after all unused EIDs in the EID
->   pool have been assigned to endpoints. Optionally, additional robustness
->   can be achieved if the bus owner maintains a short FIFO list of reclaimed
->   EIDs (and their associated physical addresses) and allocates the older EIDs
+>   pool have been assigned to endpoints. Optionally, additional robustness can
+>   be achieved if the bus owner maintains a short FIFO list of reclaimed EIDs
+>   (and their associated physical addresses) and allocates the older EIDs
 >   first.
 >
-> - A bus owner shall confirm that an endpoint has been removed by attempting
->   to access it after `Treclaim` has expired. It can do this by issuing a `Get
->   Endpoint ID` command to the endpoint to verify that the endpoint is still
->   non-responsive. It is recommended that this be done at least three times,
->   with a delay of at least `1/2 * Treclaim` between tries if possible. If the
->   endpoint continues to be non-responsive, it can be assumed that it is safe
->   to return its EID to the pool of EIDs available for assignment.
+> - A bus owner shall confirm that an endpoint has been removed by attempting to
+>   access it after `Treclaim` has expired. It can do this by issuing a
+>   `Get Endpoint ID` command to the endpoint to verify that the endpoint is
+>   still non-responsive. It is recommended that this be done at least three
+>   times, with a delay of at least `1/2 * Treclaim` between tries if possible.
+>   If the endpoint continues to be non-responsive, it can be assumed that it is
+>   safe to return its EID to the pool of EIDs available for assignment.
 
 We're concerned with the `Treclaim` relevant to NVMe-MI devices for now, which
 leads us to DSP0237. [DSP0237 v1.2.0 6.19][dmtf-dsp0237] defines `Treclaim` as 5
@@ -131,11 +139,11 @@ In the case of the third scenario MCTP defines the device as removed until some
 later event re-establishes its presence. If a device is considered removed then
 the D-Bus object representing the device must also be removed.
 
-Conversely, in scenarios 1 and 2 the device should not be considered removed
-as communication was re-established prior to `Treclaim`. Until `Treclaim` the
-device exists in an intermediate state where it's expected to be present but
-its presence is undetermined. As such, its D-Bus object should also remain, but
-we need to acknowledge to interested applications that there are communication
+Conversely, in scenarios 1 and 2 the device should not be considered removed as
+communication was re-established prior to `Treclaim`. Until `Treclaim` the
+device exists in an intermediate state where it's expected to be present but its
+presence is undetermined. As such, its D-Bus object should also remain, but we
+need to acknowledge to interested applications that there are communication
 issues. This may include applications in addition to the process which requested
 `mctpd` recover communication with the endpoint.
 
@@ -234,7 +242,8 @@ xyz.openbmc_project.MCTP.Endpoint   interface -         -                       
 ```
 
 The problem we have deals with specific endpoints. To satisfy the third scenario
-the object `/au/com/codeconstruct/mctp1/networks/1/endpoints/9` would be removed.
+the object `/au/com/codeconstruct/mctp1/networks/1/endpoints/9` would be
+removed.
 
 For scenarios 1 and 2 we need to add capabilities on the endpoint object. The
 `au.com.codeconstruct.MCTP.Endpoint` already exposes endpoint control APIs, and
@@ -252,8 +261,8 @@ values:
 
 When `.Recover` is invoked `mctpd` transitions `.Connectivity` to `Degraded`,
 then queries the device with `Get Endpoint ID`. `.Recover` responds on D-Bus
-after `Get Endpoint ID` has been issued and before a response is received.
-A valid response received from a `Get Endpoint ID` query transmitted inside
+after `Get Endpoint ID` has been issued and before a response is received. A
+valid response received from a `Get Endpoint ID` query transmitted inside
 `Treclaim` leads to `.Connectivity` transitioning to `Available`. If a response
 is not received to a `Get Endpoint ID` query issued inside `Treclaim` then
 `mctpd` removes the endpoint's D-Bus object.
@@ -289,26 +298,29 @@ Option 1 is not feasible for two reasons:
 - D-Bus punts the entire concept of method call timeouts to the
   implementation[^1], which are often configurable
 
-[^1]: As best I can see there's no definition of timeouts in the [method call
-      section of the specification][dbus-spec-message-protocol-types-method].
-      [`4a85d321b451`][dbus-reference-timeout-commit] is the first introduction
-      of the concept of method call timeouts in the D-Bus reference
-      implementation, back in 2003.
+[^1]:
+    As best I can see there's no definition of timeouts in the [method call
+    section of the specification][dbus-spec-message-protocol-types-method].
+    [`4a85d321b451`][dbus-reference-timeout-commit] is the first introduction of
+    the concept of method call timeouts in the D-Bus reference implementation,
+    back in 2003.
 
-[dbus-spec-message-protocol-types-method]: https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol-types-method
-[dbus-reference-timeout-commit]: https://gitlab.freedesktop.org/dbus/dbus/-/commit/4a85d321b4516c6a663e8bdd530ba59018c974df
+[dbus-spec-message-protocol-types-method]:
+  https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol-types-method
+[dbus-reference-timeout-commit]:
+  https://gitlab.freedesktop.org/dbus/dbus/-/commit/4a85d321b4516c6a663e8bdd530ba59018c974df
 
 As we can't assume appropriate values for either of those behaviours we should
 design an interfaces that avoids putting constraints on them. This drives
 introducing the `.Connectivity` member as an asynchronous signal of recovery
 progress.
 
-Option 3 requires we rely entirely on signals from `.Connectivity` to drive
-a state machine in interested applications. This may feel heavy-handed and
-thus tempting to implement option 2 for the happy case where recovery
-immediately succeeds. However, option 2 requires interested applications
-implement two separate code paths to handle recovery, which seems questionable
-from the perspective of correctness, robustness and maintenance.
+Option 3 requires we rely entirely on signals from `.Connectivity` to drive a
+state machine in interested applications. This may feel heavy-handed and thus
+tempting to implement option 2 for the happy case where recovery immediately
+succeeds. However, option 2 requires interested applications implement two
+separate code paths to handle recovery, which seems questionable from the
+perspective of correctness, robustness and maintenance.
 
 ### Application behaviours over an endpoint recovery sequence
 
@@ -321,21 +333,21 @@ application:
 
 For an application to invoke `.Recover` it must already consider the endpoint
 unresponsive, therefore it seems reasonable to assume it won't continue
-communicating with the endpoint unless the recovery succeeds. As such there's
-no action required when `.Connectivity` transitions to `Degraded`. However,
-if recovery succeeds, the transition of `.Connectivity` from `Degraded` to
+communicating with the endpoint unless the recovery succeeds. As such there's no
+action required when `.Connectivity` transitions to `Degraded`. However, if
+recovery succeeds, the transition of `.Connectivity` from `Degraded` to
 `Available` provides the signal to restart communicating with the endpoint.
 
-For applications in the second class it is likely the case that they
-haven't themselves invoked `.Recover` because they are yet to observe a
-communication failure with the endpoint. As such there's also no requirement
-for action when `.Connectivity` transitions to `Degraded` on behalf of another
-application. However, it may be the case that communication failures are
-subsequently observed. It's not necessary to invoke `.Recover` if
-`.Connectivity` is already in `Degraded`, though there should also be no
-significant consequences if it occurs. If no communication failures are observed
-while `.Connectivity` is in `Degraded` then there's also no action required if
-it transitions to `Available`.
+For applications in the second class it is likely the case that they haven't
+themselves invoked `.Recover` because they are yet to observe a communication
+failure with the endpoint. As such there's also no requirement for action when
+`.Connectivity` transitions to `Degraded` on behalf of another application.
+However, it may be the case that communication failures are subsequently
+observed. It's not necessary to invoke `.Recover` if `.Connectivity` is already
+in `Degraded`, though there should also be no significant consequences if it
+occurs. If no communication failures are observed while `.Connectivity` is in
+`Degraded` then there's also no action required if it transitions to
+`Available`.
 
 ### `mctpd` behaviours over an endpoint recovery sequence
 
@@ -357,7 +369,8 @@ endpoint's `.Connectivity` member transitioning from `Degraded` to `Available`.
 The general strategy for tracking endpoint lifecycles is [as follows]
 [dbus-spec-standard-interfaces-objectmanager]:
 
-[dbus-spec-standard-interfaces-objectmanager]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces-objectmanager
+[dbus-spec-standard-interfaces-objectmanager]:
+  https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces-objectmanager
 
 1. Add a match of the following form for event-driven updates to local
    data-structures
@@ -376,16 +389,16 @@ The general strategy for tracking endpoint lifecycles is [as follows]
 
 2. The FRU data is decoded and `SetupEndpoint` on the
    `au.com.codeconstruct.MCTP.BusOwner1` interface of the
-   `/au/com/codeconstruct/mctp1/interfaces/<interface>`
-   object hosted by `mctpd` is invoked.
+   `/au/com/codeconstruct/mctp1/interfaces/<interface>` object hosted by `mctpd`
+   is invoked.
 
 3. The device was not previously configured and has no programmed static EID.
    `mctpd` allocates an EID (9) from its dynamic pool and assigns it to the
    device.
 
-4. `mctpd` [emits an `InterfacesAdded` signal][dbus-spec-standard-interfaces-objectmanager]
-   with the following contents (represented as JSON, trimmed to relevant
-   interfaces):
+4. `mctpd` [emits an `InterfacesAdded`
+   signal][dbus-spec-standard-interfaces-objectmanager] with the following
+   contents (represented as JSON, trimmed to relevant interfaces):
 
    ```
    "/au.com.codeconstruct/mctp1/networks/1/endpoints/9": {
@@ -402,8 +415,8 @@ The general strategy for tracking endpoint lifecycles is [as follows]
    ```
 
 5. The device indicates support for message type `4`, ["NVM Express Management
-   Messages over MCTP"][dmtf-dsp0239]. `nvmesensor` updates its local data-structures to
-   capture the appearance of a new NVMe device.
+   Messages over MCTP"][dmtf-dsp0239]. `nvmesensor` updates its local
+   data-structures to capture the appearance of a new NVMe device.
 
 6. `nvmesensor` begins managing the NVMe device via NVMe-MI.
 
@@ -411,12 +424,12 @@ The general strategy for tracking endpoint lifecycles is [as follows]
 
 8. `nvmesensor` calls the `Recover` method on the
    `au.com.codeconstruct.MCTP.Endpoint1` of the
-   `/au/com/codeconstruct/mctp1/networks/1/endpoints/9`
-   D-Bus object hosted by `mctpd`. This may occur via e.g. failure to regularly
-   poll the drive CTEMP.
+   `/au/com/codeconstruct/mctp1/networks/1/endpoints/9` D-Bus object hosted by
+   `mctpd`. This may occur via e.g. failure to regularly poll the drive CTEMP.
 
-9. `mctpd` [emits a `PropertiesChanged` signal][dbus-spec-standard-interfaces-properties]
-   from `/au/com/codeconstruct/mctp/networks/1/endpoints/9` with the following
+9. `mctpd` [emits a `PropertiesChanged`
+   signal][dbus-spec-standard-interfaces-properties] from
+   `/au/com/codeconstruct/mctp/networks/1/endpoints/9` with the following
    contents:
 
    ```
@@ -430,10 +443,11 @@ The general strategy for tracking endpoint lifecycles is [as follows]
 10. `nvmesensor` receives the `Degraded` `PropertiesChanged` event moves the
     drive's NVMe subsystem into the `Status::Stop` state
 
-11. `mctpd` polls for the presence of the device using `Get Endpoint ID` in accordance with
-    [8.17.6][dmtf-dsp0236]
+11. `mctpd` polls for the presence of the device using `Get Endpoint ID` in
+    accordance with [8.17.6][dmtf-dsp0236]
 
-12. The device fails to respond to all (retried) queries issued inside `Treclaim`.
+12. The device fails to respond to all (retried) queries issued inside
+    `Treclaim`.
 
 13. `mctpd` removes `/au/com/codeconstruct/mctp1/networks/1/endpoints/9` from
     D-Bus, emitting an `InterfacesRemoved` signal with the following content
@@ -449,4 +463,5 @@ The general strategy for tracking endpoint lifecycles is [as follows]
 14. `nvmesensor` receives the `InterfacesRemoved` signal and cleans up its
     representation of the device from its idle state.
 
-[dbus-spec-standard-interfaces-properties]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces-properties
+[dbus-spec-standard-interfaces-properties]:
+  https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces-properties

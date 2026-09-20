@@ -1,8 +1,8 @@
-import pytest
 import asyncdbus
+import pytest
 from mctp_test_utils import (
-    mctpd_mctp_iface_control_obj,
     mctpd_mctp_endpoint_control_obj,
+    mctpd_mctp_iface_control_obj,
 )
 from mctpenv import (
     Endpoint,
@@ -12,7 +12,6 @@ from mctpenv import (
     Sysnet,
     System,
 )
-
 
 """Simple endpoint setup.
 
@@ -58,12 +57,14 @@ async def test_respond_get_eid_with_no_eid(dbus, mctpd):
     # no EID yet
     cmd = MCTPControlCommand(True, 0, 0x02)
     rsp = await bo.send_control(mctpd.network.mctp_socket, cmd)
-    assert rsp.hex(' ') == '00 02 00 00 02 00'
+    assert rsp.hex(" ") == "00 02 00 00 02 00"
 
 
 """ FORCE Set EID is currently rejected with UNSUPPORTED_CMD (0x05).
 The real FORCE handler exists in the code but is disabled behind an early
 return — see MCTP_SET_EID_FORCE case in handle_control_set_endpoint_id. """
+
+
 async def test_accept_set_eid(dbus, mctpd):
     """Test if mctpd accepts Set EID when no EID"""
     bo = mctpd.network.endpoints[0]
@@ -74,16 +75,21 @@ async def test_accept_set_eid(dbus, mctpd):
     rsp = await bo.send_control(
         mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02)
     )
-    assert rsp.hex(' ') == '00 02 00 00 02 00'
+    assert rsp.hex(" ") == "00 02 00 00 02 00"
 
     # FORCE Set EID = 42 — rejected, returns 3-byte UNSUPPORTED_CMD response
     # (ctrl_hdr[2] + completion_code[1], no eid_set field)
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x01, 0x42])))
-    assert rsp.hex(' ') == '00 01 05'
+    rsp = await bo.send_control(
+        mctpd.network.mctp_socket,
+        MCTPControlCommand(True, 0, 0x01, bytes([0x01, 0x42])),
+    )
+    assert rsp.hex(" ") == "00 01 05"
 
     # EID unchanged — still no EID assigned
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02))
-    assert rsp.hex(' ') == '00 02 00 00 02 00'
+    rsp = await bo.send_control(
+        mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02)
+    )
+    assert rsp.hex(" ") == "00 02 00 00 02 00"
 
 
 async def test_accept_multiple_set_eids_for_single_interface(dbus, mctpd):
@@ -96,25 +102,35 @@ async def test_accept_multiple_set_eids_for_single_interface(dbus, mctpd):
     rsp = await bo.send_control(
         mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02)
     )
-    assert rsp.hex(' ') == '00 02 00 00 02 00'
+    assert rsp.hex(" ") == "00 02 00 00 02 00"
 
     # FORCE Set EID = 42 — rejected, UNSUPPORTED_CMD
     first_eid = 42
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x01, first_eid])))
-    assert rsp.hex(' ') == '00 01 05'
+    rsp = await bo.send_control(
+        mctpd.network.mctp_socket,
+        MCTPControlCommand(True, 0, 0x01, bytes([0x01, first_eid])),
+    )
+    assert rsp.hex(" ") == "00 01 05"
 
     # EID still not assigned
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02))
-    assert rsp.hex(' ') == '00 02 00 00 02 00'
+    rsp = await bo.send_control(
+        mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02)
+    )
+    assert rsp.hex(" ") == "00 02 00 00 02 00"
 
     # FORCE Set EID = 66 — also rejected, UNSUPPORTED_CMD
     second_eid = 66
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x01, bytes([0x01, second_eid])))
-    assert rsp.hex(' ') == '00 01 05'
+    rsp = await bo.send_control(
+        mctpd.network.mctp_socket,
+        MCTPControlCommand(True, 0, 0x01, bytes([0x01, second_eid])),
+    )
+    assert rsp.hex(" ") == "00 01 05"
 
     # EID still not assigned
-    rsp = await bo.send_control(mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02))
-    assert rsp.hex(' ') == '00 02 00 00 02 00'
+    rsp = await bo.send_control(
+        mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02)
+    )
+    assert rsp.hex(" ") == "00 02 00 00 02 00"
 
     # neither EID was set — both absent from D-Bus
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
@@ -128,8 +144,14 @@ async def test_accept_multiple_set_eids_for_single_interface(dbus, mctpd):
     )
 
     with pytest.raises(asyncdbus.errors.DBusError) as ex:
-        await mctpd_mctp_endpoint_control_obj(dbus, f"/au/com/codeconstruct/mctp1/networks/1/endpoints/{second_eid}")
-    assert str(ex.value) == f"Unknown object '/au/com/codeconstruct/mctp1/networks/1/endpoints/{second_eid}'."
+        await mctpd_mctp_endpoint_control_obj(
+            dbus,
+            f"/au/com/codeconstruct/mctp1/networks/1/endpoints/{second_eid}",
+        )
+    assert (
+        str(ex.value)
+        == f"Unknown object '/au/com/codeconstruct/mctp1/networks/1/endpoints/{second_eid}'."
+    )
 
 
 class TestDiscovery:
@@ -156,19 +178,19 @@ class TestDiscovery:
         rsp = await bo.send_control(
             mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x02)
         )
-        assert rsp.hex(' ') == '00 02 00 00 02 00'
+        assert rsp.hex(" ") == "00 02 00 00 02 00"
 
         # BMC response to Prepare for Discovery
         rsp = await bo.send_control(
             mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x0B)
         )
-        assert rsp.hex(' ') == '00 0b 00'
+        assert rsp.hex(" ") == "00 0b 00"
 
         # BMC response to Endpoint Discovery
         rsp = await bo.send_control(
             mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x0C)
         )
-        assert rsp.hex(' ') == '00 0c 00'
+        assert rsp.hex(" ") == "00 0c 00"
 
         # FORCE Set EID = 42 — currently rejected with UNSUPPORTED_CMD
         # (see d3b93d7: temp reject pending HMC-as-bridge handling)
@@ -177,14 +199,17 @@ class TestDiscovery:
             mctpd.network.mctp_socket,
             MCTPControlCommand(True, 0, 0x01, bytes([0x01, eid])),
         )
-        assert rsp.hex(' ') == '00 01 05'
+        assert rsp.hex(" ") == "00 01 05"
 
         # FORCE was rejected, so no endpoint object exists on D-Bus
         with pytest.raises(asyncdbus.errors.DBusError) as ex:
             await mctpd_mctp_endpoint_control_obj(
                 dbus, f"/au/com/codeconstruct/mctp1/networks/1/endpoints/{eid}"
             )
-        assert str(ex.value) == f"Unknown object '/au/com/codeconstruct/mctp1/networks/1/endpoints/{eid}'."
+        assert (
+            str(ex.value)
+            == f"Unknown object '/au/com/codeconstruct/mctp1/networks/1/endpoints/{eid}'."
+        )
 
 
 class TestUnsupportedDiscovery:
@@ -202,4 +227,4 @@ class TestUnsupportedDiscovery:
         rsp = await bo.send_control(
             mctpd.network.mctp_socket, MCTPControlCommand(True, 0, 0x0B)
         )
-        assert rsp.hex(' ') == '00 0b 05'
+        assert rsp.hex(" ") == "00 0b 05"

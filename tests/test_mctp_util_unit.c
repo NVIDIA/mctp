@@ -42,7 +42,7 @@ static int test_snprintf(char *str, size_t size, const char *fmt, ...)
 
 static void test_write_hex_addr(void)
 {
-	uint8_t bytes[] = {0x01, 0xa2, 0xff};
+	uint8_t bytes[] = { 0x01, 0xa2, 0xff };
 	char out[32];
 
 	assert(write_hex_addr(bytes, 3, out, sizeof(out)) == 0);

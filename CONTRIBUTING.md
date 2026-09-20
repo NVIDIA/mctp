@@ -1,16 +1,18 @@
 <!-- SPDX-License-Identifier: GPL-2.0 -->
+
 # Contributing to `mctp` tools
 
 We have a few short guidelines for contributing to the `mctp` project, based
-mainly on Linux kernel and OpenBMC conventions, as we have a reasonable
-overlap with both.
+mainly on Linux kernel and OpenBMC conventions, as we have a reasonable overlap
+with both.
 
 In short:
- - Discuss major changes first
- - One change per commit, in general
- - Send contributions as PRs to our github repo
- - Add a Signed-off-by to indicate certification of the DCO
- - Include unit tests
+
+- Discuss major changes first
+- One change per commit, in general
+- Send contributions as PRs to our github repo
+- Add a Signed-off-by to indicate certification of the DCO
+- Include unit tests
 
 Large or intrusive changes should be discussed first (ideally, before you have
 code finalised) by opening a github issue. This generally saves time in
@@ -42,16 +44,16 @@ those in the PR description.
 We do not require a `Tested` section in commit messages.
 
 Each commit message must include a `Signed-off-by` line, which indicates that
-you (the contributor) have certified the [Developer Certificate of Origin
-v1.1](https://developercertificate.org/) (DCO). This line must include the full
-name you commonly use, often a given name and a family name or surname, and
-should match the author metadata on the commit (ok: Sam Samuelsson, Robert A.
-Heinlein; not ok: xXthorXx, Sam, RAH)
+you (the contributor) have certified the
+[Developer Certificate of Origin v1.1](https://developercertificate.org/) (DCO).
+This line must include the full name you commonly use, often a given name and a
+family name or surname, and should match the author metadata on the commit (ok:
+Sam Samuelsson, Robert A. Heinlein; not ok: xXthorXx, Sam, RAH)
 
 ## Coding style
 
-For C code, our coding style is generally that of the Linux kernel, and we
-have a `.clang-format` definition to automate formatting.
+For C code, our coding style is generally that of the Linux kernel, and we have
+a `.clang-format` definition to automate formatting.
 
 For Python code (ie, the test framework), we use standard `ruff` formatting
 settings.
@@ -69,34 +71,33 @@ contributions.
 
 ### Licensing and Legal Requirements
 
-All contributions must comply with the project's licensing requirements,
-using the overall GPLv2 license.
+All contributions must comply with the project's licensing requirements, using
+the overall GPLv2 license.
 
 ### Signed-off-by and Developer Certificate of Origin
 
-AI agents MUST NOT add Signed-off-by tags. Only humans can legally
-certify the Developer Certificate of Origin. The human submitter
-is responsible for:
+AI agents MUST NOT add Signed-off-by tags. Only humans can legally certify the
+Developer Certificate of Origin. The human submitter is responsible for:
 
- * Reviewing all AI-generated code
- * Ensuring compliance with licensing requirements
- * Adding their own Signed-off-by tag to certify the DCO
- * Taking full responsibility for the contribution
+- Reviewing all AI-generated code
+- Ensuring compliance with licensing requirements
+- Adding their own Signed-off-by tag to certify the DCO
+- Taking full responsibility for the contribution
 
 ### Attribution
 
-When AI tools contribute to mctp development, proper attribution
-helps track the evolving role of AI in the development process.
-Contributions should include an Assisted-by tag in the following format:
+When AI tools contribute to mctp development, proper attribution helps track the
+evolving role of AI in the development process. Contributions should include an
+Assisted-by tag in the following format:
 
     Assisted-by: AGENT_NAME:MODEL_VERSION [TOOL1] [TOOL2]
 
 Where:
 
- * `AGENT_NAME` is the name of the AI tool or framework
- * `MODEL_VERSION` is the specific model version used
- * `[TOOL1] [TOOL2]` are optional specialized analysis tools used
-    (e.g., coccinelle, sparse, smatch, clang-tidy)
+- `AGENT_NAME` is the name of the AI tool or framework
+- `MODEL_VERSION` is the specific model version used
+- `[TOOL1] [TOOL2]` are optional specialized analysis tools used (e.g.,
+  coccinelle, sparse, smatch, clang-tidy)
 
 Basic development tools (git, gcc, make, editors) should not be listed.
 

@@ -30,37 +30,38 @@ static inline void mctp_vwarnx(const char *fmt, va_list ap)
 }
 
 #undef warn
-#define warn(fmt, ...) \
-	sd_journal_print(LOG_WARNING, fmt ": %s", ##__VA_ARGS__, strerror(errno))
+#define warn(fmt, ...)                                           \
+	sd_journal_print(LOG_WARNING, fmt ": %s", ##__VA_ARGS__, \
+			 strerror(errno))
 
 #undef warnx
-#define warnx(fmt, ...) \
-	sd_journal_print(LOG_WARNING, fmt, ##__VA_ARGS__)
+#define warnx(fmt, ...) sd_journal_print(LOG_WARNING, fmt, ##__VA_ARGS__)
 
 #undef vwarnx
 #define vwarnx(fmt, ap) mctp_vwarnx(fmt, ap)
 
 #undef err
-#define err(eval, fmt, ...) do { \
-	sd_journal_print(LOG_ERR, fmt ": %s", ##__VA_ARGS__, strerror(errno)); \
-	exit(eval); \
-} while(0)
+#define err(eval, fmt, ...)                                          \
+	do {                                                         \
+		sd_journal_print(LOG_ERR, fmt ": %s", ##__VA_ARGS__, \
+				 strerror(errno));                   \
+		exit(eval);                                          \
+	} while (0)
 
 #undef errx
-#define errx(eval, fmt, ...) do { \
-	sd_journal_print(LOG_ERR, fmt, ##__VA_ARGS__); \
-	exit(eval); \
-} while(0)
+#define errx(eval, fmt, ...)                                   \
+	do {                                                   \
+		sd_journal_print(LOG_ERR, fmt, ##__VA_ARGS__); \
+		exit(eval);                                    \
+	} while (0)
 
 /* Redirect fprintf(stderr, ...) to journal. Ignores the 'stream' argument. */
 #undef fprintf
-#define fprintf(stream, fmt, ...) \
-	sd_journal_print(LOG_ERR, fmt, ##__VA_ARGS__)
+#define fprintf(stream, fmt, ...) sd_journal_print(LOG_ERR, fmt, ##__VA_ARGS__)
 
 /* Redirect printf(...) to journal (info level) */
 #undef printf
-#define printf(fmt, ...) \
-	sd_journal_print(LOG_INFO, fmt, ##__VA_ARGS__)
+#define printf(fmt, ...) sd_journal_print(LOG_INFO, fmt, ##__VA_ARGS__)
 
 #endif /* MCTP_DAEMON */
 

@@ -4,13 +4,13 @@ mctp: Userspace tools for MCTP stack management
 This project contains two utilities for running a MCTP network from the local
 machine:
 
- - `mctp`: A small command-line utility to query and manage the state of the
-   kernel MCTP stack, in a similar way to iproute2's `ip` utility.
+- `mctp`: A small command-line utility to query and manage the state of the
+  kernel MCTP stack, in a similar way to iproute2's `ip` utility.
 
- - `mctpd`: A daemon implementing the MCTP control protocol; you'll need this
-   for the local host to perform as a bus-owner. The main function of `mctpd`
-   is to assign EIDs to remote endpoints, and manage the resulting routes and
-   neighbour-table entries for those endpoints.
+- `mctpd`: A daemon implementing the MCTP control protocol; you'll need this for
+  the local host to perform as a bus-owner. The main function of `mctpd` is to
+  assign EIDs to remote endpoints, and manage the resulting routes and
+  neighbour-table entries for those endpoints.
 
 Building & installing
 ---------------------
@@ -99,19 +99,19 @@ object path:
 
 where `mctpd` exposes three dbus interfaces for each:
 
- - `xyz.openbmc_project.MCTP.Endpoint`: Provides MCTP address information
-   (`EID` and `NetworkID` properties) and message-type support
-   `SupportedMessageTypes` property).
+- `xyz.openbmc_project.MCTP.Endpoint`: Provides MCTP address information (`EID`
+  and `NetworkID` properties) and message-type support `SupportedMessageTypes`
+  property).
 
-   This interface is defined by the MCTP.Endpoint phosphor-dbus specification.
+  This interface is defined by the MCTP.Endpoint phosphor-dbus specification.
 
- - `xyz.openbmc_project.Common.UUID`: MCTP UUID of the discovered endpoint
-   (`UUID` property).
+- `xyz.openbmc_project.Common.UUID`: MCTP UUID of the discovered endpoint
+  (`UUID` property).
 
-   This interface is defined by the Common.UUID phosphor-dbus specification.
+  This interface is defined by the Common.UUID phosphor-dbus specification.
 
- - `au.com.codeconstruct.MCTP1.Endpoint1`: Additional control methods for the
-   endpoint - for example, `Remove`
+- `au.com.codeconstruct.MCTP1.Endpoint1`: Additional control methods for the
+  endpoint - for example, `Remove`
 
 Contributing
 ------------
@@ -129,8 +129,8 @@ meson setup obj
 ninja -C obj test
 ```
 
-Alternatively, you can run `pytest` directly; this may be more useful
-during development:
+Alternatively, you can run `pytest` directly; this may be more useful during
+development:
 
 ```sh
 cd obj
@@ -138,6 +138,7 @@ pytest ../tests
 ```
 
 To run without an existing dbus session:
+
 ```sh
 dbus-run-session env DBUS_STARTER_BUS_TYPE=user pytest ../tests
 ```

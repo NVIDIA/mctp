@@ -52,7 +52,7 @@ static ssize_t test_sendto(int sd, const void *buf, size_t len, int flags,
 static ssize_t test_recvfrom(int sd, void *buf, size_t len, int flags,
 			     struct sockaddr *src_addr, socklen_t *addrlen)
 {
-	static const uint8_t reply[] = {0xaa, 0xbb, 0xcc};
+	static const uint8_t reply[] = { 0xaa, 0xbb, 0xcc };
 
 	(void)sd;
 	(void)src_addr;
@@ -136,7 +136,7 @@ static enum child_case active_child_case;
 
 static void run_active_child_case(void)
 {
-	uint8_t raw[] = {0x01, 0x02};
+	uint8_t raw[] = { 0x01, 0x02 };
 	struct data_t payload = { .data = raw, .len = sizeof(raw) };
 
 	stub_socket_mode = 0;
@@ -151,35 +151,35 @@ static void run_active_child_case(void)
 		break;
 	}
 	case CC_CREATE_INVALID_TOKEN: {
-		char *data[] = {"zz"};
+		char *data[] = { "zz" };
 		(void)create_data(data, 1);
 		break;
 	}
 	case CC_CREATE_TOO_LARGE: {
-		char *data[] = {"100"};
+		char *data[] = { "100" };
 		(void)create_data(data, 1);
 		break;
 	}
 	case CC_CREATE_ULONG_MAX: {
-		char *data[] = {"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"};
+		char *data[] = { "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" };
 		(void)create_data(data, 1);
 		break;
 	}
 	case CC_MAIN_INVALID_TAG: {
-		char *argv[] = {"mctp-client", "foo", "1", "eid", "8", "type",
-				"control", "data", "01"};
+		char *argv[] = { "mctp-client", "foo",	   "1",	   "eid", "8",
+				 "type",	"control", "data", "01" };
 		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
 				       argv));
 	}
 	case CC_MAIN_INVALID_EID: {
-		char *argv[] = {"mctp-client", "eid", "300", "type", "control",
-				"data", "01"};
+		char *argv[] = { "mctp-client", "eid",	"300", "type",
+				 "control",	"data", "01" };
 		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
 				       argv));
 	}
 	case CC_MAIN_INVALID_TYPE: {
-		char *argv[] = {"mctp-client", "eid", "8", "type", "badtype",
-				"data", "01"};
+		char *argv[] = { "mctp-client", "eid",	"8", "type",
+				 "badtype",	"data", "01" };
 		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
 				       argv));
 	}
@@ -212,20 +212,21 @@ static void run_active_child_case(void)
 		(void)do_send_recv(0, 8, 0, &payload);
 		break;
 	case CC_CREATE_ALLOC_FAIL: {
-		char *data[] = {"01"};
+		char *data[] = { "01" };
 		stub_malloc_mode = 1;
 		(void)create_data(data, 1);
 		break;
 	}
 	case CC_CTRL_HDR_ASSERT: {
-		struct mctp_ctrl_msg_hdr hdr = {0};
+		struct mctp_ctrl_msg_hdr hdr = { 0 };
 		mctp_ctrl_msg_hdr_init_req(&hdr, 0x20, 0x01);
 		break;
 	}
 	case CC_MAIN_INVALID_NET_REPARSE: {
 		/* Duplicate net tags: last wins; with stubs do_send_recv succeeds. */
-		char *argv[] = {"mctp-client", "net", "300", "net", "1", "eid",
-				"8", "type", "control", "data", "01"};
+		char *argv[] = { "mctp-client", "net",	"300", "net",
+				 "1",		"eid",	"8",   "type",
+				 "control",	"data", "01" };
 		_exit(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])),
 				       argv));
 	}
@@ -234,7 +235,7 @@ static void run_active_child_case(void)
 
 static void test_type_lookup(void)
 {
-	struct mctp_ctrl_msg_hdr hdr = {0};
+	struct mctp_ctrl_msg_hdr hdr = { 0 };
 
 	mctp_ctrl_msg_hdr_init_req(&hdr, 1, 0x01);
 	assert((hdr.rq_dgram_inst & RQDI_IID_MASK) == 1);
@@ -246,8 +247,8 @@ static void test_type_lookup(void)
 
 static void test_find_data_and_create_data(void)
 {
-	char *argv[] = {"mctp-client", "eid", "8", "type", "control", "data",
-			"01", "a0", "FF"};
+	char *argv[] = { "mctp-client", "eid", "8",  "type", "control",
+			 "data",	"01",  "a0", "FF" };
 	struct data_t payload;
 	int idx;
 
@@ -263,7 +264,7 @@ static void test_find_data_and_create_data(void)
 
 static void test_send_recv_and_usage(void)
 {
-	uint8_t raw[] = {0x01, 0x02};
+	uint8_t raw[] = { 0x01, 0x02 };
 	struct data_t payload = {
 		.data = raw,
 		.len = sizeof(raw),
@@ -278,8 +279,8 @@ static void test_send_recv_and_usage(void)
 
 static void test_main_happy_path(void)
 {
-	char *argv[] = {"mctp-client", "eid", "8", "type", "control", "data",
-			"01", "02"};
+	char *argv[] = { "mctp-client", "eid",	"8",  "type",
+			 "control",	"data", "01", "02" };
 	int argc = (int)(sizeof(argv) / sizeof(argv[0]));
 
 	assert(mctp_client_main(argc, argv) == 0);
@@ -287,27 +288,32 @@ static void test_main_happy_path(void)
 
 static void test_main_missing_params(void)
 {
-	char *argv1[] = {"mctp-client", "eid", "8", "type", "control"};
-	char *argv2[] = {"mctp-client", "type", "control", "data", "01"};
-	char *argv3[] = {"mctp-client", "eid", "8", "type", "control", "net", "abc",
-			 "data", "01"};
-	assert(mctp_client_main((int)(sizeof(argv1) / sizeof(argv1[0])), argv1) != 0);
-	assert(mctp_client_main((int)(sizeof(argv2) / sizeof(argv2[0])), argv2) != 0);
-	assert(mctp_client_main((int)(sizeof(argv3) / sizeof(argv3[0])), argv3) != 0);
+	char *argv1[] = { "mctp-client", "eid", "8", "type", "control" };
+	char *argv2[] = { "mctp-client", "type", "control", "data", "01" };
+	char *argv3[] = { "mctp-client", "eid", "8",	"type", "control",
+			  "net",	 "abc", "data", "01" };
+	assert(mctp_client_main((int)(sizeof(argv1) / sizeof(argv1[0])),
+				argv1) != 0);
+	assert(mctp_client_main((int)(sizeof(argv2) / sizeof(argv2[0])),
+				argv2) != 0);
+	assert(mctp_client_main((int)(sizeof(argv3) / sizeof(argv3[0])),
+				argv3) != 0);
 }
 
 static void test_main_with_net(void)
 {
-	char *argv[] = {"mctp-client", "net", "7", "eid", "8", "type", "control",
-			"data", "01", "02"};
-	assert(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv) == 0);
+	char *argv[] = { "mctp-client", "net",	   "7",	   "eid", "8",
+			 "type",	"control", "data", "01",  "02" };
+	assert(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv) ==
+	       0);
 }
 
 static void test_main_parse_invalid_numeric(void)
 {
-	char *argv[] = {"mctp-client", "eid", "8", "type", "control", "net",
-			"x", "data", "01"};
-	assert(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv) != 0);
+	char *argv[] = { "mctp-client", "eid", "8",    "type", "control",
+			 "net",		"x",   "data", "01" };
+	assert(mctp_client_main((int)(sizeof(argv) / sizeof(argv[0])), argv) !=
+	       0);
 }
 
 static void test_error_paths(void)

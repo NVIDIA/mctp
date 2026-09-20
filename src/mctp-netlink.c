@@ -1032,7 +1032,7 @@ static void sort_linkmap(mctp_nl *nl)
 			struct linkmap_entry *entry = &nl->linkmap[i];
 			if (entry->local_eids) {
 				qsort(entry->local_eids, entry->num_local,
-					sizeof(mctp_eid_t), cmp_eid);
+				      sizeof(mctp_eid_t), cmp_eid);
 			}
 		}
 	}

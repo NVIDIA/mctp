@@ -528,8 +528,7 @@ static struct peer *find_peer_by_addr(struct ctx *ctx, mctp_eid_t eid,
 
 static size_t routing_info_entry_size_from_phys(size_t phyaddr_size)
 {
-	return offsetof(struct routing_info_entry, phys_address) +
-	       phyaddr_size;
+	return offsetof(struct routing_info_entry, phys_address) + phyaddr_size;
 }
 
 static int routing_info_update_get_single_entry(
@@ -1149,7 +1148,8 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 			};
 			rc = cache_routing_info_entry(
 				ctx, &copy_entry,
-				routing_info_entry_size_from_phys(phyaddr_size));
+				routing_info_entry_size_from_phys(
+					phyaddr_size));
 			if (rc < 0) {
 				warnx("Fail to update cache with entry of first eid %d",
 				      src_eid);
@@ -1172,8 +1172,7 @@ static int handle_control_set_endpoint_id(struct ctx *ctx, int sd,
 						sendto_peer,
 						copy_entry.first_eid,
 						copy_entry.eid_range,
-						copy_entry.entry_type, 0,
-						NULL);
+						copy_entry.entry_type, 0, NULL);
 					if (rc < 0) {
 						warnx("Routing Info update failed for bridge eid %d: rc %s",
 						      sendto_peer->eid,
@@ -1810,8 +1809,7 @@ handle_control_routing_info_update(struct ctx *ctx, int sd,
 	// route, forwarding the update to downstream bridges, or caching the
 	// entry would be redundant and can create routing loops. Ignore the
 	// entry entirely; the command is still acknowledged with success.
-	if (find_peer_by_addr(ctx, first_eid,
-			      addr->smctp_base.smctp_network)) {
+	if (find_peer_by_addr(ctx, first_eid, addr->smctp_base.smctp_network)) {
 		if (ctx->verbose)
 			fprintf(stderr,
 				"Ignoring Routing Info Update for EID %d: already a known endpoint\n",
@@ -1825,8 +1823,7 @@ handle_control_routing_info_update(struct ctx *ctx, int sd,
 	// route, forwarding the update to downstream bridges, or caching the
 	// entry would be redundant and can create routing loops. Ignore the
 	// entry entirely; the command is still acknowledged with success.
-	if (find_peer_by_addr(ctx, first_eid,
-			      addr->smctp_base.smctp_network)) {
+	if (find_peer_by_addr(ctx, first_eid, addr->smctp_base.smctp_network)) {
 		if (ctx->verbose)
 			fprintf(stderr,
 				"Ignoring Routing Info Update for EID %d: already a known endpoint\n",
@@ -2728,9 +2725,8 @@ static int mctp_ctrl_validate_get_routing_table_response(
 	struct sockaddr_mctp_ext *resp_addr, bool suppress_logs)
 {
 	struct mctp_ctrl_resp_get_routing_table *rsp;
-	size_t entries_offset =
-		offsetof(struct mctp_ctrl_resp_get_routing_table,
-			 routing_entries);
+	size_t entries_offset = offsetof(
+		struct mctp_ctrl_resp_get_routing_table, routing_entries);
 	struct mctp_ctrl_cmd cmd = { 0 };
 	size_t remaining;
 	const uint8_t *entry_ptr;
@@ -2742,8 +2738,9 @@ static int mctp_ctrl_validate_get_routing_table_response(
 	if (resp_addr)
 		cmd.resp_addr = *resp_addr;
 
-	rc = mctp_ctrl_validate_response(&cmd, entries_offset, peer, iid,
-					MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES);
+	rc = mctp_ctrl_validate_response(
+		&cmd, entries_offset, peer, iid,
+		MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES);
 	if (rc)
 		return rc;
 
@@ -2921,8 +2918,9 @@ static int endpoint_query_addr(struct ctx *ctx,
 				      cmd->req_len, strerror(-rc));
 			}
 			/* Synthesize a TX error and emit the TransportError signal */
-			report_transaction_error(ctx, -rc, MCTP_DIR_TX, req_addr,
-						 cmd->req, cmd->req_len);
+			report_transaction_error(ctx, -rc, MCTP_DIR_TX,
+						 req_addr, cmd->req,
+						 cmd->req_len);
 			break;
 		}
 		if ((size_t)rc != cmd->req_len) {
@@ -3515,8 +3513,7 @@ static int allocate_eid(struct ctx *ctx, struct net *net,
 
 	for (eid = ctx->dyn_eid_min; eid <= ctx->dyn_eid_max; eid++) {
 		if (net->peers[eid]) {
-			unsigned int skip_to =
-				eid + net->peers[eid]->pool_size;
+			unsigned int skip_to = eid + net->peers[eid]->pool_size;
 
 			// reset our current candidate allocation
 			cur.start = 0;
@@ -4859,8 +4856,8 @@ static int cb_ping_response(sd_event_source *s, int fd, uint32_t revents,
 		int rc;
 
 		struct peer *peer = ping_resolve_peer(pp);
-		bool suppress_log =
-			pp->is_dummy || (peer && peer->ping_failed_once);
+		bool suppress_log = pp->is_dummy ||
+				    (peer && peer->ping_failed_once);
 		rc = read_message(pp->ctx, fd, &buf, &buf_size, &resp_addr,
 				  suppress_log);
 		free(buf);
@@ -5122,8 +5119,8 @@ static int query_get_peer_routing_data(struct peer *pool_owner_peer,
 
 		rc = mctp_ctrl_validate_get_routing_table_response(
 			cmd.resp, cmd.resp_len,
-			peer_tostr_short(pool_owner_peer), iid,
-			&cmd.resp_addr, cmd.suppress_logs);
+			peer_tostr_short(pool_owner_peer), iid, &cmd.resp_addr,
+			cmd.suppress_logs);
 		if (rc)
 			goto out;
 
@@ -5671,18 +5668,21 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 	 * of DSP0236 v1.3.1.
 	 */
 	if (peer->is_direct_endpoint) {
-		rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
-			&peer->recovery.endpoint_type,
-			&peer->recovery.medium_spec, /*peer=*/NULL,
-			/*retry=*/false);
+		rc = query_get_endpoint_id(ctx, &peer->phys,
+					   &peer->recovery.eid,
+					   &peer->recovery.endpoint_type,
+					   &peer->recovery.medium_spec,
+					   /*peer=*/NULL,
+					   /*retry=*/false);
 	} else {
 		/* Assumption: for endpoints behind the bridge, it's expected that bridge is
 		 * going to reassign same EID to the endpoint if not then we can never truly
 		 * access that endpoint again if eid is lost*/
-		rc = query_get_endpoint_id(ctx, &peer->phys, &peer->recovery.eid,
-					&peer->recovery.endpoint_type,
-					&peer->recovery.medium_spec, peer,
-					/*retry=*/false);
+		rc = query_get_endpoint_id(ctx, &peer->phys,
+					   &peer->recovery.eid,
+					   &peer->recovery.endpoint_type,
+					   &peer->recovery.medium_spec, peer,
+					   /*retry=*/false);
 	}
 
 	if (rc < 0) {
@@ -8333,7 +8333,8 @@ static int cb_populate_pool_eids(sd_event_source *s, uint64_t t, void *data)
 
 		rc = endpoint_send_routing_info_update(
 			peer, first_eid, eid_range, entry_type,
-			(uint8_t)phyaddr_size, (!phyaddr_size) ? NULL : phy_addr);
+			(uint8_t)phyaddr_size,
+			(!phyaddr_size) ? NULL : phy_addr);
 		if (rc < 0) {
 			warnx("Routing Info update [%i] failed to bridge eid %d: entry [EID %d]: [rc %s]",
 			      i, peer->eid, first_eid, strerror(-rc));
@@ -8819,7 +8820,8 @@ static int query_routing_table(struct peer *peer)
 	}
 
 	if (peer->pool_size) {
-		active_pool_eid = calloc(peer->pool_size, sizeof(*active_pool_eid));
+		active_pool_eid =
+			calloc(peer->pool_size, sizeof(*active_pool_eid));
 		local_routing = calloc(peer->pool_size, sizeof(*local_routing));
 		if (!active_pool_eid || !local_routing) {
 			rc = -ENOMEM;
@@ -8894,8 +8896,8 @@ static int query_routing_table(struct peer *peer)
 						       peer->num_ignore_message_types);
 					}
 					if (is_static_pool_bridge) {
-						peer_static_pool_mark_eid(
-							peer, eid);
+						peer_static_pool_mark_eid(peer,
+									  eid);
 					}
 					allocated_peer->pool_owner_eid =
 						peer->eid;
@@ -9164,9 +9166,9 @@ static int endpoint_send_routing_info_update(struct peer *peer,
 	if (rc < 0)
 		goto out;
 
-	rc = mctp_ctrl_validate_response(
-		&cmd, sizeof(*resp), peer_tostr_short(peer), iid,
-		MCTP_CTRL_CMD_ROUTING_INFO_UPDATE);
+	rc = mctp_ctrl_validate_response(&cmd, sizeof(*resp),
+					 peer_tostr_short(peer), iid,
+					 MCTP_CTRL_CMD_ROUTING_INFO_UPDATE);
 	if (rc)
 		goto out;
 
