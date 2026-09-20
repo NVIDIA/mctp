@@ -2,8 +2,8 @@
 #
 project(
     'mctp', 'c',
-    meson_version: '>= 0.59.0',
-    version: 'v2.6',
+    meson_version: '>= 0.60.0',
+    version: 'v2.7',
     license: 'GPLv2',
     default_options: [
         'warning_level=2',
@@ -66,6 +66,7 @@ toml_dep = declare_dependency(
 executable('mctp',
     sources: ['src/mctp.c'] + netlink_sources + util_sources + ops_sources,
     install: true,
+    install_tag: 'utils',
 )
 
 mctp_test = executable('test-mctp',
@@ -75,19 +76,26 @@ mctp_test = executable('test-mctp',
 
 executable('mctp-req',
     sources: ['src/mctp-req.c'] + util_sources,
+    install: true,
+    install_tag: 'debug',
 )
 
 executable('mctp-echo',
     sources: ['src/mctp-echo.c'] + util_sources,
+    install: true,
+    install_tag: 'debug',
 )
 
 executable('mctp-bench',
     sources: ['src/mctp-bench.c'] + util_sources,
+    install: true,
+    install_tag: 'debug',
 )
 
 mctp_client = executable('mctp-client',
     sources: ['src/mctp-client.c'] + util_sources,
-    install: true
+    install: true,
+    install_tag: 'utils',
 )
 
 if libsystemd.found()
@@ -103,6 +111,7 @@ if libsystemd.found()
         dependencies: [libsystemd, toml_dep, libcap],
         install: true,
         install_dir: get_option('sbindir'),
+        install_tag: 'mctpd',
         c_args: mctpd_c_args + ['-DOPS_SD_EVENT=1'],
     )
 

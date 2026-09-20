@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <linux/if.h>
 #include <linux/netlink.h>
 
 #include "mctp-ops.h"
@@ -242,8 +243,7 @@ int wrapped_time_callback(sd_event_source *source, int fd, uint revents,
 	if (rc != sizeof(usec))
 		errx(EXIT_FAILURE, "ops protocol error");
 
-	rc = wrapud->callback(source, usec, wrapud->userdata);
-	warnx("%ld", rc);
+	wrapud->callback(source, usec, wrapud->userdata);
 
 	return 0;
 }

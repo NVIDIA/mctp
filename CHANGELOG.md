@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.7] - 2026-09-18
+
+### Added
+
+1. `mctp-client` binary now handles the `cxl-cci` MCTP message type
+
+2. The meson build infrastructure now provides install tags for separate
+   installation of utils, mctpd, and debug tools (with the debug tools now being
+   installable). This is all controlable through the `meson install --tags`
+   facility.
+
+   To support this, the minimum meson version has been bumped to 0.60,
+   previously 0.59.
+
+   A default `meson install` (with no tags specified) will now install all
+   install targets. Previously, the debug utils and `mctp-client` were not
+   included.
+
+3. CI now includes a musl (Alpine Linux) build, to catch portability issues
+   before they affect the meta-openembedded bump process.
+
+### Fixes
+
+1. In v2.6. we lost the peer initial MTU sematics, which gave us a safe minimum
+   MTU on peer routes when peers were added. This is now fixed - peer routes
+   will have an MTU set to the link-reported minimum, as introduced in v2.1.
+
+2. `mctpd` now better handles a specific quirk with endpoints that return a
+   different EID than the one that had been set; we no longer omit conditional
+   dbus properties that were missed due to the unpublish/publish cycle.
+
+   Support for these endpoints is not always guaranteed; this Set Endpoint
+   ID behaviour is a spec violation.
+
+3. A couple of compile-time fixes for building against older kernel header
+   versions, and 32-bit arm.
+
+4. The mctpd.service definition now includes `CAP_NET_RAW`, required when
+   running mctpd as non-root.
+
 ## [2.6] - 2026-07-21
 
 ### Added

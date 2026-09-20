@@ -1252,7 +1252,10 @@ class NLSocket(BaseSocket):
         gw = msg.get_attr('RTA_GATEWAY')
         start_eid = msg.get_attr('RTA_DST')
         extent_eid = msg['dst_len']
-        # todo: RTAX metrics: MTU
+        mtu = 0
+        metrics = msg.get_attr('RTA_METRICS')
+        if metrics:
+            mtu = metrics.get_attr('RTAX_MTU', default=0)
 
         if ifindex:
             iface = self.system.find_interface_by_ifindex(ifindex)
@@ -1261,7 +1264,7 @@ class NLSocket(BaseSocket):
             gw = (gw['net'], gw['eid'])
             iface = None
 
-        return System.Route(start_eid, extent_eid, iface=iface, gw=gw)
+        return System.Route(start_eid, extent_eid, iface=iface, gw=gw, mtu=mtu)
 
     async def _handle_getroute(self, msg):
         dump = bool(msg['header']['flags'] & netlink.NLM_F_DUMP)

@@ -9,6 +9,7 @@ from mctp_test_utils import (
     mctpd_mctp_endpoint_common_obj,
     mctpd_mctp_endpoint_control_obj,
     mctpd_service_readiness_obj,
+    mctpd_mctp_endpoint_obj,
     mctpd_mctp_base_iface_obj,
 )
 from mctpenv import (
@@ -221,6 +222,22 @@ async def test_setup_endpoint_no_get_uuid(dbus, mctpd):
 
     (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
     assert eid == ep.eid
+
+
+async def test_setup_endpoint_mtu(dbus, mctpd):
+    """Newly-added endpoints should start with a minimum MTU"""
+    iface = mctpd.system.interfaces[0]
+    ep = mctpd.network.endpoints[0]
+
+    # ensure we can distinguish a correct min mtu from a no-mtu case
+    assert iface.min_mtu != 0
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, net, path, new) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    assert len(mctpd.system.routes) == 1
+    route = mctpd.system.routes[0]
+    assert route.mtu == iface.min_mtu
 
 
 async def test_remove_endpoint(dbus, mctpd):
@@ -823,6 +840,46 @@ async def test_setup_endpoint_vary_set_eid_response(dbus, mctpd):
     (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
 
     assert eid == ep.eid
+
+
+async def test_assign_endpoint_vary_set_eid_uuid(dbus, mctpd):
+    """An endpoint that holds its current EID and reports it in the Set
+    Endpoint ID response takes the EID-change path, where the UUID query only
+    completes after the object would first be published; the endpoint object
+    must still expose the UUID interface, same as a plain enrollment.
+    """
+
+    class VaryEndpoint(Endpoint):
+        async def handle_mctp_control(self, sock, src_addr, msg):
+            flags, opcode = msg[0:2]
+            if opcode != 1:
+                return await super().handle_mctp_control(sock, src_addr, msg)
+            dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+            self.eid = msg[3] + 1
+            msg = bytes(
+                [
+                    flags & 0x1F,  # Rsp
+                    0x01,  # opcode: Set Endpoint ID
+                    0x00,  # cc: success
+                    0x00,  # assignment accepted, no pool
+                    self.eid,  # set EID: valid, but not what was assigned
+                    0x00,  # pool size: 0
+                ]
+            )
+            await sock.send(dst_addr, msg)
+
+    iface = mctpd.system.interfaces[0]
+    ep = VaryEndpoint(iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+
+    eid, _, path, _ = await mctp.call_assign_endpoint(ep.lladdr)
+
+    assert eid == ep.eid
+    uuid_i = await mctpd_mctp_endpoint_obj(
+        dbus, path, "xyz.openbmc_project.Common.UUID"
+    )
+    assert await uuid_i.get_uuid() == str(ep.uuid)
 
 
 async def test_setup_endpoint_conflicting_set_eid_response(dbus, mctpd):
