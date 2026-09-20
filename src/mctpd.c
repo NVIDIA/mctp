@@ -3184,7 +3184,9 @@ static int add_peer(struct ctx *ctx, const dest_phys *dest, mctp_eid_t eid,
 
 	// Set minimum MTU by default for compatibility. Clients can increase
 	// this with .SetMTU as needed
-	peer->mtu = mctp_nl_min_mtu_byindex(ctx->nl, peer->phys.ifindex);
+	if (ctx->nl) {
+		peer->mtu = mctp_nl_min_mtu_byindex(ctx->nl, peer->phys.ifindex);
+	}
 
 	// Update network eid map
 	n->peers[eid] = peer;
