@@ -53,6 +53,7 @@ static int recvmsg_stub_mode = RECVMSG_STUB_OFF;
 static uint8_t recvmsg_stub_dest_eid = 0;
 static uint8_t recvmsg_stub_msg_type = MCTP_CTRL_HDR_MSG_TYPE;
 static uint8_t recvmsg_stub_cmd = MCTP_CTRL_CMD_GET_ENDPOINT_ID;
+static size_t recvmsg_stub_payload_len = 2;
 static int route_add_stub_rc = INT32_MIN;
 static int route_add_stub_calls = 0;
 int mctp_nl_route_add(struct mctp_nl *nl, uint8_t eid, unsigned int extent,
@@ -84,7 +85,7 @@ ssize_t mctpd_test_recvmsg(int sockfd, struct msghdr *msg, int flags)
         memset(err, 0, sizeof(*err));
         err->dest_eid = recvmsg_stub_dest_eid;
         err->msg_type = recvmsg_stub_msg_type;
-        err->payload_len = 2;
+        err->payload_len = (uint16_t)recvmsg_stub_payload_len;
         err->payload[1] = recvmsg_stub_cmd;
     }
 
@@ -3530,25 +3531,25 @@ static void test_process_error_queue_basic_paths(void)
     setup_config_defaults(&ctx);
 
     /* EBADF path (saved_errno != EAGAIN/EWOULDBLOCK) */
-    int rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL);
+    int rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true);
     ASSERT_EQ(rc, -1);
 
     /* EAGAIN/EWOULDBLOCK path */
     int fd = mctp_ops.mctp.socket();
     if (fd >= 0) {
-        rc = read_mctp_error_queue(&ctx, fd, ctx.verbose, NULL);
+        rc = read_mctp_error_queue(&ctx, fd, ctx.verbose, NULL, NULL, 0, true);
         close(fd);
         ASSERT_EQ(rc, -1);
     }
 
     /* recvmsg succeeds with no control messages */
     recvmsg_stub_mode = RECVMSG_STUB_NO_CMSG;
-    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL);
+    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true);
     ASSERT_EQ(rc, -1);
 
     /* recvmsg succeeds with non-MCTP control message */
     recvmsg_stub_mode = RECVMSG_STUB_NON_MCTP_CMSG;
-    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL);
+    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true);
     ASSERT_EQ(rc, -1);
 
     /* MCTP_RECVERR with request ifindex path */
@@ -3556,7 +3557,7 @@ static void test_process_error_queue_basic_paths(void)
     req_addr.smctp_ifindex = 1;
     recvmsg_stub_mode = RECVMSG_STUB_MCTP_RECVERR;
     recvmsg_stub_dest_eid = 0;
-    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, &req_addr);
+    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, &req_addr, NULL, 0, true);
     ASSERT_EQ(rc, 0);
 
     /* MCTP_RECVERR with peer lookup path via dest_eid.
@@ -3569,9 +3570,143 @@ static void test_process_error_queue_basic_paths(void)
     }
     recvmsg_stub_mode = RECVMSG_STUB_MCTP_RECVERR;
     recvmsg_stub_dest_eid = 37;
-    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL);
+    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true);
     ASSERT_EQ(rc, 0);
 
+    recvmsg_stub_mode = RECVMSG_STUB_OFF;
+
+    TEST_PASS();
+}
+
+static void test_mctp_error_matches_kernel_layout(void)
+{
+    TEST_START("struct mctp_error matches the kernel uapi layout");
+    /* The kernel definition is not packed: with an 8-byte aligned u64
+       timestamp the payload length lands at offset 24 and the payload at
+       28, for a 64-byte report. A packed copy reads payload_len out of
+       the timestamp and the command code out of payload_len. */
+    ASSERT_EQ(offsetof(struct mctp_error, msg_type), 11);
+    ASSERT_EQ(offsetof(struct mctp_error, timestamp_ns),
+              offsetof(struct mctp_error, msg_type) + 1 +
+                  (_Alignof(uint64_t) == 8 ? 4 : 0));
+    ASSERT_EQ(offsetof(struct mctp_error, payload_len),
+              offsetof(struct mctp_error, timestamp_ns) + 8);
+    ASSERT_EQ(offsetof(struct mctp_error, payload),
+              offsetof(struct mctp_error, payload_len) + 4);
+    ASSERT_EQ(MCTP_ERROR_PAYLOAD_SIZE, 32);
+    /* 60 bytes of fields, padded to the 8-byte alignment of the u64 */
+    if (_Alignof(uint64_t) == 8)
+        ASSERT_EQ(sizeof(struct mctp_error), 64);
+
+    /* Decode a report captured from a 6.18 ARM kernel for a Set Endpoint
+       ID that was NACKed on I2C (ENXIO, TX, SMBus, 200 -> 0, tag 1). */
+    static const uint8_t raw[64] = {
+        0x06, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0xc8, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xc4, 0xc5, 0x50, 0x26, 0x0b, 0x01, 0x00, 0x00,
+        0x05, 0x00, 0x00, 0x00, 0x00, 0x85, 0x01, 0x00,
+        0x60,
+    };
+    struct mctp_error err;
+    memcpy(&err, raw, sizeof(err));
+    ASSERT_EQ(err.error_code, 6);
+    ASSERT_EQ(err.direction, MCTP_DIR_TX);
+    ASSERT_EQ(err.binding, MCTP_PHYS_BINDING_SMBUS);
+    ASSERT_EQ(err.src_eid, 200);
+    ASSERT_EQ(err.dest_eid, 0);
+    ASSERT_EQ(err.tag, 1);
+    ASSERT_EQ(err.msg_type, MCTP_CTRL_HDR_MSG_TYPE);
+    ASSERT_EQ(err.payload_len, 5);
+    ASSERT_EQ(err.payload[0], 0x00);
+    ASSERT_EQ(err.payload[2], MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+
+    TEST_PASS();
+}
+
+static void test_errqueue_set_ctrl_hdr(void)
+{
+    TEST_START("errqueue_set_ctrl_hdr takes the command code from the request");
+    struct mctp_ctrl_cmd_set_eid req = { 0 };
+    req.ctrl_hdr.rq_dgram_inst = RQDI_REQ | 0x05;
+    req.ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+
+    /* Empty kernel payload -> filled from request */
+    struct mctp_error err = { 0 };
+    err.msg_type = MCTP_CTRL_HDR_MSG_TYPE;
+    errqueue_set_ctrl_hdr(&err, &req, sizeof(req));
+    ASSERT_EQ(err.payload_len, sizeof(struct mctp_ctrl_msg_hdr));
+    ASSERT_EQ(err.payload[0], RQDI_REQ | 0x05);
+    ASSERT_EQ(err.payload[1], MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+
+    /* Kernel payload starting with the type byte -> request wins */
+    memset(&err, 0, sizeof(err));
+    err.msg_type = MCTP_CTRL_HDR_MSG_TYPE;
+    err.payload_len = 5;
+    err.payload[0] = 0x00;
+    err.payload[1] = RQDI_REQ | 0x05;
+    err.payload[2] = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    errqueue_set_ctrl_hdr(&err, &req, sizeof(req));
+    ASSERT_EQ(err.payload_len, 2);
+    ASSERT_EQ(err.payload[1], MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+
+    /* Non-control message -> untouched */
+    memset(&err, 0, sizeof(err));
+    err.msg_type = 0x01;
+    err.payload_len = 3;
+    errqueue_set_ctrl_hdr(&err, &req, sizeof(req));
+    ASSERT_EQ(err.payload_len, 3);
+    ASSERT_EQ(err.payload[1], 0);
+
+    /* No request or a truncated request -> kernel payload kept */
+    memset(&err, 0, sizeof(err));
+    err.msg_type = MCTP_CTRL_HDR_MSG_TYPE;
+    err.payload_len = 2;
+    err.payload[1] = MCTP_CTRL_CMD_GET_ENDPOINT_UUID;
+    errqueue_set_ctrl_hdr(&err, NULL, 0);
+    ASSERT_EQ(err.payload[1], MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+    errqueue_set_ctrl_hdr(&err, &req, 1);
+    ASSERT_EQ(err.payload[1], MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+
+    TEST_PASS();
+}
+
+static void test_process_error_queue_fills_command_code(void)
+{
+    TEST_START("process_error_queue sets the command code from the request");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+    ctx.verbose = true;
+    setup_config_defaults(&ctx);
+
+    struct mctp_ctrl_cmd_set_eid req = { 0 };
+    req.ctrl_hdr.rq_dgram_inst = RQDI_REQ;
+    req.ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    struct sockaddr_mctp_ext req_addr = { 0 };
+    req_addr.smctp_ifindex = 1;
+
+    /* Empty kernel payload (TX failure) with the request supplied */
+    recvmsg_stub_mode = RECVMSG_STUB_MCTP_RECVERR;
+    recvmsg_stub_dest_eid = 0;
+    recvmsg_stub_payload_len = 0;
+    int rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, &req_addr,
+                                   &req, sizeof(req), true);
+    ASSERT_EQ(rc, 0);
+
+    /* Empty kernel payload without a request */
+    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, &req_addr, NULL, 0, true);
+    ASSERT_EQ(rc, 0);
+
+    /* Discovery exchange: the queue is drained but no TransportError is
+       emitted (report = false); the caller reports DiscoveryCommandFailed */
+    recvmsg_stub_payload_len = 2;
+    rc = read_mctp_error_queue(&ctx, -1, ctx.verbose, &req_addr, &req,
+                               sizeof(req), false);
+    ASSERT_EQ(rc, 0);
+
+    recvmsg_stub_payload_len = 2;
     recvmsg_stub_mode = RECVMSG_STUB_OFF;
 
     TEST_PASS();
@@ -3594,7 +3729,7 @@ static void test_process_error_queue_peer_and_binding_matrix(void)
     recvmsg_stub_cmd = MCTP_CTRL_CMD_GET_ENDPOINT_ID;
 
     recvmsg_stub_dest_eid = 99;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true), 0);
 
     dest_phys d_local = { .ifindex = 101, .hwaddr_len = 1 };
     d_local.hwaddr[0] = 0xA1;
@@ -3602,7 +3737,7 @@ static void test_process_error_queue_peer_and_binding_matrix(void)
     if (add_peer(&ctx, &d_local, 40, 1, &p_local, false) == 0 && p_local)
 	    p_local->state = LOCAL;
     recvmsg_stub_dest_eid = 40;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true), 0);
 
     dest_phys d_noif = { .ifindex = 0, .hwaddr_len = 1 };
     d_noif.hwaddr[0] = 0xA2;
@@ -3610,7 +3745,7 @@ static void test_process_error_queue_peer_and_binding_matrix(void)
     if (add_peer(&ctx, &d_noif, 41, 1, &p_noif, false) == 0 && p_noif)
 	    p_noif->state = REMOTE;
     recvmsg_stub_dest_eid = 41;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true), 0);
 
     dest_phys d_remote = { .ifindex = 101, .hwaddr_len = 1 };
     d_remote.hwaddr[0] = 0xA3;
@@ -3618,16 +3753,16 @@ static void test_process_error_queue_peer_and_binding_matrix(void)
     if (add_peer(&ctx, &d_remote, 42, 1, &p_remote, false) == 0 && p_remote)
 	    p_remote->state = REMOTE;
     recvmsg_stub_dest_eid = 42;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, NULL, NULL, 0, true), 0);
 
     struct sockaddr_mctp_ext req = { 0 };
     recvmsg_stub_dest_eid = 0;
     req.smctp_ifindex = 101;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, &req), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, &req, NULL, 0, true), 0);
     req.smctp_ifindex = 102;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, &req), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, &req, NULL, 0, true), 0);
     req.smctp_ifindex = 103;
-    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, &req), 0);
+    ASSERT_EQ(read_mctp_error_queue(&ctx, -1, ctx.verbose, &req, NULL, 0, true), 0);
 
     recvmsg_stub_mode = RECVMSG_STUB_OFF;
     cleanup_ctx(&ctx);
@@ -3654,7 +3789,7 @@ static void test_endpoint_send_set_eid_fail(void)
 
     mctp_eid_t new_eid = 0;
     /* sendto will succeed but no response -> timeout */
-    int rc = endpoint_send_set_endpoint_id(&p, &new_eid, NULL);
+    int rc = endpoint_send_set_endpoint_id(&p, &new_eid, NULL, true);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
@@ -3675,7 +3810,7 @@ static void test_query_get_peer_msgtypes_fail(void)
     p.phys.ifindex = 1;
     p.phys.hwaddr_len = 1;
 
-    int rc = query_get_peer_msgtypes(&p);
+    int rc = query_get_peer_msgtypes(&p, true, true);
     ASSERT_NE(rc, 0); /* will timeout */
     TEST_PASS();
 }
@@ -4312,7 +4447,7 @@ static void test_query_peer_properties_no_bus(void)
     ASSERT_NOT_NULL(p);
     ASSERT_EQ(p->eid, 16);
 
-    int rc = query_peer_properties(p);
+    int rc = query_peer_properties(p, true);
     /* New contract: when the peer never answers Get Message Type Support,
      * query_peer_properties() exhausts its retries and bails with
      * -ETIMEDOUT rather than silently returning 0.  See the matching
@@ -5151,6 +5286,275 @@ static void test_branch_sweep_batch(void)
     TEST_PASS();
 }
 
+/* Test: discovery_command_name covers exactly the reported commands   */
+static void test_discovery_command_name(void)
+{
+    TEST_START("discovery_command_name");
+
+    ASSERT_EQ(strcmp(discovery_command_name(MCTP_CTRL_CMD_SET_ENDPOINT_ID),
+                     "SetEndpointID"), 0);
+    ASSERT_EQ(strcmp(discovery_command_name(MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS),
+                     "AllocateEndpointIDs"), 0);
+    ASSERT_EQ(strcmp(discovery_command_name(MCTP_CTRL_CMD_GET_ENDPOINT_UUID),
+                     "GetEndpointUUID"), 0);
+    ASSERT_EQ(strcmp(discovery_command_name(MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT),
+                     "GetMessageTypeSupport"), 0);
+    /* not part of the discovery failure surface */
+    ASSERT_NULL(discovery_command_name(MCTP_CTRL_CMD_GET_ENDPOINT_ID));
+    ASSERT_NULL(discovery_command_name(MCTP_CTRL_CMD_ROUTING_INFO_UPDATE));
+    ASSERT_NULL(discovery_command_name(0xFF));
+    TEST_PASS();
+}
+
+/* Test: mctp_ctrl_cc_reason renders the documented reason strings     */
+static void test_mctp_ctrl_cc_reason(void)
+{
+    TEST_START("mctp_ctrl_cc_reason");
+    char buf[32];
+
+    struct { uint8_t cc; const char *expected; } cases[] = {
+        { MCTP_CTRL_CC_ERROR,
+          "generic error (MCTP_CONTROL_MSG_STATUS_ERROR (0x01))" },
+        { MCTP_CTRL_CC_ERROR_INVALID_DATA,
+          "invalid data (MCTP_CONTROL_MSG_STATUS_ERROR_INVALID_DATA (0x02))" },
+        { MCTP_CTRL_CC_ERROR_INVALID_LENGTH,
+          "invalid length (MCTP_CONTROL_MSG_STATUS_ERROR_INVALID_LENGTH (0x03))" },
+        { MCTP_CTRL_CC_ERROR_NOT_READY,
+          "device is not ready (MCTP_CONTROL_MSG_STATUS_ERROR_NOT_READY (0x04))" },
+        { MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD,
+          "command not supported (MCTP_CONTROL_MSG_STATUS_ERROR_UNSUPPORTED_CMD (0x05))" },
+        { 0x80, "completion code 0x80" },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const char *result = mctp_ctrl_cc_reason(cases[i].cc, buf, sizeof(buf));
+        if (strcmp(result, cases[i].expected) != 0) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "cc 0x%02x: got '%s', expected '%s'",
+                     cases[i].cc, result, cases[i].expected);
+            TEST_FAIL(msg);
+            return;
+        }
+    }
+    TEST_PASS();
+}
+
+/* Test: classify_discovery_failure maps stages and responses to kinds */
+static void test_classify_discovery_failure(void)
+{
+    TEST_START("classify_discovery_failure");
+    struct mctp_ctrl_cmd cmd = { 0 };
+    struct mctp_ctrl_resp rsp = { 0 };
+    struct discovery_failure f;
+
+    /* request could not be sent */
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_SEND;
+    classify_discovery_failure(&cmd, -EHOSTUNREACH, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_REQUEST_NOT_SENT);
+    ASSERT_EQ(f.code, EHOSTUNREACH);
+    ASSERT_EQ(strcmp(f.reason, "request could not be sent"), 0);
+
+    /* no response before timeout */
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_TIMEOUT;
+    classify_discovery_failure(&cmd, -ETIMEDOUT, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_RESPONSE_TIMEOUT);
+    ASSERT_EQ(f.code, ETIMEDOUT);
+    ASSERT_EQ(strcmp(f.reason, "no response received before timeout"), 0);
+
+    /* response could not be read */
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_RECV;
+    classify_discovery_failure(&cmd, -EIO, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ(f.code, EIO);
+    ASSERT_EQ(strcmp(f.reason, "response could not be received"), 0);
+
+    /* non-success completion code (validate returns -ECONNREFUSED) */
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_NONE;
+    cmd.resp = &rsp;
+    cmd.resp_len = sizeof(rsp);
+    rsp.completion_code = MCTP_CTRL_CC_ERROR_NOT_READY;
+    classify_discovery_failure(&cmd, -ECONNREFUSED, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_COMPLETION_CODE);
+    ASSERT_EQ(f.code, MCTP_CTRL_CC_ERROR_NOT_READY);
+    ASSERT_EQ(strcmp(f.reason,
+                     "device is not ready (MCTP_CONTROL_MSG_STATUS_ERROR_NOT_READY (0x04))"),
+              0);
+
+    /* unsupported command (validate returns -ENOTSUP) */
+    rsp.completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
+    classify_discovery_failure(&cmd, -ENOTSUP, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_COMPLETION_CODE);
+    ASSERT_EQ(f.code, MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD);
+
+    /* unknown completion code uses the scratch buffer */
+    rsp.completion_code = 0x80;
+    classify_discovery_failure(&cmd, -ECONNREFUSED, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_COMPLETION_CODE);
+    ASSERT_EQ(f.code, 0x80);
+    ASSERT_EQ(strcmp(f.reason, "completion code 0x80"), 0);
+    ASSERT_EQ(f.reason == f.reason_buf, 1);
+
+    /* success completion code but the caller rejected the response:
+     * the caller-supplied reason is used */
+    rsp.completion_code = MCTP_CTRL_CC_SUCCESS;
+    classify_discovery_failure(&cmd, -ECONNREFUSED,
+                               "endpoint rejected the EID assignment", &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ(f.code, ECONNREFUSED);
+    ASSERT_EQ(strcmp(f.reason, "endpoint rejected the EID assignment"), 0);
+
+    /* malformed response, no caller reason */
+    classify_discovery_failure(&cmd, -ENOMSG, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ(f.code, ENOMSG);
+    ASSERT_EQ(strcmp(f.reason, "invalid response received"), 0);
+
+    /* a response too short to carry a completion code is not
+     * interpreted as one */
+    rsp.completion_code = MCTP_CTRL_CC_ERROR;
+    cmd.resp_len = MCTP_CTRL_ERROR_RESP_LEN - 1;
+    classify_discovery_failure(&cmd, -ECONNREFUSED, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ(f.code, ECONNREFUSED);
+
+    /* no response at all */
+    cmd.resp = NULL;
+    cmd.resp_len = 0;
+    classify_discovery_failure(&cmd, -ECONNREFUSED, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    TEST_PASS();
+}
+
+/* Test: report_discovery_command_failure filtering and emit paths    */
+static void test_report_discovery_command_failure(void)
+{
+    TEST_START("report_discovery_command_failure");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+
+    struct mctp_ctrl_cmd cmd = { 0 };
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_TIMEOUT;
+
+    /* No bus: only logs, must not crash */
+    report_discovery_command_failure(&ctx, 1, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     10, &cmd, -ETIMEDOUT, NULL);
+    /* Commands outside the discovery surface and successes are ignored */
+    report_discovery_command_failure(&ctx, 1, MCTP_CTRL_CMD_GET_ENDPOINT_ID,
+                                     10, &cmd, -ETIMEDOUT, NULL);
+    report_discovery_command_failure(&ctx, 1, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     10, &cmd, 0, NULL);
+    ASSERT_NULL(ctx.bus);
+
+    int rc = setup_bus(&ctx);
+    if (rc < 0) { fprintf(stderr, "(no dbus) "); TEST_PASS(); return; }
+    ASSERT_NOT_NULL(ctx.bus);
+
+    /* With bus: exercises the sd_bus_emit_signal path for each kind */
+    report_discovery_command_failure(&ctx, 1, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     10, &cmd, -ETIMEDOUT, NULL);
+
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_SEND;
+    report_discovery_command_failure(&ctx, 0, MCTP_CTRL_CMD_GET_ENDPOINT_UUID,
+                                     11, &cmd, -EHOSTUNREACH, NULL);
+
+    struct mctp_ctrl_resp rsp = { 0 };
+    rsp.completion_code = MCTP_CTRL_CC_ERROR_NOT_READY;
+    cmd.fail_stage = MCTP_CTRL_CMD_FAIL_NONE;
+    cmd.resp = &rsp;
+    cmd.resp_len = sizeof(rsp);
+    report_discovery_command_failure(&ctx, 101,
+                                     MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS,
+                                     12, &cmd, -ECONNREFUSED, NULL);
+
+    rsp.completion_code = MCTP_CTRL_CC_SUCCESS;
+    report_discovery_command_failure(&ctx, 101, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     12, &cmd, -ECONNREFUSED,
+                                     "endpoint rejected the EID assignment");
+    ASSERT_NOT_NULL(ctx.bus);
+
+    sd_bus_flush_close_unrefp(&ctx.bus);
+    sd_event_unref(ctx.event);
+    TEST_PASS();
+}
+
+/* Test: endpoint_query_addr records where the exchange failed         */
+static void test_endpoint_query_addr_fail_stage(void)
+{
+    TEST_START("endpoint_query_addr fail_stage");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { .nl = test_nl, .mctp_timeout = 1000 };
+    dest_phys d = { .ifindex = 1, .hwaddr_len = 1 };
+    d.hwaddr[0] = 0xAB;
+    uint8_t req[4] = { 0x80, MCTP_CTRL_CMD_SET_ENDPOINT_ID, 0, 0 };
+    struct mctp_ctrl_cmd cmd = { .req = req, .req_len = sizeof(req) };
+
+    /* sendto fails -> SEND */
+    fault_mctp_sendto_errno = EHOSTUNREACH;
+    int rc = endpoint_query_phys(&ctx, &d, &cmd);
+    fault_mctp_sendto_errno = 0;
+    ASSERT_EQ(rc, -EHOSTUNREACH);
+    ASSERT_EQ(cmd.fail_stage, MCTP_CTRL_CMD_FAIL_SEND);
+
+    /* short sendto -> SEND */
+    fault_mctp_sendto_short = 1;
+    rc = endpoint_query_phys(&ctx, &d, &cmd);
+    fault_mctp_sendto_short = 0;
+    ASSERT_EQ(rc, -EPROTO);
+    ASSERT_EQ(cmd.fail_stage, MCTP_CTRL_CMD_FAIL_SEND);
+
+    /* sendto succeeds, no response on any attempt -> TIMEOUT */
+    rc = endpoint_query_phys(&ctx, &d, &cmd);
+    ASSERT_EQ(rc, -ETIMEDOUT);
+    ASSERT_EQ(cmd.fail_stage, MCTP_CTRL_CMD_FAIL_TIMEOUT);
+
+    /* zero-length request -> SEND */
+    struct mctp_ctrl_cmd empty = { .req = req, .req_len = 0 };
+    rc = endpoint_query_phys(&ctx, &d, &empty);
+    ASSERT_EQ(rc, -EPROTO);
+    ASSERT_EQ(empty.fail_stage, MCTP_CTRL_CMD_FAIL_SEND);
+    TEST_PASS();
+}
+
+/* Test: endpoint_send_set_endpoint_id reports through the bus path   */
+static void test_endpoint_send_set_eid_reports_discovery_failure(void)
+{
+    TEST_START("endpoint_send_set_endpoint_id discovery failure report");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { .nl = test_nl, .mctp_timeout = 1000 };
+    setup_config_defaults(&ctx);
+
+    struct peer p = { 0 };
+    p.ctx = &ctx;
+    p.state = REMOTE;
+    p.eid = 10;
+    p.net = 1;
+    p.phys.ifindex = 1;
+    p.phys.hwaddr_len = 1;
+    p.phys.hwaddr[0] = 0xCD;
+
+    int rc = setup_bus(&ctx);
+    if (rc < 0) { fprintf(stderr, "(no dbus) "); TEST_PASS(); return; }
+    ASSERT_NOT_NULL(ctx.bus);
+
+    mctp_eid_t new_eid = 0;
+    /* no response -> timeout, reported (bus present) */
+    rc = endpoint_send_set_endpoint_id(&p, &new_eid, NULL, true);
+    ASSERT_EQ(rc, -ETIMEDOUT);
+
+    /* known-bad peer (ping already failed): report suppressed */
+    p.ping_failed_once = true;
+    rc = endpoint_send_set_endpoint_id(&p, &new_eid, NULL, true);
+    ASSERT_EQ(rc, -ETIMEDOUT);
+
+    sd_bus_flush_close_unrefp(&ctx.bus);
+    sd_event_unref(ctx.event);
+    TEST_PASS();
+}
+
 int main(void)
 {
     fprintf(stderr, "=== mctpd fault injection tests ===\n");
@@ -5250,6 +5654,9 @@ int main(void)
     test_cb_listen_control_msg_edges();
     test_security_rs2_06_empty_control_datagram();
     test_process_error_queue_basic_paths();
+    test_mctp_error_matches_kernel_layout();
+    test_errqueue_set_ctrl_hdr();
+    test_process_error_queue_fills_command_code();
     test_process_error_queue_peer_and_binding_matrix();
     test_endpoint_send_set_eid_fail();
     test_query_get_peer_msgtypes_fail();
@@ -5262,6 +5669,12 @@ int main(void)
     test_listen_control_msg_errqueue_fail();
     test_peer_set_mtu_success();
     test_report_transaction_error_branches();
+    test_discovery_command_name();
+    test_mctp_ctrl_cc_reason();
+    test_classify_discovery_failure();
+    test_report_discovery_command_failure();
+    test_endpoint_query_addr_fail_stage();
+    test_endpoint_send_set_eid_reports_discovery_failure();
     test_report_transaction_error_usb_i3c_spi();
     test_peer_set_mtu_route_del_fail();
     test_remove_peer_with_bridge_type();

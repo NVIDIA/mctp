@@ -32,7 +32,7 @@
 #endif
 
 #ifndef MCTP_ERROR_PAYLOAD_SIZE
-#define MCTP_ERROR_PAYLOAD_SIZE 64
+#define MCTP_ERROR_PAYLOAD_SIZE 32
 #endif
 
 #define MCTP_DIR_TX 0
@@ -81,20 +81,26 @@ enum mctp_phys_media_type {
 	/* 0x41-0xFF Reserved */
 };
 
+/* Mirror of the kernel's struct mctp_error (uapi linux/mctp.h), received
+ * as MCTP_RECVERR ancillary data from recvmsg(MSG_ERRQUEUE). The kernel
+ * definition is not packed, so this one must not be either: on 32- and
+ * 64-bit ARM the u64 timestamp is 8-byte aligned, which puts 4 bytes of
+ * padding after msg_type and moves payload_len and payload by 4 bytes
+ * compared to a packed layout. */
 struct mctp_error {
 	uint32_t error_code;
 	uint8_t direction;
 	uint8_t binding;
-	uint16_t reserved1; /* Padding for alignment */
+	uint16_t reserved1;
 	uint8_t src_eid;
 	uint8_t dest_eid;
 	uint8_t tag;
 	uint8_t msg_type;
 	uint64_t timestamp_ns;
 	uint16_t payload_len;
-	uint16_t reserved2; /* Padding for alignment */
+	uint16_t reserved2;
 	uint8_t payload[MCTP_ERROR_PAYLOAD_SIZE];
-} __attribute__((packed));
+};
 
 const char *phy_transport_binding_to_string(uint8_t id)
 {

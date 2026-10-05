@@ -280,6 +280,63 @@ interface    (string) - Interface name where error occurred
 This signal allows applications to monitor and log transport errors for
 diagnostic purposes.
 
+#### `DiscoveryCommandFailed`: `ysyyuss`
+
+This signal is emitted when one of the MCTP control commands that `mctpd`
+issues while enumerating a new endpoint fails. It is intended for management
+applications that log endpoint discovery failures (for example as a Redfish
+`NvidiaResourceEvent.1.0.MCTPDiscoveryCommandFailed` event), and carries the
+failure already classified and described, so consumers do not need to
+interpret transport error codes or completion codes themselves.
+
+The commands covered are Set Endpoint ID, Allocate Endpoint IDs, Get Message
+Type Support and Get Endpoint UUID, when issued from `SetupEndpoint`,
+`AssignEndpoint`, `AssignEndpointStatic`, `AssignBridgeStatic`,
+`LearnEndpoint` or the enumeration of endpoints found behind a bridge. The
+same commands issued for an endpoint that is already known, during `Recover`
+or when refreshing its properties after a routing table change, are not
+discovery and are not reported here; their transport failures are reported
+through `TransportError` as before.
+
+A failed discovery command is reported exactly once: one signal per failed
+command, after all of `mctpd`'s own retries of that command (including the
+retries of a timed-out Get Message Type Support or Get Endpoint UUID during
+endpoint setup) have been exhausted, and no `TransportError` is emitted for
+those exchanges. Get
+Endpoint UUID is optional, so an endpoint answering that the command is
+unsupported is not reported. Failures for an endpoint whose health-check ping
+has already failed are suppressed, matching the log suppression for such
+endpoints.
+
+Signal parameters:
+```
+command_code (byte)   - MCTP control command code (0x01, 0x03, 0x05 or 0x08)
+command      (string) - Command name: "SetEndpointID", "AllocateEndpointIDs",
+                        "GetMessageTypeSupport" or "GetEndpointUUID"
+eid          (byte)   - Endpoint the command was issued for. For Set Endpoint
+                        ID this is the EID being assigned.
+kind         (byte)   - Failure class, see below
+code         (uint32) - errno value for kinds 0-2, MCTP completion code for
+                        kind 3
+reason       (string) - Description of the failure, see below
+interface    (string) - Interface name of the endpoint's link, or "" if
+                        unknown
+```
+
+Failure classes and their `reason` text:
+
+| kind | Meaning | `reason` |
+|------|---------|----------|
+| 0 | The request could not be sent | `request could not be sent` |
+| 1 | No response before the timeout | `no response received before timeout` |
+| 2 | Response missing, malformed or rejecting the request | `response could not be received`, `invalid response received`, `endpoint rejected the EID assignment`, `endpoint reported an invalid EID` or `endpoint allocated an unexpected EID pool` |
+| 3 | Non-success completion code | e.g. `device is not ready (MCTP_CONTROL_MSG_STATUS_ERROR_NOT_READY (0x04))`; unknown codes render as `completion code 0xNN` |
+
+For control messages sent by mctpd, the `command_code` of a `TransportError`
+is taken from the request mctpd sent on the socket rather than from the
+kernel error report, whose payload differs between kernel revisions and
+failure paths.
+
 ## Network objects: `/au/com/codeconstruct/mctp1/networks/<net>`
 
 These objects represent MCTP networks which have been added use `mctp link`
