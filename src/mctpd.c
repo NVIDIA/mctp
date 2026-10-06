@@ -234,6 +234,20 @@ struct peer {
 	} recovery;
 };
 
+/* Stage at which the last control command exchange made by
+ * endpoint_query_addr() failed, so that callers can describe the failure. */
+enum mctp_query_fail_stage {
+	/* no failure, or a response was received: see the validation
+	 * result and the response completion code instead */
+	MCTP_QUERY_FAIL_NONE = 0,
+	/* the request could not be sent */
+	MCTP_QUERY_FAIL_SEND,
+	/* no response was received before the timeout */
+	MCTP_QUERY_FAIL_TIMEOUT,
+	/* a response or transport error arrived but could not be read */
+	MCTP_QUERY_FAIL_RECV,
+};
+
 struct ctx {
 	sd_event *event;
 	sd_bus *bus;
@@ -281,6 +295,10 @@ struct ctx {
 		size_t *entry_sizes;
 		uint8_t count;
 	} cache_entries;
+
+	// Outcome of the most recent endpoint_query_addr() exchange. The
+	// exchange is synchronous, so this is valid right after it returns.
+	enum mctp_query_fail_stage query_fail_stage;
 };
 
 static int emit_endpoint_added(const struct peer *peer);
@@ -295,7 +313,7 @@ static int add_peer_from_addr(struct ctx *ctx,
 			      const struct sockaddr_mctp_ext *addr,
 			      struct peer **ret_peer);
 static int remove_peer(struct peer *peer);
-static int query_peer_properties(struct peer *peer);
+static int query_peer_properties(struct peer *peer, bool discovery);
 static int setup_added_peer(struct peer *peer);
 static void add_peer_route(struct peer *peer);
 static int publish_peer(struct peer *peer, bool add_route);
@@ -2429,6 +2447,155 @@ static void report_transaction_error(struct ctx *ctx, int error_code,
 	log_mctp_error(ctx, &tmperr, ifname);
 }
 
+/* Failure classes carried by the DiscoveryCommandFailed D-Bus signal */
+enum discovery_failure_kind {
+	/* the request could not be sent; code is an errno value */
+	DISCOVERY_FAIL_REQUEST_NOT_SENT = 0,
+	/* no response was received before the timeout; code is ETIMEDOUT */
+	DISCOVERY_FAIL_RESPONSE_TIMEOUT = 1,
+	/* the response was missing, malformed or rejected the request;
+	 * code is an errno value */
+	DISCOVERY_FAIL_INVALID_RESPONSE = 2,
+	/* the endpoint returned a non-success completion code; code is
+	 * the MCTP control completion code */
+	DISCOVERY_FAIL_COMPLETION_CODE = 3,
+};
+
+struct discovery_failure {
+	uint8_t kind;
+	uint32_t code;
+	const char *reason;
+	char reason_buf[32];
+};
+
+/* Endpoint discovery commands reported through DiscoveryCommandFailed.
+ * The names are the command arguments of the Redfish
+ * NvidiaResourceEvent.MCTPDiscoveryCommandFailed message. Returns NULL
+ * for commands that are not reported. */
+static const char *discovery_command_name(uint8_t cmd)
+{
+	switch (cmd) {
+	case MCTP_CTRL_CMD_SET_ENDPOINT_ID:
+		return "SetEndpointID";
+	case MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS:
+		return "AllocateEndpointIDs";
+	case MCTP_CTRL_CMD_GET_ENDPOINT_UUID:
+		return "GetEndpointUUID";
+	case MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT:
+		return "GetMessageTypeSupport";
+	}
+	return NULL;
+}
+
+/* Describe a non-success MCTP control completion code */
+static const char *mctp_ctrl_cc_reason(uint8_t cc, char *buf, size_t len)
+{
+	switch (cc) {
+	case MCTP_CTRL_CC_ERROR:
+		return "generic error (MCTP_CONTROL_MSG_STATUS_ERROR (0x01))";
+	case MCTP_CTRL_CC_ERROR_INVALID_DATA:
+		return "invalid data (MCTP_CONTROL_MSG_STATUS_ERROR_INVALID_DATA (0x02))";
+	case MCTP_CTRL_CC_ERROR_INVALID_LENGTH:
+		return "invalid length (MCTP_CONTROL_MSG_STATUS_ERROR_INVALID_LENGTH (0x03))";
+	case MCTP_CTRL_CC_ERROR_NOT_READY:
+		return "device is not ready (MCTP_CONTROL_MSG_STATUS_ERROR_NOT_READY (0x04))";
+	case MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD:
+		return "command not supported (MCTP_CONTROL_MSG_STATUS_ERROR_UNSUPPORTED_CMD (0x05))";
+	}
+	snprintf(buf, len, "completion code 0x%02x", cc);
+	return buf;
+}
+
+/* Classify a failed control command exchange (rc < 0) from the stage
+ * recorded by endpoint_query_addr() and the response, if any. @reason
+ * optionally overrides the description for failures that the caller
+ * detected in an otherwise valid response. */
+static void classify_discovery_failure(const struct ctx *ctx, int rc,
+				       const uint8_t *resp, size_t resp_len,
+				       const char *reason,
+				       struct discovery_failure *f)
+{
+	const struct mctp_ctrl_resp *rsp = (const void *)resp;
+
+	memset(f, 0, sizeof(*f));
+
+	switch (ctx->query_fail_stage) {
+	case MCTP_QUERY_FAIL_SEND:
+		f->kind = DISCOVERY_FAIL_REQUEST_NOT_SENT;
+		f->code = -rc;
+		f->reason = "request could not be sent";
+		return;
+	case MCTP_QUERY_FAIL_TIMEOUT:
+		f->kind = DISCOVERY_FAIL_RESPONSE_TIMEOUT;
+		f->code = ETIMEDOUT;
+		f->reason = "no response received before timeout";
+		return;
+	case MCTP_QUERY_FAIL_RECV:
+		f->kind = DISCOVERY_FAIL_INVALID_RESPONSE;
+		f->code = -rc;
+		f->reason = "response could not be received";
+		return;
+	case MCTP_QUERY_FAIL_NONE:
+		break;
+	}
+
+	/* A response was received. mctp_ctrl_validate_response() reports a
+	 * non-success completion code as -ECONNREFUSED or -ENOTSUP. */
+	if ((rc == -ECONNREFUSED || rc == -ENOTSUP) && rsp &&
+	    resp_len >= MCTP_CTRL_ERROR_RESP_LEN &&
+	    rsp->completion_code != MCTP_CTRL_CC_SUCCESS) {
+		f->kind = DISCOVERY_FAIL_COMPLETION_CODE;
+		f->code = rsp->completion_code;
+		f->reason = mctp_ctrl_cc_reason(rsp->completion_code,
+						f->reason_buf,
+						sizeof(f->reason_buf));
+		return;
+	}
+
+	f->kind = DISCOVERY_FAIL_INVALID_RESPONSE;
+	f->code = -rc;
+	f->reason = reason ? reason : "invalid response received";
+}
+
+/* Report a failed endpoint discovery command through the
+ * DiscoveryCommandFailed signal and the log. @eid is the endpoint the
+ * command was issued for; for Set Endpoint ID, the EID being assigned.
+ * @resp is the response buffer of the failed exchange, or NULL if none was
+ * received. Only the commands known to discovery_command_name() are
+ * reported. */
+static void report_discovery_command_failure(struct ctx *ctx, int ifindex,
+					     uint8_t cmd_code, mctp_eid_t eid,
+					     int rc, const uint8_t *resp,
+					     size_t resp_len,
+					     const char *reason)
+{
+	const char *name = discovery_command_name(cmd_code);
+	struct discovery_failure f;
+	const char *ifname;
+
+	if (!name || rc >= 0)
+		return;
+
+	classify_discovery_failure(ctx, rc, resp, resp_len, reason, &f);
+	ifname = resolve_ifname(ctx, ifindex);
+
+	warnx("MCTP endpoint discovery command %s failed for EID %d: %s (command 0x%02x, kind %u, code %u, interface %s)",
+	      name, eid, f.reason, cmd_code, f.kind, f.code,
+	      ifname ? ifname : "unknown");
+
+	if (!ctx->bus)
+		return;
+
+	rc = sd_bus_emit_signal(ctx->bus, MCTP_DBUS_PATH_LINKS,
+				CC_MCTP_DBUS_IFACE_BUSOWNER,
+				"DiscoveryCommandFailed", "ysyyuss", cmd_code,
+				name, eid, f.kind, f.code, f.reason,
+				ifname ? ifname : "");
+	if (rc < 0)
+		warnx("Failed to emit DiscoveryCommandFailed signal: %s",
+		      strerror(-rc));
+}
+
 /* Use endpoint_query_peer() or endpoint_query_phys() instead.
  *
  * resp buffer is allocated, caller to free.
@@ -2449,12 +2616,14 @@ static int endpoint_query_addr(struct ctx *ctx,
 
 	*resp = NULL;
 	*resp_len = 0;
+	ctx->query_fail_stage = MCTP_QUERY_FAIL_NONE;
 
 	sd = mctp_ops.mctp.socket();
 	if (sd < 0) {
 		if (!suppress_logs)
 			warn("socket");
 		rc = -errno;
+		ctx->query_fail_stage = MCTP_QUERY_FAIL_SEND;
 		goto out;
 	}
 
@@ -2465,6 +2634,7 @@ static int endpoint_query_addr(struct ctx *ctx,
 	if (rc < 0) {
 		rc = -errno;
 		warn("Kernel does not support MCTP extended addressing");
+		ctx->query_fail_stage = MCTP_QUERY_FAIL_SEND;
 		goto out;
 	}
 
@@ -2486,12 +2656,14 @@ static int endpoint_query_addr(struct ctx *ctx,
 	if (req_len == 0) {
 		bug_warn("zero length request");
 		rc = -EPROTO;
+		ctx->query_fail_stage = MCTP_QUERY_FAIL_SEND;
 		goto out;
 	}
 	rc = mctp_ops.mctp.sendto(sd, req, req_len, 0,
 				  (struct sockaddr *)req_addr, req_addr_len);
 	if (rc < 0) {
 		rc = -errno;
+		ctx->query_fail_stage = MCTP_QUERY_FAIL_SEND;
 		if (ctx->verbose && !suppress_logs) {
 			warnx("%s: sendto(%s) %zu bytes failed. %s", __func__,
 			      ext_addr_tostr(req_addr), req_len, strerror(-rc));
@@ -2504,14 +2676,18 @@ static int endpoint_query_addr(struct ctx *ctx,
 	if ((size_t)rc != req_len) {
 		bug_warn("incorrect sendto %zd, expected %zu", rc, req_len);
 		rc = -EPROTO;
+		ctx->query_fail_stage = MCTP_QUERY_FAIL_SEND;
 		goto out;
 	}
 
 	rc = wait_fd_timeout(sd, EPOLLIN | EPOLLERR, ctx->mctp_timeout);
 	if (rc < 0) {
 		if (rc == -ETIMEDOUT) {
+			ctx->query_fail_stage = MCTP_QUERY_FAIL_TIMEOUT;
 			report_transaction_error(ctx, ETIMEDOUT, MCTP_DIR_RX,
 						 req_addr, req, req_len);
+		} else {
+			ctx->query_fail_stage = MCTP_QUERY_FAIL_RECV;
 		}
 		goto out;
 	}
@@ -2521,12 +2697,14 @@ static int endpoint_query_addr(struct ctx *ctx,
 		/* If no EPOLLIN, this was purely an error event */
 		if (!(rc & EPOLLIN)) {
 			rc = -EIO;
+			ctx->query_fail_stage = MCTP_QUERY_FAIL_RECV;
 			goto out;
 		}
 	}
 
 	rc = read_message(ctx, sd, &buf, &buf_size, resp_addr, suppress_logs);
 	if (rc < 0) {
+		ctx->query_fail_stage = MCTP_QUERY_FAIL_RECV;
 		goto out;
 	}
 
@@ -2563,6 +2741,7 @@ static int endpoint_query_peer(const struct peer *peer, uint8_t req_type,
 
 	if (peer->state != REMOTE) {
 		bug_warn("%s bad peer %s", __func__, peer_tostr(peer));
+		peer->ctx->query_fail_stage = MCTP_QUERY_FAIL_NONE;
 		return -EPROTO;
 	}
 
@@ -2608,19 +2787,24 @@ static int endpoint_query_phys(struct ctx *ctx, const dest_phys *dest,
 				   resp_len, resp_addr, false);
 }
 
-/* returns -ECONNREFUSED if the endpoint returns failure. */
+/* returns -ECONNREFUSED if the endpoint returns failure.
+ *
+ * discovery: the command is part of enumerating a new endpoint; a failure is
+ * then reported through DiscoveryCommandFailed. Recovery of a known endpoint
+ * passes false. */
 static int endpoint_send_set_endpoint_id(struct peer *peer,
-					 mctp_eid_t *new_eidp)
+					 mctp_eid_t *new_eidp, bool discovery)
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_set_eid req = { 0 };
 	struct mctp_ctrl_resp_set_eid *resp = NULL;
 	int rc;
 	uint8_t *buf = NULL;
-	size_t buf_size;
+	size_t buf_size = 0;
 	uint8_t iid, stat, alloc;
 	const dest_phys *dest = &peer->phys;
 	mctp_eid_t new_eid;
+	const char *fail_reason = NULL;
 
 	rc = -1;
 
@@ -2657,6 +2841,7 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 		if (!mctp_eid_is_valid_unicast(new_eid)) {
 			warnx("%s rejected assignment eid %d, and reported invalid eid %d",
 			      dest_phys_tostr(dest), peer->eid, new_eid);
+			fail_reason = "endpoint rejected the EID assignment";
 			rc = -ECONNREFUSED;
 			goto out;
 		}
@@ -2664,6 +2849,7 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 		if (!mctp_eid_is_valid_unicast(new_eid)) {
 			warnx("%s eid %d replied with invalid eid %d, but 'accepted'",
 			      dest_phys_tostr(dest), peer->eid, new_eid);
+			fail_reason = "endpoint reported an invalid EID";
 			rc = -ECONNREFUSED;
 			goto out;
 		} else if (new_eid != peer->eid) {
@@ -2687,6 +2873,11 @@ static int endpoint_send_set_endpoint_id(struct peer *peer,
 
 	rc = 0;
 out:
+	if (rc < 0 && discovery && !peer->ping_failed_once)
+		report_discovery_command_failure(peer->ctx, dest->ifindex,
+						 MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+						 peer->eid, rc, buf, buf_size,
+						 fail_reason);
 	free(buf);
 	return rc;
 }
@@ -3055,7 +3246,7 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 		}
 	}
 
-	rc = endpoint_send_set_endpoint_id(peer, &new_eid);
+	rc = endpoint_send_set_endpoint_id(peer, &new_eid, true);
 	if (rc == -ECONNREFUSED)
 		sd_bus_error_setf(
 			berr, SD_BUS_ERROR_FAILED,
@@ -3274,14 +3465,16 @@ static int get_endpoint_peer(struct ctx *ctx, sd_bus_error *berr,
 	return 0;
 }
 
-static int query_get_peer_msgtypes(struct peer *peer)
+/* discovery: report failures through DiscoveryCommandFailed (see
+ * endpoint_send_set_endpoint_id()). */
+static int query_get_peer_msgtypes(struct peer *peer, bool discovery)
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_msg_type_support req;
 	struct mctp_ctrl_resp_get_msg_type_support *resp = NULL;
 	uint8_t *new_message_types = NULL;
 	uint8_t *buf = NULL;
-	size_t buf_size, expect_size;
+	size_t buf_size = 0, expect_size;
 	uint8_t iid;
 	int rc;
 
@@ -3344,6 +3537,11 @@ static int query_get_peer_msgtypes(struct peer *peer)
 	peer->num_message_types = resp->msg_type_count - count_ignore;
 	rc = 0;
 out:
+	if (rc < 0 && discovery && !peer->ping_failed_once)
+		report_discovery_command_failure(
+			peer->ctx, peer->phys.ifindex,
+			MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT, peer->eid, rc,
+			buf, buf_size, NULL);
 	free(buf);
 	return rc;
 }
@@ -3396,7 +3594,10 @@ out:
 	return rc;
 }
 
-static int query_get_peer_uuid(struct peer *peer, uint8_t uuid_out[16])
+/* discovery: report failures through DiscoveryCommandFailed (see
+ * endpoint_send_set_endpoint_id()). */
+static int query_get_peer_uuid(struct peer *peer, uint8_t uuid_out[16],
+			       bool discovery)
 {
 	struct sockaddr_mctp_ext addr;
 	struct mctp_ctrl_cmd_get_uuid req;
@@ -3434,6 +3635,13 @@ static int query_get_peer_uuid(struct peer *peer, uint8_t uuid_out[16])
 	rc = 0;
 
 out:
+	/* Get Endpoint UUID is optional: an unsupported-command response is
+	 * not a discovery failure. */
+	if (rc < 0 && rc != -ENOTSUP && discovery && !peer->ping_failed_once)
+		report_discovery_command_failure(
+			peer->ctx, peer->phys.ifindex,
+			MCTP_CTRL_CMD_GET_ENDPOINT_UUID, peer->eid, rc, buf,
+			buf_size, NULL);
 	free(buf);
 	return rc;
 }
@@ -4248,14 +4456,16 @@ out:
 }
 // Query various properties of a peer.
 // To be called when a new peer is discovered/assigned, once an EID is known
-// and routable.
-static int query_peer_properties(struct peer *peer)
+// and routable (discovery = true), or to refresh the properties of a known
+// peer (discovery = false). Command failures are reported through
+// DiscoveryCommandFailed only while discovering.
+static int query_peer_properties(struct peer *peer, bool discovery)
 {
 	struct peer *pool_owner_peer = NULL;
 	struct net *n = NULL;
 	int rc;
 
-	rc = query_get_peer_msgtypes(peer);
+	rc = query_get_peer_msgtypes(peer, discovery);
 	if (rc < 0) {
 		// Warn here, it's a mandatory command code.
 		// It might be too noisy if some devices don't implement it.
@@ -4267,7 +4477,7 @@ static int query_peer_properties(struct peer *peer)
 	}
 
 	uint8_t uuid[16] = { 0 };
-	rc = query_get_peer_uuid(peer, uuid);
+	rc = query_get_peer_uuid(peer, uuid, discovery);
 	if (rc < 0 && rc != -ENOTSUP) {
 		if (peer->ctx->verbose)
 			warnx("Error getting UUID for %s. Ignoring error %d %s",
@@ -4429,7 +4639,7 @@ static int setup_added_peer(struct peer *peer)
 		add_peer_route(peer);
 	}
 
-	rc = query_peer_properties(peer);
+	rc = query_peer_properties(peer, true);
 	if (rc < 0)
 		goto out;
 
@@ -4741,7 +4951,7 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 		}
 
 		/* Confirmation of the same device, apply its already allocated EID */
-		rc = endpoint_send_set_endpoint_id(peer, &new_eid);
+		rc = endpoint_send_set_endpoint_id(peer, &new_eid, false);
 		if (rc < 0) {
 			goto reschedule;
 		}
@@ -4766,7 +4976,7 @@ static int peer_endpoint_recover(sd_event_source *s, uint64_t usec,
 		struct peer *new_peer = NULL;
 
 		/* Query UUID by EID instead of physical address to avoid bridge UUID responses */
-		rc = query_get_peer_uuid(peer, uuid);
+		rc = query_get_peer_uuid(peer, uuid, false);
 		if (rc == -ENOTSUP) {
 			uuid[15] = peer->eid;
 			rc = 0;
@@ -4959,7 +5169,7 @@ static int method_net_learn_endpoint(sd_bus_message *call, void *data,
 		goto err;
 	}
 
-	rc = query_peer_properties(peer);
+	rc = query_peer_properties(peer, true);
 	if (rc < 0) {
 		goto err;
 	}
@@ -6473,7 +6683,7 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 	struct mctp_ctrl_cmd_alloc_eid req = { 0 };
 	struct mctp_ctrl_resp_alloc_eid *resp = NULL;
 	uint8_t *buf = NULL;
-	size_t buf_size;
+	size_t buf_size = 0;
 	uint8_t iid, stat;
 	int rc;
 
@@ -6525,6 +6735,13 @@ static int endpoint_send_allocate_endpoint_id(struct peer *peer,
 
 	return 0;
 out:
+	/* pools are only allocated while enumerating a bridge, so this is
+	 * always a discovery command */
+	if (rc < 0 && !peer->ping_failed_once)
+		report_discovery_command_failure(
+			peer->ctx, peer->phys.ifindex,
+			MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS, peer->eid, rc, buf,
+			buf_size, NULL);
 	free(buf);
 	return rc;
 }
@@ -7018,7 +7235,7 @@ static int query_routing_table(struct peer *peer)
 					existing_peer->degraded = false;
 					//to fetch latest UUID/MessageType
 					rc = query_peer_properties(
-						existing_peer);
+						existing_peer, false);
 					if (rc < 0)
 						warnx("%s: query_peer_properties failed: %d %s",
 						      __func__, rc,

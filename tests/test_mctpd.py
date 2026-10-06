@@ -1,3 +1,4 @@
+import errno
 import pytest
 import trio
 import uuid
@@ -1835,3 +1836,441 @@ async def test_local_eid_exposed_on_endpoint(dbus, mctpd):
     # The default system has local EID 8 assigned to the interface
     assert local_eid == 8, \
         f"Expected LocalEID 8 but got {local_eid}"
+
+
+# DiscoveryCommandFailed: reported for the commands mctpd issues while an
+# endpoint is being discovered, but not while refreshing or recovering an
+# endpoint that is already known.
+DISCOVERY_FAILED_MATCH = (
+    "type='signal',interface='" + MCTPD_MCTP_I + "',"
+    "member='DiscoveryCommandFailed'"
+)
+TRANSPORT_ERROR_MATCH = (
+    "type='signal',interface='" + MCTPD_MCTP_I + "',"
+    "member='TransportError'"
+)
+
+DISCOVERY_REASON_TIMEOUT = "no response received before timeout"
+DISCOVERY_REASON_NOT_READY = (
+    "device is not ready (MCTP_CONTROL_MSG_STATUS_ERROR_NOT_READY (0x04))"
+)
+
+# DiscoveryCommandFailed kind values
+DISCOVERY_KIND_TIMEOUT = 1
+DISCOVERY_KIND_COMPLETION_CODE = 3
+
+# MCTP control command codes
+CTRL_SET_ENDPOINT_ID = 0x01
+CTRL_GET_ENDPOINT_UUID = 0x03
+CTRL_GET_MSG_TYPE_SUPPORT = 0x05
+CTRL_ALLOCATE_ENDPOINT_IDS = 0x08
+CTRL_GET_ROUTING_TABLE_ENTRIES = 0x0A
+
+
+async def subscribe_signals(dbus, member, match):
+    """Collect the bodies of mctpd BusOwner1 signals named member.
+
+    These signals are not part of an introspectable vtable, so subscribe
+    with a raw match rule rather than a proxy object. Returns the list
+    that receives one tuple per signal.
+    """
+    bodies = []
+
+    def handler(msg):
+        if (
+            msg.message_type == asyncdbus.MessageType.SIGNAL
+            and msg.interface == MCTPD_MCTP_I
+            and msg.member == member
+        ):
+            bodies.append(tuple(msg.body))
+
+    dbus.add_message_handler(handler)
+    await dbus.call(
+        asyncdbus.Message(
+            destination='org.freedesktop.DBus',
+            path='/org/freedesktop/DBus',
+            interface='org.freedesktop.DBus',
+            member='AddMatch',
+            signature='s',
+            body=[match],
+        )
+    )
+    return bodies
+
+
+async def subscribe_discovery_failures(dbus):
+    """Collect DiscoveryCommandFailed signals as (command_code, command,
+    eid, kind, code, reason, interface) tuples."""
+    return await subscribe_signals(
+        dbus, 'DiscoveryCommandFailed', DISCOVERY_FAILED_MATCH
+    )
+
+
+async def subscribe_transport_errors(dbus):
+    """Collect TransportError signals as (error_code, direction, binding,
+    src_eid, dest_eid, tag, msg_type, command_code, interface) tuples."""
+    return await subscribe_signals(
+        dbus, 'TransportError', TRANSPORT_ERROR_MATCH
+    )
+
+
+async def wait_for_signals(signals, count=1, timeout=5):
+    """Wait until at least count signals have been collected."""
+    with trio.move_on_after(timeout):
+        while len(signals) < count:
+            await trio.sleep(0.05)
+    return len(signals) >= count
+
+
+class DiscoveryFailureEndpoint(Endpoint):
+    """An endpoint that fails one control command (by opcode): either by
+    never responding, or by responding with the given completion code.
+    The failing opcode can be changed, or disabled with None, at any time.
+    """
+
+    def __init__(self, opcode, *args, completion_code=None, **kwargs):
+        self.fail_opcode = opcode
+        self.fail_completion_code = completion_code
+        super().__init__(*args, **kwargs)
+
+    async def handle_mctp_control(self, sock, src_addr, msg):
+        flags, opcode = msg[0:2]
+        if opcode != self.fail_opcode:
+            return await super().handle_mctp_control(sock, src_addr, msg)
+        if self.fail_completion_code is None:
+            # drop the request; mctpd will time out
+            return
+        data = bytes([flags & 0x1F, opcode, self.fail_completion_code])
+        dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+        await sock.send(dst_addr, data)
+
+
+""" A Set Endpoint ID that never gets a response is reported through the
+DiscoveryCommandFailed signal as a timeout for the EID being assigned. """
+async def test_discovery_failed_set_eid_timeout(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(CTRL_SET_ENDPOINT_ID, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    failures = await subscribe_discovery_failures(dbus)
+    transport_errors = await subscribe_transport_errors(dbus)
+
+    with pytest.raises(asyncdbus.errors.DBusError):
+        await mctp.call_setup_endpoint(ep.lladdr)
+
+    assert await wait_for_signals(failures)
+    # mctpd makes a single attempt, so a single failure is reported
+    assert not await wait_for_signals(failures, count=2, timeout=0.5)
+    (cmd_code, command, eid, kind, code, reason, ifname) = failures[0]
+    assert cmd_code == CTRL_SET_ENDPOINT_ID
+    assert command == 'SetEndpointID'
+    assert eid != 0
+    assert kind == DISCOVERY_KIND_TIMEOUT
+    assert code == errno.ETIMEDOUT
+    assert reason == DISCOVERY_REASON_TIMEOUT
+    assert ifname == iface.name
+
+    # TransportError reporting is unchanged by DiscoveryCommandFailed
+    assert await wait_for_signals(transport_errors)
+    assert transport_errors[0][0] == errno.ETIMEDOUT
+    assert transport_errors[0][7] == CTRL_SET_ENDPOINT_ID
+
+
+""" A Set Endpoint ID answered with an error completion code is reported with
+the completion code and its description. """
+async def test_discovery_failed_set_eid_completion_code(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(
+        CTRL_SET_ENDPOINT_ID, iface, bytes([0x1E]), completion_code=0x04
+    )
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    failures = await subscribe_discovery_failures(dbus)
+
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await mctp.call_setup_endpoint(ep.lladdr)
+    assert str(ex.value) == "Endpoint returned failure to Set Endpoint ID"
+
+    assert await wait_for_signals(failures)
+    assert len(failures) == 1
+    (cmd_code, command, eid, kind, code, reason, ifname) = failures[0]
+    assert cmd_code == CTRL_SET_ENDPOINT_ID
+    assert command == 'SetEndpointID'
+    assert eid != 0
+    assert kind == DISCOVERY_KIND_COMPLETION_CODE
+    assert code == 0x04
+    assert reason == DISCOVERY_REASON_NOT_READY
+    assert ifname == iface.name
+
+
+""" A Get Endpoint UUID that never gets a response fails the setup and is
+reported for the EID that was assigned. """
+async def test_discovery_failed_get_uuid_timeout(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(CTRL_GET_ENDPOINT_UUID, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    failures = await subscribe_discovery_failures(dbus)
+
+    with pytest.raises(asyncdbus.errors.DBusError):
+        await mctp.call_setup_endpoint(ep.lladdr)
+
+    assert await wait_for_signals(failures)
+    assert not await wait_for_signals(failures, count=2, timeout=0.5)
+    # Set Endpoint ID succeeded, so the mock endpoint knows its EID
+    assert ep.eid != 0
+    (cmd_code, command, eid, kind, code, reason, ifname) = failures[0]
+    assert cmd_code == CTRL_GET_ENDPOINT_UUID
+    assert command == 'GetEndpointUUID'
+    assert eid == ep.eid
+    assert kind == DISCOVERY_KIND_TIMEOUT
+    assert code == errno.ETIMEDOUT
+    assert reason == DISCOVERY_REASON_TIMEOUT
+    assert ifname == iface.name
+
+
+""" Get Endpoint UUID is optional: an endpoint reporting it as unsupported is
+set up normally and nothing is reported. """
+async def test_discovery_failed_get_uuid_unsupported(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(
+        CTRL_GET_ENDPOINT_UUID, iface, bytes([0x1E]), completion_code=0x05
+    )
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    failures = await subscribe_discovery_failures(dbus)
+
+    (_, _, _, new) = await mctp.call_setup_endpoint(ep.lladdr)
+    assert new
+
+    assert not await wait_for_signals(failures, timeout=0.5)
+    assert failures == []
+
+
+""" A Get Message Type Support that never gets a response is reported. """
+async def test_discovery_failed_get_msg_types_timeout(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(CTRL_GET_MSG_TYPE_SUPPORT, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    failures = await subscribe_discovery_failures(dbus)
+
+    with pytest.raises(asyncdbus.errors.DBusError):
+        await mctp.call_setup_endpoint(ep.lladdr)
+
+    assert await wait_for_signals(failures)
+    assert not await wait_for_signals(failures, count=2, timeout=0.5)
+    (cmd_code, command, eid, kind, code, reason, ifname) = failures[0]
+    assert cmd_code == CTRL_GET_MSG_TYPE_SUPPORT
+    assert command == 'GetMessageTypeSupport'
+    assert eid == ep.eid
+    assert kind == DISCOVERY_KIND_TIMEOUT
+    assert code == errno.ETIMEDOUT
+    assert reason == DISCOVERY_REASON_TIMEOUT
+    assert ifname == iface.name
+
+
+""" An Allocate Endpoint IDs that never gets a response from a bridge is
+reported for the bridge EID. """
+async def test_discovery_failed_allocate_eids_timeout(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    bridge = DiscoveryFailureEndpoint(
+        CTRL_ALLOCATE_ENDPOINT_IDS, iface, bytes([0x1E]), types=[0, 1, 5]
+    )
+    pool_size = 3
+    for _ in range(pool_size):
+        bridge.add_bridged_ep(Endpoint(iface, bytes()))
+    mctpd.network.add_endpoint(bridge)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    failures = await subscribe_discovery_failures(dbus)
+
+    static_eid = 12
+    try:
+        await mctp.call_assign_endpoint_static(
+            bridge.lladdr, static_eid, static_eid + 1, b'', b''
+        )
+    except asyncdbus.errors.DBusError:
+        # the failed pool allocation may or may not fail the assignment;
+        # either way the failure must be reported
+        pass
+
+    assert await wait_for_signals(failures)
+    (cmd_code, command, eid, kind, code, reason, ifname) = failures[0]
+    assert cmd_code == CTRL_ALLOCATE_ENDPOINT_IDS
+    assert command == 'AllocateEndpointIDs'
+    assert eid == static_eid
+    assert kind == DISCOVERY_KIND_TIMEOUT
+    assert code == errno.ETIMEDOUT
+    assert reason == DISCOVERY_REASON_TIMEOUT
+    assert ifname == iface.name
+
+
+""" Recovery of a known endpoint is not discovery: a Set Endpoint ID that
+fails while recovering raises TransportError as before and never
+DiscoveryCommandFailed. """
+async def test_discovery_failed_not_emitted_on_recover(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(None, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (_, _, path, _) = await mctp.call_setup_endpoint(ep.lladdr)
+
+    failures = await subscribe_discovery_failures(dbus)
+    transport_errors = await subscribe_transport_errors(dbus)
+
+    # The endpoint lost its EID (it reset) and then stops answering Set
+    # Endpoint ID: recovery gets as far as re-applying the EID.
+    ep.reset()
+    ep.fail_opcode = CTRL_SET_ENDPOINT_ID
+
+    obj = await dbus.get_proxy_object(MCTPD_C, path)
+    ep_ep = await obj.get_interface(MCTPD_ENDPOINT_I)
+    await ep_ep.call_recover()
+
+    with trio.move_on_after(2 * MCTPD_TRECLAIM):
+        while not any(te[7] == CTRL_SET_ENDPOINT_ID
+                      for te in transport_errors):
+            await trio.sleep(0.05)
+
+    assert any(te[7] == CTRL_SET_ENDPOINT_ID and te[0] == errno.ETIMEDOUT
+               for te in transport_errors)
+    assert failures == []
+
+
+""" EndpointPing is a health probe, not discovery: an unanswered ping to a
+known endpoint, or to an unknown EID, does not emit DiscoveryCommandFailed. """
+async def test_discovery_failed_not_emitted_on_ping(dbus, mctpd):
+    iface = mctpd.system.interfaces[0]
+    ep = DiscoveryFailureEndpoint(None, iface, bytes([0x1E]))
+    mctpd.network.add_endpoint(ep)
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, _, _, _) = await mctp.call_setup_endpoint(ep.lladdr)
+    net = await mctpd_mctp_network_obj(dbus, iface.net)
+    failures = await subscribe_discovery_failures(dbus)
+
+    # EndpointPing uses Get Endpoint UUID
+    ep.fail_opcode = CTRL_GET_ENDPOINT_UUID
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await net.call_endpoint_ping(eid)
+    assert "MCTP Endpoint did not respond" in str(ex.value)
+
+    with pytest.raises(asyncdbus.errors.DBusError) as ex:
+        await net.call_endpoint_ping(200)
+    assert "MCTP Endpoint did not respond" in str(ex.value)
+
+    assert not await wait_for_signals(failures, timeout=0.5)
+    assert failures == []
+
+
+class RoutingBridgeEndpoint(DiscoveryFailureEndpoint):
+    """A bridge that answers Get Routing Table Entries with its bridged
+    endpoints, so mctpd populates (and later refreshes) the pool endpoints.
+    """
+
+    # MCTP_BUS_OWNER_BRIDGE in the endpoint type of Get Endpoint ID
+    BRIDGE_ENDPOINT_TYPE = 0x1 << 4
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(None, *args, **kwargs)
+        self.endpoint_type = self.BRIDGE_ENDPOINT_TYPE
+
+    async def handle_mctp_control(self, sock, src_addr, msg):
+        flags, opcode = msg[0:2]
+        if opcode != CTRL_GET_ROUTING_TABLE_ENTRIES:
+            return await super().handle_mctp_control(sock, src_addr, msg)
+
+        entries = b''.join(
+            bytes([1, br.eid, 0, 0, 0, 0]) for br in self.bridged_eps
+        )
+        data = bytes([flags & 0x1F, opcode, 0x00, 0xFF,
+                      len(self.bridged_eps)]) + entries
+        dst_addr = MCTPSockAddr.for_ep_resp(self, src_addr, sock.addr_ext)
+        await sock.send(dst_addr, data)
+
+
+async def _setup_routing_bridge(dbus, mctpd, bridged_fail_opcode):
+    """Assign a bridge with a one endpoint pool whose bridged endpoint fails
+    bridged_fail_opcode. Returns (bridge, bridged endpoint, bridge EID, BusOwner1
+    interface); the bridged endpoint is populated by mctpd once the bridge has
+    settled."""
+    iface = mctpd.system.interfaces[0]
+    bridge = RoutingBridgeEndpoint(iface, bytes([0x1E]), types=[0, 1, 5])
+    bridge_eid = 12
+    bridged = DiscoveryFailureEndpoint(
+        bridged_fail_opcode, iface, bytes(), eid=bridge_eid + 1, types=[0]
+    )
+    bridge.add_bridged_ep(bridged)
+    mctpd.network.add_endpoint(bridge)
+    mctpd.network.add_endpoint(bridged)
+
+    # The mock system has no gateway route support: give the bridged endpoint
+    # a plain route and a neighbour entry that points at the bridge.
+    await mctpd.system.add_route(
+        mctpd.system.Route(bridged.eid, 1, iface=iface)
+    )
+    await mctpd.system.add_neighbour(
+        mctpd.system.Neighbour(iface, bridge.lladdr, bridged.eid)
+    )
+
+    mctp = await mctpd_mctp_iface_obj(dbus, iface)
+    (eid, _, _, _) = await mctp.call_assign_endpoint_static(
+        bridge.lladdr, bridge_eid, bridge_eid + 1, b'', b''
+    )
+    assert eid == bridge_eid
+    return bridge, bridged, bridge_eid, mctp
+
+
+""" An endpoint behind a bridge that is found through the bridge's routing
+table is being discovered: its failed Get Message Type Support is reported. """
+async def test_discovery_failed_bridged_endpoint_discovery(dbus, mctpd):
+    failures = await subscribe_discovery_failures(dbus)
+    bridge, bridged, bridge_eid, _ = await _setup_routing_bridge(
+        dbus, mctpd, CTRL_GET_MSG_TYPE_SUPPORT
+    )
+
+    # the bridge populates its pool endpoints once it has settled
+    assert await wait_for_signals(failures, timeout=10)
+    (cmd_code, command, eid, kind, code, reason, ifname) = failures[0]
+    assert cmd_code == CTRL_GET_MSG_TYPE_SUPPORT
+    assert command == 'GetMessageTypeSupport'
+    assert eid == bridge_eid + 1
+    assert kind == DISCOVERY_KIND_TIMEOUT
+    assert code == errno.ETIMEDOUT
+    assert reason == DISCOVERY_REASON_TIMEOUT
+
+
+""" Refreshing the properties of an already known endpoint when the bridge's
+routing table is read again is not discovery: its failure keeps raising
+TransportError and does not raise DiscoveryCommandFailed. """
+async def test_discovery_failed_not_emitted_on_routing_table_refresh(
+    dbus, mctpd
+):
+    bridge, bridged, bridge_eid, mctp = await _setup_routing_bridge(
+        dbus, mctpd, None
+    )
+
+    # wait for the bridged endpoint to be populated from the routing table
+    bridged_path = (
+        f'/au/com/codeconstruct/mctp1/networks/1/endpoints/{bridge_eid + 1}'
+    )
+    with trio.fail_after(15):
+        while True:
+            try:
+                await mctpd_mctp_endpoint_common_obj(dbus, bridged_path)
+                break
+            except asyncdbus.errors.DBusError:
+                await trio.sleep(0.2)
+
+    failures = await subscribe_discovery_failures(dbus)
+    transport_errors = await subscribe_transport_errors(dbus)
+
+    # The known bridged endpoint stops answering Get Message Type Support
+    # while mctpd refreshes it.
+    bridged.fail_opcode = CTRL_GET_MSG_TYPE_SUPPORT
+    await mctp.call_get_routing_table(bridge_eid)
+
+    assert await wait_for_signals(transport_errors)
+    assert any(te[7] == CTRL_GET_MSG_TYPE_SUPPORT
+               and te[0] == errno.ETIMEDOUT for te in transport_errors)
+    assert not await wait_for_signals(failures, timeout=0.5)
+    assert failures == []

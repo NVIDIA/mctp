@@ -5,12 +5,14 @@
 #define recvmsg mctpd_test_recvmsg
 #define mctp_nl_route_add mctpd_test_route_add
 #define if_indextoname mctpd_test_if_indextoname
+#define sd_bus_emit_signal mctpd_test_emit_signal
 
 #include "mctpd.c"
 
 #undef mctp_nl_route_add
 #undef recvmsg
 #undef if_indextoname
+#undef sd_bus_emit_signal
 #undef main
 
 #include <stdio.h>
@@ -133,6 +135,65 @@ char *mctpd_test_if_indextoname(unsigned int ifindex, char *ifname)
         errno = ENODEV;
         return NULL;
     }
+}
+
+/* Record the D-Bus signals mctpd emits instead of sending them, so the
+ * tests can check which signals a failed exchange raises. Signals are only
+ * recorded for the two BusOwner1 signals under test. */
+struct emitted_discovery_failure {
+    uint8_t cmd_code;
+    char command[32];
+    uint8_t eid;
+    uint8_t kind;
+    uint32_t code;
+    char reason[128];
+    char ifname[32];
+};
+
+static size_t stub_discovery_failed_count = 0;
+static size_t stub_transport_error_count = 0;
+static struct emitted_discovery_failure stub_discovery_failed;
+
+static void stub_emit_reset(void)
+{
+    stub_discovery_failed_count = 0;
+    stub_transport_error_count = 0;
+    memset(&stub_discovery_failed, 0, sizeof(stub_discovery_failed));
+}
+
+int mctpd_test_emit_signal(sd_bus *bus, const char *path,
+                           const char *interface, const char *member,
+                           const char *types, ...)
+{
+    va_list ap;
+
+    (void)bus;
+    (void)path;
+    if (strcmp(interface, CC_MCTP_DBUS_IFACE_BUSOWNER) != 0)
+        return 0;
+
+    if (strcmp(member, "TransportError") == 0) {
+        stub_transport_error_count++;
+        return 0;
+    }
+    if (strcmp(member, "DiscoveryCommandFailed") != 0)
+        return 0;
+
+    va_start(ap, types);
+    stub_discovery_failed_count++;
+    assert(strcmp(types, "ysyyuss") == 0);
+    stub_discovery_failed.cmd_code = (uint8_t)va_arg(ap, int);
+    snprintf(stub_discovery_failed.command,
+             sizeof(stub_discovery_failed.command), "%s", va_arg(ap, char *));
+    stub_discovery_failed.eid = (uint8_t)va_arg(ap, int);
+    stub_discovery_failed.kind = (uint8_t)va_arg(ap, int);
+    stub_discovery_failed.code = va_arg(ap, uint32_t);
+    snprintf(stub_discovery_failed.reason,
+             sizeof(stub_discovery_failed.reason), "%s", va_arg(ap, char *));
+    snprintf(stub_discovery_failed.ifname,
+             sizeof(stub_discovery_failed.ifname), "%s", va_arg(ap, char *));
+    va_end(ap);
+    return 0;
 }
 
 static struct rtattr *append_attr_blob_fault(uint8_t *base, size_t *used,
@@ -3630,7 +3691,7 @@ static void test_endpoint_send_set_eid_fail(void)
 
     mctp_eid_t new_eid = 0;
     /* sendto will succeed but no response -> timeout */
-    int rc = endpoint_send_set_endpoint_id(&p, &new_eid);
+    int rc = endpoint_send_set_endpoint_id(&p, &new_eid, false);
     ASSERT_NE(rc, 0);
     TEST_PASS();
 }
@@ -3651,7 +3712,7 @@ static void test_query_get_peer_msgtypes_fail(void)
     p.phys.ifindex = 1;
     p.phys.hwaddr_len = 1;
 
-    int rc = query_get_peer_msgtypes(&p);
+    int rc = query_get_peer_msgtypes(&p, false);
     ASSERT_NE(rc, 0); /* will timeout */
     TEST_PASS();
 }
@@ -4288,7 +4349,7 @@ static void test_query_peer_properties_no_bus(void)
     ASSERT_NOT_NULL(p);
     ASSERT_EQ(p->eid, 16);
 
-    int rc = query_peer_properties(p);
+    int rc = query_peer_properties(p, true);
     /* Fails because endpoint_query_peer times out without a real socket,
        but the function still executes its error-path branches */
     ASSERT_NE(rc, 0);
@@ -5125,6 +5186,268 @@ static void test_branch_sweep_batch(void)
     TEST_PASS();
 }
 
+
+/* Tests: DiscoveryCommandFailed                                      */
+
+/* A bus pointer that is never dereferenced: signals go to the stub */
+#define FAKE_BUS ((sd_bus *)0x1)
+
+static void test_discovery_command_names(void)
+{
+    TEST_START("discovery_command_name covers the discovery commands only");
+    ASSERT_EQ(strcmp(discovery_command_name(MCTP_CTRL_CMD_SET_ENDPOINT_ID),
+                     "SetEndpointID"), 0);
+    ASSERT_EQ(strcmp(discovery_command_name(
+                         MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS),
+                     "AllocateEndpointIDs"), 0);
+    ASSERT_EQ(strcmp(discovery_command_name(MCTP_CTRL_CMD_GET_ENDPOINT_UUID),
+                     "GetEndpointUUID"), 0);
+    ASSERT_EQ(strcmp(discovery_command_name(
+                         MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT),
+                     "GetMessageTypeSupport"), 0);
+    ASSERT_NULL(discovery_command_name(MCTP_CTRL_CMD_GET_ENDPOINT_ID));
+    ASSERT_NULL(discovery_command_name(MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES));
+    TEST_PASS();
+}
+
+static void test_classify_discovery_failure(void)
+{
+    TEST_START("classify_discovery_failure");
+    struct ctx ctx = { 0 };
+    struct discovery_failure f;
+    uint8_t resp[4] = { 0 };
+    struct mctp_ctrl_resp *rsp = (struct mctp_ctrl_resp *)resp;
+
+    /* stage based classification ignores the response */
+    ctx.query_fail_stage = MCTP_QUERY_FAIL_SEND;
+    classify_discovery_failure(&ctx, -EHOSTUNREACH, NULL, 0, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_REQUEST_NOT_SENT);
+    ASSERT_EQ((int)f.code, EHOSTUNREACH);
+    ASSERT_EQ(strcmp(f.reason, "request could not be sent"), 0);
+
+    ctx.query_fail_stage = MCTP_QUERY_FAIL_TIMEOUT;
+    classify_discovery_failure(&ctx, -ETIMEDOUT, NULL, 0, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_RESPONSE_TIMEOUT);
+    ASSERT_EQ((int)f.code, ETIMEDOUT);
+    ASSERT_EQ(strcmp(f.reason, "no response received before timeout"), 0);
+
+    ctx.query_fail_stage = MCTP_QUERY_FAIL_RECV;
+    classify_discovery_failure(&ctx, -EIO, NULL, 0, NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ((int)f.code, EIO);
+    ASSERT_EQ(strcmp(f.reason, "response could not be received"), 0);
+
+    /* a response was received: completion codes */
+    ctx.query_fail_stage = MCTP_QUERY_FAIL_NONE;
+    rsp->completion_code = MCTP_CTRL_CC_ERROR_NOT_READY;
+    classify_discovery_failure(&ctx, -ECONNREFUSED, resp, sizeof(resp), NULL,
+                               &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_COMPLETION_CODE);
+    ASSERT_EQ((int)f.code, MCTP_CTRL_CC_ERROR_NOT_READY);
+    ASSERT_EQ(strcmp(f.reason,
+                     "device is not ready (MCTP_CONTROL_MSG_STATUS_ERROR_NOT_READY (0x04))"),
+              0);
+
+    rsp->completion_code = MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD;
+    classify_discovery_failure(&ctx, -ENOTSUP, resp, sizeof(resp), NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_COMPLETION_CODE);
+    ASSERT_EQ((int)f.code, MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD);
+
+    rsp->completion_code = 0x7f;
+    classify_discovery_failure(&ctx, -ECONNREFUSED, resp, sizeof(resp), NULL,
+                               &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_COMPLETION_CODE);
+    ASSERT_EQ(strcmp(f.reason, "completion code 0x7f"), 0);
+
+    /* a response that is not a completion code failure */
+    classify_discovery_failure(&ctx, -ENOMSG, resp, sizeof(resp), NULL, &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ((int)f.code, ENOMSG);
+    ASSERT_EQ(strcmp(f.reason, "invalid response received"), 0);
+
+    /* callers describe rejections that they detected themselves */
+    rsp->completion_code = MCTP_CTRL_CC_SUCCESS;
+    classify_discovery_failure(&ctx, -ECONNREFUSED, resp, sizeof(resp),
+                               "endpoint rejected the EID assignment", &f);
+    ASSERT_EQ(f.kind, DISCOVERY_FAIL_INVALID_RESPONSE);
+    ASSERT_EQ((int)f.code, ECONNREFUSED);
+    ASSERT_EQ(strcmp(f.reason, "endpoint rejected the EID assignment"), 0);
+    TEST_PASS();
+}
+
+static void test_report_discovery_command_failure_emission(void)
+{
+    TEST_START("report_discovery_command_failure emits the signal");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { .nl = test_nl, .bus = FAKE_BUS };
+
+    stub_emit_reset();
+    ctx.query_fail_stage = MCTP_QUERY_FAIL_TIMEOUT;
+    report_discovery_command_failure(&ctx, 101, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     12, -ETIMEDOUT, NULL, 0, NULL);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.cmd_code, MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+    ASSERT_EQ(strcmp(stub_discovery_failed.command, "SetEndpointID"), 0);
+    ASSERT_EQ(stub_discovery_failed.eid, 12);
+    ASSERT_EQ(stub_discovery_failed.kind, DISCOVERY_FAIL_RESPONSE_TIMEOUT);
+    ASSERT_EQ((int)stub_discovery_failed.code, ETIMEDOUT);
+    ASSERT_EQ(strcmp(stub_discovery_failed.reason,
+                     "no response received before timeout"), 0);
+    ASSERT_EQ(strcmp(stub_discovery_failed.ifname, "mctpi2c101"), 0);
+
+    /* commands that are not discovery commands are not reported */
+    stub_emit_reset();
+    report_discovery_command_failure(&ctx, 101, MCTP_CTRL_CMD_GET_ENDPOINT_ID,
+                                     12, -ETIMEDOUT, NULL, 0, NULL);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+
+    /* success is not a failure */
+    report_discovery_command_failure(&ctx, 101, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     12, 0, NULL, 0, NULL);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+
+    /* without a bus there is nothing to emit on; must not crash */
+    ctx.bus = NULL;
+    report_discovery_command_failure(&ctx, 101, MCTP_CTRL_CMD_SET_ENDPOINT_ID,
+                                     12, -ETIMEDOUT, NULL, 0, NULL);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+    TEST_PASS();
+}
+
+/* Peer on ifindex 101 with an unresponsive transport: every command times
+ * out (the mock socket never becomes readable). */
+static void init_discovery_test_peer(struct ctx *ctx, struct peer *p)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->nl = test_nl;
+    ctx->bus = FAKE_BUS;
+    ctx->mctp_timeout = 1000;
+    memset(p, 0, sizeof(*p));
+    p->ctx = ctx;
+    p->state = REMOTE;
+    p->eid = 10;
+    p->net = 1;
+    p->phys.ifindex = 101;
+    p->phys.hwaddr_len = 1;
+    p->phys.hwaddr[0] = 0xCC;
+    stub_emit_reset();
+}
+
+static void test_discovery_failure_set_eid_helper(void)
+{
+    TEST_START("Set Endpoint ID reports discovery failures only when discovering");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx;
+    struct peer p;
+    mctp_eid_t new_eid = 0;
+
+    /* discovery: a timeout is reported once, as before alongside TransportError */
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(endpoint_send_set_endpoint_id(&p, &new_eid, true), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.cmd_code, MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+    ASSERT_EQ(stub_discovery_failed.eid, 10);
+    ASSERT_EQ(stub_discovery_failed.kind, DISCOVERY_FAIL_RESPONSE_TIMEOUT);
+    ASSERT_EQ(strcmp(stub_discovery_failed.ifname, "mctpi2c101"), 0);
+    ASSERT_NE(stub_transport_error_count, 0);
+
+    /* recovery of a known endpoint: TransportError only */
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(endpoint_send_set_endpoint_id(&p, &new_eid, false), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+    ASSERT_NE(stub_transport_error_count, 0);
+
+    /* a send failure is classified as such, with its errno */
+    init_discovery_test_peer(&ctx, &p);
+    fault_mctp_sendto_errno = EHOSTUNREACH;
+    ASSERT_EQ(endpoint_send_set_endpoint_id(&p, &new_eid, true), -EHOSTUNREACH);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.kind, DISCOVERY_FAIL_REQUEST_NOT_SENT);
+    ASSERT_EQ((int)stub_discovery_failed.code, EHOSTUNREACH);
+    ASSERT_EQ(strcmp(stub_discovery_failed.reason,
+                     "request could not be sent"), 0);
+
+    /* an endpoint whose ping already failed is not reported again */
+    init_discovery_test_peer(&ctx, &p);
+    p.ping_failed_once = true;
+    ASSERT_EQ(endpoint_send_set_endpoint_id(&p, &new_eid, true), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+    TEST_PASS();
+}
+
+static void test_discovery_failure_query_helpers(void)
+{
+    TEST_START("Get Message Type Support / Get Endpoint UUID / Allocate EIDs discovery reporting");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx;
+    struct peer p;
+    uint8_t uuid[16];
+    uint8_t alloc_size = 0;
+    mctp_eid_t alloc_start = 0;
+
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(query_get_peer_msgtypes(&p, true), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.cmd_code,
+              MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT);
+    ASSERT_EQ(strcmp(stub_discovery_failed.command, "GetMessageTypeSupport"),
+              0);
+    ASSERT_EQ(stub_discovery_failed.eid, 10);
+
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(query_get_peer_msgtypes(&p, false), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(query_get_peer_uuid(&p, uuid, true), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.cmd_code, MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+    ASSERT_EQ(strcmp(stub_discovery_failed.command, "GetEndpointUUID"), 0);
+
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(query_get_peer_uuid(&p, uuid, false), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+
+    /* pool allocation only happens while enumerating a bridge */
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(endpoint_send_allocate_endpoint_id(&p, 13, 2, alloc_eid,
+                                                 &alloc_size, &alloc_start),
+              -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.cmd_code,
+              MCTP_CTRL_CMD_ALLOCATE_ENDPOINT_IDS);
+    ASSERT_EQ(strcmp(stub_discovery_failed.command, "AllocateEndpointIDs"), 0);
+    ASSERT_EQ(stub_discovery_failed.eid, 10);
+    TEST_PASS();
+}
+
+static void test_discovery_failure_query_peer_properties(void)
+{
+    TEST_START("query_peer_properties reports a failed first query once, and only when discovering");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx;
+    struct peer p;
+
+    /* Core makes a single attempt: one signal, and no later command is
+     * issued after the first failure */
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(query_peer_properties(&p, true), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 1);
+    ASSERT_EQ(stub_discovery_failed.cmd_code,
+              MCTP_CTRL_CMD_GET_MESSAGE_TYPE_SUPPORT);
+
+    /* refresh of a known peer */
+    init_discovery_test_peer(&ctx, &p);
+    ASSERT_EQ(query_peer_properties(&p, false), -ETIMEDOUT);
+    ASSERT_EQ(stub_discovery_failed_count, 0);
+    ASSERT_NE(stub_transport_error_count, 0);
+    TEST_PASS();
+}
+
 int main(void)
 {
     fprintf(stderr, "=== mctpd fault injection tests ===\n");
@@ -5261,6 +5584,12 @@ int main(void)
     test_parse_config_mctp_no_uuid();
     test_parse_config_dyn_range_extra_elements();
     test_request_dbus_fail();
+    test_discovery_command_names();
+    test_classify_discovery_failure();
+    test_report_discovery_command_failure_emission();
+    test_discovery_failure_set_eid_helper();
+    test_discovery_failure_query_helpers();
+    test_discovery_failure_query_peer_properties();
     fprintf(stderr, "\n%d tests, %d failures\n", test_count, test_failures);
     return test_failures > 0 ? 1 : 0;
 }
