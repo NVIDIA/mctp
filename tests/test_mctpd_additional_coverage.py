@@ -650,7 +650,12 @@ class TestRoutingInfoUpdateForwarding:
         rsp = await _send_routing_info_update(sender, mctpd, 1, target_eid)
         assert rsp[2] == MCTP_CTRL_CC_SUCCESS
 
-        # Unknown EID -> full processing -> forwarded to the bridge.
+        # Unknown EID -> full processing -> forwarded to the bridge. The
+        # forward is deferred to the event loop (the sender's response is
+        # not held up by the per-bridge round-trips), so allow it to land.
+        with trio.move_on_after(2):
+            while not bridge.routing_info_updates:
+                await trio.sleep(0.01)
         assert bridge.routing_info_updates == [target_eid]
 
     async def test_rui_not_forwarded_when_eid_is_a_bridge(self, dbus, mctpd):

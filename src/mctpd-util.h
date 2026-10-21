@@ -102,7 +102,7 @@ struct mctp_error {
 	uint8_t payload[MCTP_ERROR_PAYLOAD_SIZE];
 };
 
-const char *phy_transport_binding_to_string(uint8_t id)
+static inline const char *phy_transport_binding_to_string(uint8_t id)
 {
 	if (id == 0x0) {
 		/* It is defined unspecified in DSP0239 but we used for SPI type */
@@ -174,7 +174,7 @@ static inline uint8_t get_media_type_id_from_string(const char *media_type_str)
 	return MCTP_PHYS_MEDIA_UNSPEC;
 }
 /* Helper function to determine binding type from interface name */
-const char *get_binding_from_ifname(const char *ifname)
+static inline const char *get_binding_from_ifname(const char *ifname)
 {
 	// TODO: Get this from the IFLA attribute instead of the interface name
 	if (!ifname)

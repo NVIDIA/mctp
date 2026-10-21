@@ -7,6 +7,7 @@
 #define if_indextoname mctpd_test_if_indextoname
 
 #include "mctpd.c"
+#include "mctpd-async.c"
 
 #undef mctp_nl_route_add
 #undef recvmsg
@@ -2804,30 +2805,6 @@ static void test_add_net_and_del(void)
 	TEST_PASS();
 }
 
-/* Test: endpoint_assign_eid no net                                   */
-static void test_endpoint_assign_eid_no_net(void)
-{
-	TEST_START("endpoint_assign_eid no net");
-	init_test_nl();
-	if (!test_nl) {
-		TEST_PASS();
-		return;
-	}
-
-	struct ctx ctx = { 0 };
-	ctx.nl = test_nl;
-	setup_config_defaults(&ctx);
-
-	dest_phys d = { .ifindex = 999 }; /* Unknown interface -> no net */
-	struct peer *p = NULL;
-	sd_bus_error berr = SD_BUS_ERROR_NULL;
-
-	int rc = endpoint_assign_eid(&ctx, &berr, &d, &p, 0, NULL, 0, false);
-	ASSERT_NE(rc, 0);
-	sd_bus_error_free(&berr);
-
-	TEST_PASS();
-}
 
 /* Test: control message handlers directly (short messages, etc.)     */
 static void test_handle_control_handlers(void)
@@ -4133,181 +4110,6 @@ static void test_query_get_peer_msgtypes_fail(void)
 	TEST_PASS();
 }
 
-static void test_query_routing_table_pool_branches(void)
-{
-	TEST_START("query_routing_table pool/static branches");
-	init_test_nl();
-	if (!test_nl) {
-		TEST_PASS();
-		return;
-	}
-
-	struct ctx ctx;
-	struct net n;
-	struct peer p = { 0 };
-
-	make_ctx_with_net(&ctx, &n, 1);
-	ctx.nl = test_nl;
-	p.ctx = &ctx;
-	p.state = REMOTE;
-	p.net = 1;
-	p.eid = 44;
-	p.phys.ifindex = 1;
-	p.phys.hwaddr_len = 1;
-	p.phys.hwaddr[0] = 0x44;
-	p.endpoint_type = SET_ENDPOINT_TYPE(MCTP_BUS_OWNER_BRIDGE);
-	p.pool_size = 0;
-	p.pool_start = 0;
-	p.num_ignore_message_types = 1;
-	p.ignore_message_types = malloc(1);
-	if (p.ignore_message_types)
-		p.ignore_message_types[0] = 0;
-
-	fault_mctp_recvfrom_addrlen = sizeof(struct sockaddr_mctp_ext);
-
-	/* 1) Active in-pool endpoint */
-	{
-		uint8_t respbuf[64] = { 0 };
-		struct mctp_ctrl_resp_get_routing_table *resp =
-			(struct mctp_ctrl_resp_get_routing_table *)respbuf;
-		struct get_routing_table_entry *entry =
-			(struct get_routing_table_entry
-				 *)(resp->routing_entries);
-
-		resp->ctrl_hdr.rq_dgram_inst = ctx.iid & RQDI_IID_MASK;
-		resp->ctrl_hdr.command_code =
-			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
-		resp->completion_code = MCTP_CTRL_CC_SUCCESS;
-		resp->next_entry_handle = 0xFF;
-		resp->number_of_entries = 1;
-		entry->eid_range_size = 1;
-		entry->starting_eid = 45;
-		entry->entry_type = 0;
-		entry->phys_transport_binding_id = 0;
-		entry->phys_media_type_id = 0;
-		entry->phys_address_size = 0;
-
-		mctp_mock_queue_response(
-			respbuf,
-			sizeof(struct mctp_ctrl_resp_get_routing_table) +
-				sizeof(struct get_routing_table_entry) - 1);
-	}
-
-	/* pool_size==0 + bridge type -> static pool branch with a valid response */
-	int rc = query_routing_table(&p);
-	ASSERT_EQ(rc, -110);
-	ASSERT_EQ(p.pool_size, 0);
-	ASSERT_EQ(p.pool_start, 0);
-	free(p.ignore_message_types);
-	p.ignore_message_types = NULL;
-	p.num_ignore_message_types = 0;
-
-	/* 2) Skip paths: own EID, out-of-range, ignored EID */
-	{
-		uint8_t respbuf[96] = { 0 };
-		struct mctp_ctrl_resp_get_routing_table *resp =
-			(struct mctp_ctrl_resp_get_routing_table *)respbuf;
-		struct get_routing_table_entry *entry =
-			(struct get_routing_table_entry
-				 *)(resp->routing_entries);
-
-		p.ignore_eids = malloc(1);
-		if (p.ignore_eids) {
-			p.ignore_eids[0] = 46;
-			p.num_ignore_eids = 1;
-		}
-
-		resp->ctrl_hdr.rq_dgram_inst = ctx.iid & RQDI_IID_MASK;
-		resp->ctrl_hdr.command_code =
-			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
-		resp->completion_code = MCTP_CTRL_CC_SUCCESS;
-		resp->next_entry_handle = 0xFF;
-		resp->number_of_entries = 3;
-
-		entry[0].eid_range_size = 1;
-		entry[0].starting_eid = p.eid;
-		entry[0].entry_type = 0;
-		entry[0].phys_transport_binding_id = 0;
-		entry[0].phys_media_type_id = 0;
-		entry[0].phys_address_size = 0;
-
-		entry[1].eid_range_size = 1;
-		entry[1].starting_eid = 7;
-		entry[1].entry_type = 0;
-		entry[1].phys_transport_binding_id = 0;
-		entry[1].phys_media_type_id = 0;
-		entry[1].phys_address_size = 0;
-
-		entry[2].eid_range_size = 1;
-		entry[2].starting_eid = 46;
-		entry[2].entry_type = 0;
-		entry[2].phys_transport_binding_id = 0;
-		entry[2].phys_media_type_id = 0;
-		entry[2].phys_address_size = 0;
-
-		mctp_mock_queue_response(
-			respbuf,
-			sizeof(struct mctp_ctrl_resp_get_routing_table) +
-				3 * sizeof(struct get_routing_table_entry) - 1);
-		rc = query_routing_table(&p);
-		ASSERT_EQ(rc, -110);
-		free(p.ignore_eids);
-		p.ignore_eids = NULL;
-		p.num_ignore_eids = 0;
-	}
-
-	/* 3) Non-static bridge with inactive existing endpoint -> remove path */
-	{
-		struct link link = { 0 };
-		dest_phys d = { .ifindex = 1, .hwaddr_len = 1 };
-		struct peer *existing = NULL;
-		uint8_t respbuf[64] = { 0 };
-		struct mctp_ctrl_resp_get_routing_table *resp =
-			(struct mctp_ctrl_resp_get_routing_table *)respbuf;
-
-		link.ifindex = 1;
-		link.ctx = &ctx;
-		link.service_state = SERVICE_STATE_STARTING;
-		link.path = "/au/com/codeconstruct/mctp1/interfaces/mctpi2c0";
-		mctp_nl_set_link_userdata(ctx.nl, 1, &link);
-
-		p.pool_start = 40;
-		p.pool_size = 4;
-		p.endpoint_type = SET_ENDPOINT_TYPE(MCTP_BUS_OWNER_BRIDGE);
-
-		d.hwaddr[0] = 0x66;
-		rc = add_peer(&ctx, &d, 41, 1, &existing, false);
-		if (rc == 0 && existing)
-			existing->state = REMOTE;
-
-		resp->ctrl_hdr.rq_dgram_inst = ctx.iid & RQDI_IID_MASK;
-		resp->ctrl_hdr.command_code =
-			MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
-		resp->completion_code = MCTP_CTRL_CC_SUCCESS;
-		resp->next_entry_handle = 0xFF;
-		resp->number_of_entries = 0;
-
-		mctp_mock_queue_response(
-			respbuf,
-			sizeof(struct mctp_ctrl_resp_get_routing_table));
-		rc = query_routing_table(&p);
-		ASSERT_EQ(rc, -110);
-
-		p.pool_start = 0;
-		p.pool_size = 0;
-		mctp_nl_set_link_userdata(ctx.nl, 1, NULL);
-	}
-
-	/* non-bridge with pool_size==0 -> early "Not a Bridge peer" branch */
-	p.endpoint_type = MCTP_SIMPLE_ENDPOINT;
-	rc = query_routing_table(&p);
-	ASSERT_EQ(rc, -1);
-
-	fault_mctp_recvfrom_addrlen = 0;
-	cleanup_ctx(&ctx);
-
-	TEST_PASS();
-}
 
 static void test_remove_peer_with_degraded(void)
 {
@@ -4921,59 +4723,6 @@ static void test_query_peer_properties_no_bus(void)
 	TEST_PASS();
 }
 
-static void test_endpoint_assign_eid_dynamic_full(void)
-{
-	TEST_START("endpoint_assign_eid dynamic EID exhaustion");
-	queue_single_mctp_link_dump(101, "mctpi2c101", 1);
-	init_test_nl();
-	if (!test_nl) {
-		TEST_PASS();
-		return;
-	}
-	struct ctx ctx = { 0 };
-	ctx.nl = test_nl;
-	setup_config_defaults(&ctx);
-	ctx.dyn_eid_min = 0x08;
-	ctx.dyn_eid_max = 0x09;
-	int rc = setup_bus(&ctx);
-	if (rc < 0) {
-		TEST_PASS();
-		return;
-	}
-	rc = add_net(&ctx, 1);
-	if (rc < 0) {
-		sd_event_unref(ctx.event);
-		sd_bus_flush_close_unrefp(&ctx.bus);
-		TEST_PASS();
-		return;
-	}
-
-	dest_phys d1 = { .ifindex = 101, .hwaddr_len = 1 };
-	d1.hwaddr[0] = 0xA1;
-	struct peer *p1 = NULL;
-	sd_bus_error berr = SD_BUS_ERROR_NULL;
-
-	/* Fill both dynamic slots */
-	ASSERT_EQ(add_peer(&ctx, &d1, 0x08, 1, &p1, false), 0);
-
-	dest_phys d2 = { .ifindex = 101, .hwaddr_len = 1 };
-	d2.hwaddr[0] = 0xA2;
-	struct peer *p2 = NULL;
-	ASSERT_EQ(add_peer(&ctx, &d2, 0x09, 1, &p2, false), 0);
-
-	/* Now try to assign with all EIDs taken -> should fail */
-	dest_phys d3 = { .ifindex = 101, .hwaddr_len = 1 };
-	d3.hwaddr[0] = 0xA3;
-	struct peer *p3 = NULL;
-	rc = endpoint_assign_eid(&ctx, &berr, &d3, &p3, 0, NULL, 0, false);
-	ASSERT_NE(rc, 0);
-	sd_bus_error_free(&berr);
-
-	free_nets(&ctx);
-	sd_bus_flush_close_unrefp(&ctx.bus);
-	sd_event_unref(ctx.event);
-	TEST_PASS();
-}
 
 static void test_log_mctp_error_binding_branches(void)
 {
@@ -5285,49 +5034,6 @@ static void test_log_mctp_error_ctrl_msg_branch(void)
 	TEST_PASS();
 }
 
-static void test_endpoint_assign_eid_static(void)
-{
-	TEST_START("endpoint_assign_eid with static EID");
-	queue_single_mctp_link_dump(101, "mctpi2c101", 1);
-	if (test_nl) {
-		mctp_nl_close(test_nl);
-		test_nl = NULL;
-	}
-	init_test_nl();
-	if (!test_nl) {
-		TEST_PASS();
-		return;
-	}
-	struct ctx ctx = { 0 };
-	ctx.nl = test_nl;
-	setup_config_defaults(&ctx);
-	int rc = setup_bus(&ctx);
-	if (rc < 0) {
-		test_nl = NULL;
-		TEST_PASS();
-		return;
-	}
-	rc = add_net(&ctx, 1);
-	ASSERT_EQ(rc, 0);
-
-	dest_phys d = { .ifindex = 101, .hwaddr_len = 1 };
-	d.hwaddr[0] = 0xB0;
-	struct peer *p = NULL;
-	sd_bus_error berr = SD_BUS_ERROR_NULL;
-
-	/* Assign with a specific static EID */
-	rc = endpoint_assign_eid(&ctx, &berr, &d, &p, 100, NULL, 0, false);
-	/* endpoint_send_set_endpoint_id will fail (mock), so rc < 0 expected
-       but it exercises the static_eid branch (lines 2679-2684) */
-	ASSERT_NE(rc, 0);
-	sd_bus_error_free(&berr);
-
-	free_nets(&ctx);
-	sd_bus_flush_close_unrefp(&ctx.bus);
-	sd_event_unref(ctx.event);
-	test_nl = NULL;
-	TEST_PASS();
-}
 
 static void test_clear_interface_addrs_with_peers(void)
 {
@@ -6149,6 +5855,550 @@ static void test_endpoint_send_set_eid_reports_discovery_failure(void)
 	TEST_PASS();
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Async-path coverage for the removed sync helpers                     */
+/* (endpoint_assign_eid / endpoint_send_set_endpoint_id /              */
+/*  query_routing_table). The behaviours are unchanged; the entry      */
+/* points are endpoint_assign_prepare_peer (sync prep, still live),    */
+/* op_after_set_endpoint_id (Set EID decoder) and the async            */
+/* routing_table_loop_start driven on an sd_event loop.                */
+/* ------------------------------------------------------------------ */
+
+static int async_done_rc;
+static bool async_done_called;
+
+static void async_test_done(struct pending_op *op, int rc, uint8_t *resp,
+                            size_t resp_len,
+                            const struct sockaddr_mctp_ext *resp_addr)
+{
+    (void)resp_len; (void)resp_addr;
+    free(resp);
+    async_done_rc = rc;
+    async_done_called = true;
+    pending_op_cleanup(op);
+}
+
+static struct pending_op *make_synthetic_op(struct ctx *ctx, struct peer *peer)
+{
+    struct pending_op *op = calloc(1, sizeof(*op));
+    if (!op) return NULL;
+    op->ctx = ctx;
+    op->call = NULL;
+    op->sock_fd = -1;
+    op->peer = peer;
+    async_done_rc = 0;
+    async_done_called = false;
+    return op;
+}
+
+enum {
+    RUN_UNTIL_DONE_MAX_ITERATIONS = 2000,
+    RUN_UNTIL_DONE_WAIT_US = 10000,
+    ROUTING_RESPONSE_CAPACITY = 64,
+};
+
+/* Run the loop until the done callback fires or we give up. */
+static void run_until_done(sd_event *ev)
+{
+    for (int i = 0; i < RUN_UNTIL_DONE_MAX_ITERATIONS && !async_done_called;
+         i++)
+        sd_event_run(ev, RUN_UNTIL_DONE_WAIT_US);
+}
+
+static void test_assign_prepare_peer_no_net(void)
+{
+    TEST_START("endpoint_assign_prepare_peer no net");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+    setup_config_defaults(&ctx);
+
+    dest_phys d = { .ifindex = 999 }; /* Unknown interface -> no net */
+    struct peer *p = NULL;
+    sd_bus_error berr = SD_BUS_ERROR_NULL;
+
+    int rc = endpoint_assign_prepare_peer(&ctx, &berr, &d, 0, false, &p);
+    ASSERT_NE(rc, 0);
+    ASSERT_NULL(p);
+    sd_bus_error_free(&berr);
+
+    TEST_PASS();
+}
+
+static void test_assign_prepare_peer_dynamic_full(void)
+{
+    TEST_START("endpoint_assign_prepare_peer dynamic EID exhaustion");
+    /* Force a fresh NL so it picks up the queued link dump; otherwise the
+     * shared test_nl from an earlier test is reused and the net lookup can
+     * fail instead of the EID allocation. */
+    if (test_nl) {
+        mctp_nl_close(test_nl);
+        test_nl = NULL;
+    }
+    queue_single_mctp_link_dump(101, "mctpi2c101", 1);
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+    setup_config_defaults(&ctx);
+    ctx.dyn_eid_min = 0x08;
+    ctx.dyn_eid_max = 0x09;
+    int rc = setup_bus(&ctx);
+    if (rc < 0) { TEST_PASS(); return; }
+    rc = add_net(&ctx, 1);
+    if (rc < 0) { sd_event_unref(ctx.event); sd_bus_flush_close_unrefp(&ctx.bus); TEST_PASS(); return; }
+
+    dest_phys d1 = { .ifindex = 101, .hwaddr_len = 1 };
+    d1.hwaddr[0] = 0xA1;
+    struct peer *p1 = NULL;
+    sd_bus_error berr = SD_BUS_ERROR_NULL;
+
+    /* Fill both dynamic slots */
+    ASSERT_EQ(add_peer(&ctx, &d1, 0x08, 1, &p1, false), 0);
+
+    dest_phys d2 = { .ifindex = 101, .hwaddr_len = 1 };
+    d2.hwaddr[0] = 0xA2;
+    struct peer *p2 = NULL;
+    ASSERT_EQ(add_peer(&ctx, &d2, 0x09, 1, &p2, false), 0);
+
+    /* All EIDs taken -> prep must fail before any wire step */
+    dest_phys d3 = { .ifindex = 101, .hwaddr_len = 1 };
+    d3.hwaddr[0] = 0xA3;
+    struct peer *p3 = NULL;
+    rc = endpoint_assign_prepare_peer(&ctx, &berr, &d3, 0, false, &p3);
+    ASSERT_EQ(rc, -EADDRNOTAVAIL);
+    ASSERT_NULL(p3);
+    ASSERT_NOT_NULL(berr.message);
+    ASSERT_EQ(strcmp(berr.message, "Ran out of EIDs"), 0);
+    sd_bus_error_free(&berr);
+
+    free_nets(&ctx);
+    sd_bus_flush_close_unrefp(&ctx.bus);
+    sd_event_unref(ctx.event);
+    TEST_PASS();
+}
+
+static void test_assign_prepare_peer_static(void)
+{
+    TEST_START("endpoint_assign_prepare_peer with static EID");
+    queue_single_mctp_link_dump(101, "mctpi2c101", 1);
+    if (test_nl) { mctp_nl_close(test_nl); test_nl = NULL; }
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { 0 };
+    ctx.nl = test_nl;
+    setup_config_defaults(&ctx);
+    int rc = setup_bus(&ctx);
+    if (rc < 0) { test_nl = NULL; TEST_PASS(); return; }
+    rc = add_net(&ctx, 1);
+    ASSERT_EQ(rc, 0);
+
+    dest_phys d = { .ifindex = 101, .hwaddr_len = 1 };
+    d.hwaddr[0] = 0xB0;
+    struct peer *p = NULL;
+    sd_bus_error berr = SD_BUS_ERROR_NULL;
+
+    /* Static EID branch: the peer must be created at exactly that EID. */
+    rc = endpoint_assign_prepare_peer(&ctx, &berr, &d, 100, false, &p);
+    ASSERT_EQ(rc, 0);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(p->eid, 100);
+    sd_bus_error_free(&berr);
+
+    /* Same static EID again while in use -> must be rejected. */
+    dest_phys d2 = { .ifindex = 101, .hwaddr_len = 1 };
+    d2.hwaddr[0] = 0xB1;
+    struct peer *p2 = NULL;
+    rc = endpoint_assign_prepare_peer(&ctx, &berr, &d2, 100, false, &p2);
+    ASSERT_NE(rc, 0);
+    sd_bus_error_free(&berr);
+
+    ASSERT_EQ(remove_peer(p), 0);
+    free_nets(&ctx);
+    sd_bus_flush_close_unrefp(&ctx.bus);
+    sd_event_unref(ctx.event);
+    test_nl = NULL;
+    TEST_PASS();
+}
+
+static void test_set_eid_decode_failures(void)
+{
+    TEST_START("op_after_set_endpoint_id failure decode");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+    struct ctx ctx = { .nl = test_nl, .mctp_timeout = 2000 };
+    setup_config_defaults(&ctx);
+    if (sd_event_default(&ctx.event) < 0) { TEST_PASS(); return; }
+
+    struct peer p = { 0 };
+    p.ctx = &ctx;
+    p.state = REMOTE;
+    p.eid = 10;
+    p.net = 1;
+    p.phys.ifindex = 1;
+    p.phys.hwaddr_len = 1;
+    p.phys.hwaddr[0] = 0xCC;
+
+    /* 1) transport timeout passthrough -> set_err: pool reset, op freed */
+    p.pool_size = 3; p.pool_start = 11;
+    struct pending_op *op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    op->dest = p.phys;
+    op_after_set_endpoint_id(op, -ETIMEDOUT, NULL, 0, NULL);
+    ASSERT_EQ(p.pool_size, 0);
+    ASSERT_EQ(p.pool_start, 0);
+
+    /* 2) short response -> -ENOMSG path */
+    p.pool_size = 3; p.pool_start = 11;
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    op->dest = p.phys;
+    uint8_t *shortbuf = malloc(2);
+    shortbuf[0] = 0; shortbuf[1] = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    op_after_set_endpoint_id(op, 0, shortbuf, 2, NULL);
+    ASSERT_EQ(p.pool_size, 0);
+
+    /* 3) wrong opcode in response -> -ENOMSG path */
+    p.pool_size = 3; p.pool_start = 11;
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    op->dest = p.phys;
+    struct mctp_ctrl_resp_set_eid *r = calloc(1, sizeof(*r));
+    r->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ENDPOINT_ID;
+    op_after_set_endpoint_id(op, 0, (uint8_t *)r, sizeof(*r), NULL);
+    ASSERT_EQ(p.pool_size, 0);
+
+    /* 4) device rejected assignment and reported an invalid EID */
+    p.pool_size = 3; p.pool_start = 11;
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    op->dest = p.phys;
+    r = calloc(1, sizeof(*r));
+    r->ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    r->status = 0x10;      /* assignment status = rejected */
+    r->eid_set = 0xFF;     /* invalid unicast */
+    op_after_set_endpoint_id(op, 0, (uint8_t *)r, sizeof(*r), NULL);
+    ASSERT_EQ(p.pool_size, 0);
+    ASSERT_EQ(p.eid, 10);  /* peer untouched */
+
+    /* 5) accepted but with an invalid EID */
+    p.pool_size = 3; p.pool_start = 11;
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    op->dest = p.phys;
+    r = calloc(1, sizeof(*r));
+    r->ctrl_hdr.command_code = MCTP_CTRL_CMD_SET_ENDPOINT_ID;
+    r->status = 0x00;
+    r->eid_set = 0x00;     /* invalid */
+    op_after_set_endpoint_id(op, 0, (uint8_t *)r, sizeof(*r), NULL);
+    ASSERT_EQ(p.pool_size, 0);
+    ASSERT_EQ(p.eid, 10);
+
+    sd_event_unref(ctx.event);
+    TEST_PASS();
+}
+
+static void test_routing_table_loop_async(void)
+{
+    TEST_START("routing_table_loop_start pool/static branches (async)");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+
+    struct ctx ctx;
+    struct net n;
+    struct peer p = { 0 };
+
+    make_ctx_with_net(&ctx, &n, 1);
+    ctx.nl = test_nl;
+    ctx.mctp_timeout = 2000; /* 2ms: unanswered per-EID GETs time out fast */
+    if (sd_event_default(&ctx.event) < 0) { cleanup_ctx(&ctx); TEST_PASS(); return; }
+
+    p.ctx = &ctx;
+    p.state = REMOTE;
+    p.net = 1;
+    p.eid = 44;
+    p.phys.ifindex = 1;
+    p.phys.hwaddr_len = 1;
+    p.phys.hwaddr[0] = 0x44;
+
+    struct pending_op *op;
+
+    /* A) non-bridge with pool_size==0 -> immediate "Not a Bridge peer" done(-1) */
+    p.endpoint_type = MCTP_SIMPLE_ENDPOINT;
+    p.pool_size = 0; p.pool_start = 0;
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    routing_table_loop_start(op, &p, async_test_done);
+    ASSERT_EQ(async_done_called, true);
+    ASSERT_EQ(async_done_rc, -1);
+
+    /* B) bridge, pool [40..43]; existing peer 42 is NOT in the reported
+     *    table -> must be removed; reported 41 is active -> walked. */
+    struct link link = { 0 };
+    link.ifindex = 1;
+    link.ctx = &ctx;
+    link.service_state = SERVICE_STATE_STARTING;
+    link.path = "/au/com/codeconstruct/mctp1/interfaces/mctpi2c0";
+    mctp_nl_set_link_userdata(ctx.nl, 1, &link);
+
+    p.endpoint_type = SET_ENDPOINT_TYPE(MCTP_BUS_OWNER_BRIDGE);
+    p.pool_start = 40;
+    p.pool_size = 4;
+
+    dest_phys d = { .ifindex = 1, .hwaddr_len = 1 };
+    d.hwaddr[0] = 0x66;
+    struct peer *stale = NULL;
+    ASSERT_EQ(add_peer(&ctx, &d, 42, 1, &stale, false), 0);
+    ASSERT_NOT_NULL(stale);
+    stale->state = REMOTE;
+
+    /* The fault-injection socket mock never becomes EPOLLIN-readable (it
+     * closes the far end of a datagram socketpair), so deliver the
+     * fragment through the engine's own completion point instead of the
+     * wire: pending_op_step_complete tears down the step's io/timer
+     * sources and invokes op_after_get_routing_table_entry exactly as
+     * cb_op_io would after its IID/type checks. */
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    routing_table_loop_start(op, &p, async_test_done);
+    ASSERT_EQ(async_done_called, false); /* fragment request in flight */
+    {
+        size_t len = sizeof(struct mctp_ctrl_resp_get_routing_table) +
+                     sizeof(struct get_routing_table_entry) - 1;
+        uint8_t *buf = calloc(1, ROUTING_RESPONSE_CAPACITY);
+        struct mctp_ctrl_resp_get_routing_table *resp = (void *)buf;
+        struct get_routing_table_entry *entry =
+            (struct get_routing_table_entry *)(resp->routing_entries);
+        struct sockaddr_mctp_ext from = { 0 };
+
+        resp->ctrl_hdr.rq_dgram_inst = op->iid; /* echo the request IID */
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 1;
+        entry->eid_range_size = 1;
+        entry->starting_eid = 41;
+        pending_op_step_complete(op, 0, buf, len, &from);
+    }
+    /* Per-EID property GETs for active EID 41 go unanswered -> time out
+     * on the loop; finalize continues past them. */
+    run_until_done(ctx.event);
+    ASSERT_EQ(async_done_called, true);
+    ASSERT_EQ(async_done_rc, 0);
+
+    /* Inactive pool member removed by the finalize pass. */
+    ASSERT_NULL(find_peer_by_addr(&ctx, 42, 1));
+    /* Bridge's own pool bookkeeping untouched. */
+    ASSERT_EQ(p.pool_start, 40);
+    ASSERT_EQ(p.pool_size, 4);
+
+    /* C) static-pool bridge (pool_size==0 + bridge type) with an empty
+     *    table -> pool fields restored to 0 on completion. */
+    p.pool_start = 0;
+    p.pool_size = 0;
+    op = make_synthetic_op(&ctx, &p);
+    ASSERT_NOT_NULL(op);
+    routing_table_loop_start(op, &p, async_test_done);
+    ASSERT_EQ(async_done_called, false);
+    {
+        uint8_t *buf = calloc(1, sizeof(struct mctp_ctrl_resp_get_routing_table));
+        struct mctp_ctrl_resp_get_routing_table *resp = (void *)buf;
+        struct sockaddr_mctp_ext from = { 0 };
+        resp->ctrl_hdr.rq_dgram_inst = op->iid; /* echo the request IID */
+        resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+        resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+        resp->next_entry_handle = 0xFF;
+        resp->number_of_entries = 0;
+        pending_op_step_complete(op, 0, buf,
+                                 sizeof(struct mctp_ctrl_resp_get_routing_table),
+                                 &from);
+    }
+    run_until_done(ctx.event);
+    ASSERT_EQ(async_done_called, true);
+    ASSERT_EQ(async_done_rc, 0);
+    ASSERT_EQ(p.pool_size, 0);
+    ASSERT_EQ(p.pool_start, 0);
+
+    /* Cleanup any pool peers the walk created. */
+    for (int eid = 0; eid < 256; eid++)
+        if (n.peers[eid] && n.peers[eid] != &p)
+            ASSERT_EQ(remove_peer(n.peers[eid]), 0);
+
+    mctp_nl_set_link_userdata(ctx.nl, 1, NULL);
+    sd_event_unref(ctx.event);
+    cleanup_ctx(&ctx);
+    TEST_PASS();
+}
+
+/* Deliver a one-entry Get Routing Table response (EID 41 active) so the
+ * walk hands over to the per-EID pool finalize stage. */
+static void deliver_routing_fragment_eid41(struct pending_op *op)
+{
+    size_t len = sizeof(struct mctp_ctrl_resp_get_routing_table) +
+                 sizeof(struct get_routing_table_entry) - 1;
+    uint8_t *buf = calloc(1, ROUTING_RESPONSE_CAPACITY);
+    struct mctp_ctrl_resp_get_routing_table *resp = (void *)buf;
+    struct get_routing_table_entry *entry =
+        (struct get_routing_table_entry *)(resp->routing_entries);
+    struct sockaddr_mctp_ext from = { 0 };
+
+    resp->ctrl_hdr.rq_dgram_inst = op->iid; /* echo the request IID */
+    resp->ctrl_hdr.command_code = MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES;
+    resp->completion_code = MCTP_CTRL_CC_SUCCESS;
+    resp->next_entry_handle = 0xFF;
+    resp->number_of_entries = 1;
+    entry->eid_range_size = 1;
+    entry->starting_eid = 41;
+    pending_op_step_complete(op, 0, buf, len, &from);
+}
+
+/* Caller disconnect (pending_op_cleanup) while pool finalize is querying a
+ * downstream EID. op->peer is then the downstream peer, but the peer owned
+ * by the op is the bridge. */
+static void test_cleanup_during_pool_finalize(void)
+{
+    TEST_START("pending_op_cleanup during pool finalize");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+
+    struct ctx ctx;
+    struct net n;
+
+    make_ctx_with_net(&ctx, &n, 1);
+    ctx.nl = test_nl;
+    ctx.mctp_timeout = 2000;
+    if (sd_event_default(&ctx.event) < 0) { cleanup_ctx(&ctx); TEST_PASS(); return; }
+
+    struct link link = { 0 };
+    link.ifindex = 1;
+    link.ctx = &ctx;
+    link.service_state = SERVICE_STATE_STARTING;
+    link.path = "/au/com/codeconstruct/mctp1/interfaces/mctpi2c0";
+    mctp_nl_set_link_userdata(ctx.nl, 1, &link);
+
+    dest_phys d = { .ifindex = 1, .hwaddr_len = 1 };
+    d.hwaddr[0] = 0x44;
+
+    for (int is_assign = 1; is_assign >= 0; is_assign--) {
+        struct peer *bridge = NULL;
+        struct pending_op *op;
+
+        ASSERT_EQ(add_peer(&ctx, &d, 44, 1, &bridge, false), 0);
+        bridge->state = REMOTE;
+        bridge->is_direct_endpoint = true; /* as set by assign_after_qpp_done */
+        bridge->endpoint_type = SET_ENDPOINT_TYPE(MCTP_BUS_OWNER_BRIDGE);
+        bridge->pool_start = 40;
+        bridge->pool_size = 4;
+
+        op = make_synthetic_op(&ctx, bridge);
+        ASSERT_NOT_NULL(op);
+        /* Assign owns (and may remove) the bridge it created;
+         * GetRoutingTable does not. */
+        op->is_dummy = is_assign;
+        routing_table_loop_start(op, bridge, async_test_done);
+        ASSERT_EQ(async_done_called, false);
+        deliver_routing_fragment_eid41(op);
+
+        /* Finalize is now querying the new downstream EID 41; the
+         * per-EID GETs are unanswered so it stays in flight. */
+        ASSERT_EQ(async_done_called, false);
+        ASSERT_NOT_NULL(op->finalize_active);
+        ASSERT_NOT_NULL(find_peer_by_addr(&ctx, 41, 1));
+        ASSERT_EQ(op->peer == bridge, false);
+
+        pending_op_cleanup(op);
+
+        if (is_assign) {
+            /* The bridge and its pool members are gone. */
+            ASSERT_NULL(find_peer_by_addr(&ctx, 44, 1));
+            ASSERT_NULL(find_peer_by_addr(&ctx, 41, 1));
+        } else {
+            /* A non-owning op must leave the bridge in place. */
+            ASSERT_NOT_NULL(find_peer_by_addr(&ctx, 44, 1));
+            ASSERT_EQ(remove_peer(bridge), 0);
+        }
+    }
+
+    mctp_nl_set_link_userdata(ctx.nl, 1, NULL);
+    sd_event_unref(ctx.event);
+    cleanup_ctx(&ctx);
+    TEST_PASS();
+}
+
+/* Cancelling a GetRoutingTable (non-owning op) on a static-pool bridge
+ * (pool_size == 0) must undo the temporary full-range pool that
+ * routing_table_loop_start() installs, whether the cancel lands during the
+ * fragment walk or during pool finalize. */
+static void test_cleanup_restores_static_pool(void)
+{
+    TEST_START("pending_op_cleanup restores static pool on cancel");
+    init_test_nl();
+    if (!test_nl) { TEST_PASS(); return; }
+
+    struct ctx ctx;
+    struct net n;
+
+    make_ctx_with_net(&ctx, &n, 1);
+    ctx.nl = test_nl;
+    ctx.mctp_timeout = 2000;
+    if (sd_event_default(&ctx.event) < 0) { cleanup_ctx(&ctx); TEST_PASS(); return; }
+
+    struct link link = { 0 };
+    link.ifindex = 1;
+    link.ctx = &ctx;
+    link.service_state = SERVICE_STATE_STARTING;
+    link.path = "/au/com/codeconstruct/mctp1/interfaces/mctpi2c0";
+    mctp_nl_set_link_userdata(ctx.nl, 1, &link);
+
+    dest_phys d = { .ifindex = 1, .hwaddr_len = 1 };
+    d.hwaddr[0] = 0x44;
+
+    for (int in_finalize = 0; in_finalize <= 1; in_finalize++) {
+        struct peer *bridge = NULL;
+        struct pending_op *op;
+
+        ASSERT_EQ(add_peer(&ctx, &d, 44, 1, &bridge, false), 0);
+        bridge->state = REMOTE;
+        bridge->is_direct_endpoint = true;
+        bridge->endpoint_type = SET_ENDPOINT_TYPE(MCTP_BUS_OWNER_BRIDGE);
+        bridge->pool_start = 0; /* static pool: size unknown */
+        bridge->pool_size = 0;
+
+        op = make_synthetic_op(&ctx, bridge);
+        ASSERT_NOT_NULL(op);
+        routing_table_loop_start(op, bridge, async_test_done);
+        ASSERT_EQ(async_done_called, false);
+        /* The walk widened the pool to the allocatable range. */
+        ASSERT_EQ(bridge->pool_start, eid_alloc_min);
+        ASSERT_NE(bridge->pool_size, 0);
+
+        if (in_finalize) {
+            deliver_routing_fragment_eid41(op);
+            ASSERT_NOT_NULL(op->finalize_active);
+        } else {
+            ASSERT_NOT_NULL(op->rt_local_routing);
+        }
+
+        pending_op_cleanup(op);
+
+        /* Bridge still exists and its pool is back to "unknown". */
+        ASSERT_NOT_NULL(find_peer_by_addr(&ctx, 44, 1));
+        ASSERT_EQ(bridge->pool_start, 0);
+        ASSERT_EQ(bridge->pool_size, 0);
+
+        ASSERT_EQ(remove_peer(bridge), 0);
+        ASSERT_NULL(find_peer_by_addr(&ctx, 41, 1));
+    }
+
+    mctp_nl_set_link_userdata(ctx.nl, 1, NULL);
+    sd_event_unref(ctx.event);
+    cleanup_ctx(&ctx);
+    TEST_PASS();
+}
+
 int main(void)
 {
 	fprintf(stderr, "=== mctpd fault injection tests ===\n");
@@ -6232,7 +6482,6 @@ int main(void)
 	test_query_get_endpoint_id_fail();
 	test_setup_bus_and_publish();
 	test_add_net_and_del();
-	test_endpoint_assign_eid_no_net();
 	test_handle_control_handlers();
 	test_bus_property_getters();
 	test_log_mctp_error_with_bus();
@@ -6254,7 +6503,6 @@ int main(void)
 	test_process_error_queue_peer_and_binding_matrix();
 	test_endpoint_send_set_eid_fail();
 	test_query_get_peer_msgtypes_fail();
-	test_query_routing_table_pool_branches();
 	test_remove_peer_with_degraded();
 	test_publish_peer_with_uuid();
 	test_unpublish_peer_verbose();
@@ -6274,7 +6522,6 @@ int main(void)
 	test_remove_peer_with_bridge_type();
 	test_remove_peer_not_in_list();
 	test_query_peer_properties_no_bus();
-	test_endpoint_assign_eid_dynamic_full();
 	test_log_mctp_error_binding_branches();
 	test_handle_control_discovery_notify_no_local();
 	test_remove_bridged_peers_with_pool();
@@ -6282,7 +6529,6 @@ int main(void)
 	test_endpoint_send_routing_info_update_with_phys();
 	test_report_transaction_error_spi_binding();
 	test_log_mctp_error_ctrl_msg_branch();
-	test_endpoint_assign_eid_static();
 	test_clear_interface_addrs_with_peers();
 	test_branch_sweep_batch();
 	test_mctpd_util_usb_parser_branches();
@@ -6295,6 +6541,13 @@ int main(void)
 	test_parse_config_mctp_no_uuid();
 	test_parse_config_dyn_range_extra_elements();
 	test_request_dbus_fail();
+	test_assign_prepare_peer_no_net();
+	test_assign_prepare_peer_dynamic_full();
+	test_assign_prepare_peer_static();
+	test_set_eid_decode_failures();
+	test_routing_table_loop_async();
+	test_cleanup_during_pool_finalize();
+	test_cleanup_restores_static_pool();
 	fprintf(stderr, "\n%d tests, %d failures\n", test_count, test_failures);
 	return test_failures > 0 ? 1 : 0;
 }

@@ -124,6 +124,7 @@ if libsystemd.found()
         'mctpd',
         sources: [
             'src/mctpd.c',
+            'src/mctpd-async.c',
         ] + netlink_sources + util_sources + ops_sources,
         dependencies: [libsystemd, toml_dep, libcap],
         install: true,
@@ -136,6 +137,7 @@ if libsystemd.found()
         'test-mctpd',
         sources: [
             'src/mctpd.c',
+            'src/mctpd-async.c',
         ] + test_ops_sources + netlink_sources + util_sources,
         include_directories: include_directories('src'),
         dependencies: [libsystemd, toml_dep, libcap],
